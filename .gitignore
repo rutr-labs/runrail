@@ -1,0 +1,16 @@
+.runrail/
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+frontend/node_modules/
+dist/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Local Claude Code settings (machine-specific, may contain local paths)
+.claude/
