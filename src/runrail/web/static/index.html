@@ -6,13 +6,14 @@
   <meta name="theme-color" content="#09090f" />
   <title>RunRail — Control Plane</title>
   <script>
-    // Apply theme before render to prevent flash
-    const stored = localStorage.getItem('runrail-theme');
+    // Apply theme before render to prevent flash; ?theme= overrides for captures
+    const stored = new URLSearchParams(location.search).get('theme')
+      || localStorage.getItem('runrail-theme');
     const system = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     document.documentElement.dataset.theme = stored || system || 'dark';
   </script>
-  <script type="module" crossorigin src="/assets/index-XWeRvUjQ.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-CD8ka3TJ.css">
+  <script type="module" crossorigin src="/assets/index-hGkeBzM9.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-D8GCvbCz.css">
 </head>
 <body>
   <div id="root"></div>

@@ -1,4 +1,5 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal, flushSync } from 'react-dom';
 import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   LayoutDashboard, GitBranch, History, FolderOpen,
@@ -11,7 +12,9 @@ import {
 import { api, del, post, put } from './api';
 import { rrws } from './ws';
 import { FilePicker } from './components/FilePicker';
-import { Button, StatusBadge, MetricCard, EmptyState, Modal, PageHeader, TaskTypeBadge, SkeletonCard, HealthChip } from './components/ui';
+import { DagGraph } from './components/DagGraph';
+import { RunHeatmap } from './components/Heatmap';
+import { Button, StatusBadge, MetricCard, EmptyState, Modal, PageHeader, TaskTypeBadge, SkeletonCard, HealthChip, LoadingBar } from './components/ui';
 import { LogViewer } from './components/LogViewer';
 import { useToast } from './components/toast';
 
@@ -255,14 +258,59 @@ function cronLabel(expr: string): string {
   return `every ${next.toLocaleDateString(undefined, { weekday: 'short' })} at ${time}`;
 }
 
+const REDUCED_MOTION = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/** Native View Transition between pages when supported: the run id chip morphs
+ *  into the run title. Falls back to plain navigation everywhere else. */
+function navigateWithTransition(navTo: (to: string) => void, to: string) {
+  const doc = document as Document & { startViewTransition?: (cb: () => void) => { finished: Promise<void> } };
+  if (!doc.startViewTransition || REDUCED_MOTION()) { navTo(to); return; }
+  document.documentElement.classList.add('vt-active');
+  const transition = doc.startViewTransition(() => { flushSync(() => navTo(to)); });
+  transition.finished.finally(() => document.documentElement.classList.remove('vt-active'));
+}
+
+/** FLIP: children with data-flip-id glide to their new grid slots on re-sort. */
+function useFlip(ref: React.RefObject<HTMLElement | null>, deps: unknown[]) {
+  const previous = useRef(new Map<string, DOMRect>());
+  useEffect(() => {
+    const host = ref.current;
+    if (!host) return;
+    const items = [...host.querySelectorAll<HTMLElement>('[data-flip-id]')];
+    if (!REDUCED_MOTION()) {
+      for (const el of items) {
+        const id = el.dataset.flipId!;
+        const prev = previous.current.get(id);
+        const next = el.getBoundingClientRect();
+        if (prev && (Math.abs(prev.left - next.left) > 1 || Math.abs(prev.top - next.top) > 1)) {
+          el.style.transition = 'none';
+          el.style.transform = `translate(${prev.left - next.left}px, ${prev.top - next.top}px)`;
+          void el.offsetHeight; // reflow so the next transition starts from here
+          el.style.transition = 'transform .45s var(--ease-out)';
+          el.style.transform = '';
+          el.addEventListener('transitionend', () => { el.style.transition = ''; }, { once: true });
+        }
+      }
+    }
+    previous.current = new Map(items.map(el => [el.dataset.flipId!, el.getBoundingClientRect()]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+}
+
 /** Runs with live statuses keep pages fresh even when the WebSocket is unavailable
  *  (for example when the API and worker run as separate processes). */
 function useLiveRefresh(hasLive: boolean, refresh: () => void, intervalMs = 3000) {
+  // Keep the latest callback in a ref so a new `refresh` identity every render
+  // (common — callers define it inline, and a 1s useNow ticker re-renders while
+  // a run is live) does not tear down and recreate the interval before it ever
+  // fires. Without this the poll silently never runs and live views go stale.
+  const saved = useRef(refresh);
+  saved.current = refresh;
   useEffect(() => {
     if (!hasLive) return;
-    const timer = window.setInterval(refresh, intervalMs);
+    const timer = window.setInterval(() => saved.current(), intervalMs);
     return () => window.clearInterval(timer);
-  }, [hasLive, refresh, intervalMs]);
+  }, [hasLive, intervalMs]);
 }
 
 /* ─── Shell ───────────────────────────────────────────── */
@@ -425,6 +473,10 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
       id: `nav-${href}`, label, hint: 'Page', section: 'Navigate',
       icon: <Icon size={14} />, run: go(href),
     }));
+    items.push({
+      id: 'nav-wallboard', label: 'Wallboard', hint: 'TV mode', section: 'Navigate',
+      icon: <Activity size={14} />, run: go('/wallboard'),
+    });
     for (const w of flows) {
       items.push({
         id: `trigger-${w.id}`, label: `Run ${w.name}`, hint: 'Trigger now',
@@ -473,7 +525,7 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
     else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
   };
 
-  return (
+  return createPortal(
     <div className="cmdk-shade" onMouseDown={e => e.target === e.currentTarget && onClose()}>
       <div className="cmdk" role="dialog" aria-label="Command palette">
         <div className="cmdk-input-row">
@@ -511,7 +563,8 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
           <span><kbd>esc</kbd> Close</span>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -540,6 +593,7 @@ function CancelRunButton({ run, onDone, size = 'sm' }: { run: Run; onDone?: () =
 /* ─── Shared run table ────────────────────────────────── */
 function RunTable({ runs, flows, onChanged }: { runs: Run[]; flows: Workflow[]; onChanged?: () => void }) {
   const now = useNow(runs.some(r => r.status === 'running'));
+  const navTo = useNavigate();
   return (
     <div className="table-scroll">
       <table>
@@ -557,7 +611,13 @@ function RunTable({ runs, flows, onChanged }: { runs: Run[]; flows: Workflow[]; 
         <tbody>
           {runs.map(r => (
             <tr key={r.id}>
-              <td><Link className="run-id" to={`/runs/${r.id}`}>#{r.id}</Link></td>
+              <td>
+                <Link className="run-id" to={`/runs/${r.id}`}
+                      style={{ viewTransitionName: `run-${r.id}` } as React.CSSProperties}
+                      onClick={e => { e.preventDefault(); navigateWithTransition(navTo, `/runs/${r.id}`); }}>
+                  #{r.id}
+                </Link>
+              </td>
               <td><Link to={`/workflows/${r.workflow_id}`} style={{ color: 'inherit', textDecoration: 'none' }}><b>{flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`}</b></Link></td>
               <td><StatusBadge value={r.status} /></td>
               <td><span className="trigger-badge">{r.trigger_type}</span></td>
@@ -767,6 +827,15 @@ function Dashboard() {
             </div>
           )}
         </div>
+        {!empty && (
+          <div className="dashboard-hero-aside">
+            <div className="dashboard-hero-aside-head">
+              <span>Activity · 16 weeks</span>
+              <Link className="panel-link" to="/wallboard">Wallboard →</Link>
+            </div>
+            <RunHeatmap weeks={16} />
+          </div>
+        )}
       </div>
 
       {empty ? <QuickStart /> : (
@@ -997,6 +1066,7 @@ function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const [run, setRun] = useState<Run>();
   const [flow, setFlow] = useState<Workflow>();
+  const [flowTasks, setFlowTasks] = useState<Task[]>([]);
   const navTo = useNavigate();
   const { toast } = useToast();
 
@@ -1013,7 +1083,10 @@ function RunDetail() {
   const refresh = () => { void api<Run>(`/runs/${id}`).then(setRun).catch(() => {}); };
   useEffect(() => { setRun(undefined); refresh(); }, [id]);
   useEffect(() => {
-    if (run && !flow) api<Workflow>(`/workflows/${run.workflow_id}`).then(setFlow).catch(() => {});
+    if (run && !flow) {
+      api<Workflow>(`/workflows/${run.workflow_id}`).then(setFlow).catch(() => {});
+      api<Task[]>(`/workflows/${run.workflow_id}/tasks`).then(setFlowTasks).catch(() => {});
+    }
   }, [run?.workflow_id]);
   useEffect(() => {
     const u1 = rrws.on('run_updated', e => { if (String(e.id) === id) refresh(); });
@@ -1039,7 +1112,9 @@ function RunDetail() {
           <div className="workflow-glyph large"><Play size={22} /></div>
           <div className="detail-head-text">
             <span className="eyebrow">WORKFLOW RUN</span>
-            <h1>{flow ? `${flow.name} · #${run.id}` : `Run #${run.id}`}</h1>
+            <h1 style={{ viewTransitionName: `run-${run.id}` } as React.CSSProperties}>
+              {flow ? `${flow.name} · #${run.id}` : `Run #${run.id}`}
+            </h1>
             <p>Created {formatDate(run.created_at)} · {run.trigger_type} trigger</p>
           </div>
           <div className="detail-actions">
@@ -1076,8 +1151,27 @@ function RunDetail() {
         </div>
       )}
 
+      {flowTasks.length > 1 && (
+        <div className="panel" style={{ marginBottom: 20 }}>
+          <div className="panel-head">
+            <div><h2>Graph</h2><p>Live task statuses across the dependency graph</p></div>
+          </div>
+          <DagGraph
+            tasks={flowTasks.map(t => ({
+              name: t.name, task_type: t.task_type, depends_on: t.depends_on_json || [],
+            }))}
+            statuses={Object.fromEntries(
+              [...(run.task_runs ?? [])]
+                .sort((a, b) => a.attempt - b.attempt)
+                .map(t => [t.task_name ?? '', t.status])
+            )}
+            onSelect={name => document.getElementById(`task-${name}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+          />
+        </div>
+      )}
+
       {run.task_runs && run.task_runs.length > 1 && (
-        <TaskTimeline taskRuns={run.task_runs} runStart={run.started_at || run.created_at} />
+        <TaskTimeline taskRuns={run.task_runs} runStart={run.started_at || run.created_at} now={now} />
       )}
 
       <div className="panel">
@@ -1087,42 +1181,94 @@ function RunDetail() {
         <div className="run-tasks">
           {run.task_runs && run.task_runs.length > 0
             ? run.task_runs.map((t, i) => <TaskRunCard key={t.id} task={t} index={i + 1} />)
-            : <EmptyState icon={<Clock size={22} />} title={run.status === 'queued' ? 'Waiting for the worker' : 'No task output'} text={run.status === 'queued' ? 'Task runs appear as soon as a worker claims this run.' : 'This run produced no task executions.'} />}
+            : run.status === 'queued'
+            ? <div className="empty-state">
+                <div style={{ width: 200, marginBottom: 4 }}><LoadingBar /></div>
+                <h3 className="empty-title">Waiting for the worker</h3>
+                <p className="empty-text">Task runs appear here the moment a worker claims this run.</p>
+              </div>
+            : <EmptyState icon={<Clock size={22} />} title="No task output" text="This run produced no task executions." />}
         </div>
       </div>
     </>
   );
 }
 
-function TaskTimeline({ taskRuns, runStart }: { taskRuns: TaskRun[]; runStart: string }) {
+function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runStart: string; now: number }) {
   const origin = new Date(runStart).getTime();
   const withTimes = taskRuns.filter(t => t.started_at);
   if (!withTimes.length) return null;
+  const startMs = (t: TaskRun) => (t.started_at ? new Date(t.started_at).getTime() : origin);
+  const isLive = (t: TaskRun) => Boolean(t.started_at) && !t.finished_at && t.status === 'running';
+  // A running task has no duration yet: measure it against the wall clock so its
+  // bar grows every tick, and extend the axis to "now" so the whole chart moves.
+  const spanMs = (t: TaskRun) =>
+    t.duration_seconds != null ? t.duration_seconds * 1000
+    : t.finished_at ? new Date(t.finished_at).getTime() - startMs(t)
+    : isLive(t) ? Math.max(0, now - startMs(t))
+    : 0;
   const totalMs = Math.max(
     ...taskRuns.map(t => t.finished_at
       ? new Date(t.finished_at).getTime() - origin
+      : isLive(t) ? now - origin
       : t.started_at ? new Date(t.started_at).getTime() - origin + 1000 : 0
     ), 1000
   );
+  // One lane per task; retry attempts render as separate bars on the same lane.
+  const lanes = new Map<string, TaskRun[]>();
+  for (const t of taskRuns) {
+    const key = t.task_name ?? `#${t.task_id}`;
+    lanes.set(key, [...(lanes.get(key) ?? []), t]);
+  }
+  const ticks = [0.25, 0.5, 0.75];
   return (
     <div className="panel" style={{ marginBottom: 20 }}>
       <div className="panel-head">
-        <div><h2>Task timeline</h2><p>Execution order and duration relative to run start</p></div>
+        <div><h2>Timeline</h2><p>Overlapping bars ran in parallel; multiple bars on a lane are retry attempts</p></div>
       </div>
       <div className="task-timeline">
-        {taskRuns.map(t => {
-          const start = t.started_at ? (new Date(t.started_at).getTime() - origin) / totalMs * 100 : 0;
-          const width = t.duration_seconds ? Math.max(t.duration_seconds * 1000 / totalMs * 100, 1) : 2;
-          return (
-            <div key={t.id} className="tl-row">
-              <span className="tl-name" title={t.task_name ?? undefined}>{t.task_name ?? `Task #${t.task_id}`}</span>
-              <div className="tl-track">
-                <div className={`tl-bar ${t.status}`} style={{ left: `${Math.min(start, 98)}%`, width: `${Math.min(width, 100 - Math.min(start, 98))}%` }} title={`${t.status}${t.duration_seconds ? ` · ${t.duration_seconds.toFixed(1)}s` : ''}`} />
-              </div>
-              <span className="tl-dur">{formatDuration(t.duration_seconds)}</span>
+        {[...lanes.entries()].map(([name, attempts]) => (
+          <div key={name} className="tl-row">
+            <span className="tl-name" title={name}>{name}</span>
+            <div className="tl-track">
+              {ticks.map(f => <span key={f} className="tl-tick" style={{ left: `${f * 100}%` }} />)}
+              {attempts.map(t => {
+                const start = t.started_at ? (startMs(t) - origin) / totalMs * 100 : 0;
+                const width = t.started_at ? Math.max(spanMs(t) / totalMs * 100, 1.2) : 2;
+                const left = Math.min(Math.max(start, 0), 98);
+                const tip = [
+                  `${name} · attempt ${t.attempt} · ${t.status}`,
+                  t.started_at ? `started +${formatDuration((startMs(t) - origin) / 1000)}` : null,
+                  t.duration_seconds != null ? `took ${formatDuration(t.duration_seconds)}`
+                    : isLive(t) ? `running ${formatDuration(spanMs(t) / 1000)}` : null,
+                  t.exit_code != null ? `exit ${t.exit_code}` : null,
+                ].filter(Boolean).join('\n');
+                return (
+                  <div key={t.id} className={`tl-bar ${t.status}`}
+                       style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }} title={tip}>
+                    {t.attempt > 1 && <span className="tl-attempt">A{t.attempt}</span>}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+            <span className="tl-dur">
+              {formatDuration(attempts.reduce((sum, t) => sum + spanMs(t) / 1000, 0) || null)}
+            </span>
+          </div>
+        ))}
+        <div className="tl-axis">
+          <span className="tl-name" />
+          <div className="tl-axis-track">
+            <span>0s</span>
+            {ticks.map(f => (
+              <span key={f} style={{ position: 'absolute', left: `${f * 100}%`, transform: 'translateX(-50%)' }}>
+                {formatDuration(totalMs * f / 1000)}
+              </span>
+            ))}
+            <span style={{ marginLeft: 'auto' }}>{formatDuration(totalMs / 1000)}</span>
+          </div>
+          <span className="tl-dur" />
+        </div>
       </div>
     </div>
   );
@@ -1132,7 +1278,7 @@ function TaskRunCard({ task, index }: { task: TaskRun; index: number }) {
   const [open, setOpen] = useState(index === 1 || task.status === 'failed' || task.status === 'running');
   const collapsible = task.status !== 'skipped' && task.status !== 'cancelled';
   return (
-    <article className="run-task">
+    <article className="run-task" id={task.task_name ? `task-${task.task_name}` : undefined}>
       <button className="run-task-head" onClick={() => collapsible && setOpen(!open)}>
         <span className="task-order">{index}</span>
         <div>
@@ -1348,7 +1494,14 @@ function Environments() {
               <div className="resource-icon terminal"><Terminal size={16} /></div>
               <div className="list-copy">
                 <h3>{x.name}</h3>
-                <p>{x.description || (x.managed ? `${x.active_packages_json.length} active managed libraries` : x.executable) || 'External runtime'}</p>
+                {x.status === 'creating' || x.status === 'building'
+                  ? <div style={{ marginTop: 6, maxWidth: 260 }}>
+                      <LoadingBar size="sm" />
+                      <small style={{ display: 'block', marginTop: 5, color: 'var(--text-3)' }}>
+                        {x.status === 'building' ? 'Installing packages…' : 'Preparing environment…'}
+                      </small>
+                    </div>
+                  : <p>{x.description || (x.managed ? `${x.active_packages_json.length} active managed libraries` : x.executable) || 'External runtime'}</p>}
                 {x.last_error && <small style={{ color: 'var(--danger)' }}>{x.last_error}</small>}
               </div>
               <span className="type-chip">{x.managed ? 'managed' : x.env_type} · {x.status}{x.python_version ? ` · py ${x.python_version}` : ''}</span>
@@ -1806,11 +1959,29 @@ function WorkflowDetail() {
 
       {runs.length > 0 && <RunMiniHistory runs={runs} />}
 
+      {runs.length > 0 && (
+        <div className="panel" style={{ marginBottom: 20 }}>
+          <div className="panel-head"><div><h2>Activity</h2><p>Runs per day, this workflow only</p></div></div>
+          <RunHeatmap workflowId={Number(id)} />
+        </div>
+      )}
+
+      {orderedTasks.length > 1 && (
+        <div className="panel" style={{ marginBottom: 20 }}>
+          <div className="panel-head">
+            <div><h2>Graph</h2><p>Columns run left to right; tasks in the same column execute in parallel.</p></div>
+          </div>
+          <DagGraph tasks={orderedTasks.map(t => ({
+            name: t.name, task_type: t.task_type, depends_on: t.depends_on_json || [],
+          }))} />
+        </div>
+      )}
+
       <div className="panel" style={{ marginBottom: 20 }}>
         <div className="panel-head">
           <div>
-            <h2>Task graph</h2>
-            <p>Independent tasks run in parallel; each task starts once everything it depends on has succeeded.</p>
+            <h2>Tasks</h2>
+            <p>Each task starts once everything it depends on has succeeded.</p>
           </div>
           <Button variant="ghost" size="sm" onClick={() => setAddOpen(true)}><Plus size={13} /> Add task</Button>
         </div>
@@ -2296,7 +2467,207 @@ function SettingsPage() {
   );
 }
 
+/* ─── Wallboard (TV mode) ─────────────────────────────── */
+function formatEta(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/** Median duration of the workflow's last five successful runs, in seconds. */
+function medianDuration(runs: Run[], workflowId: number): number | null {
+  const durations = runs
+    .filter(r => r.workflow_id === workflowId && r.status === 'success' && r.duration_seconds != null)
+    .slice(0, 5)
+    .map(r => r.duration_seconds!)
+    .sort((a, b) => a - b);
+  return durations.length ? durations[Math.floor(durations.length / 2)] : null;
+}
+
+const WB_RANK: Record<string, number> = {
+  failed: 0, overdue: 1, running: 2, queued: 3, success: 4, cancelled: 5, never: 6,
+};
+
+function Wallboard() {
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [flows, setFlows] = useState<Workflow[]>([]);
+  const [clock, setClock] = useState(() => new Date());
+  const [blooms, setBlooms] = useState<Record<number, string>>({});
+  const prevStatuses = useRef(new Map<number, string>());
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  const load = () => {
+    api<Run[]>('/runs?limit=300').then(setRuns).catch(() => {});
+    api<Workflow[]>('/workflows').then(setFlows).catch(() => {});
+  };
+  useEffect(() => {
+    load();
+    const poll = window.setInterval(load, 5000);
+    const tick = window.setInterval(() => setClock(new Date()), 1000);
+    const u1 = rrws.on('run_updated', load);
+    const u2 = rrws.on('run_created', load);
+    return () => { window.clearInterval(poll); window.clearInterval(tick); u1(); u2(); };
+  }, []);
+  const now = useNow(runs.some(r => r.status === 'running'));
+
+  const live = runs.filter(r => LIVE(r.status));
+  const failures = runs.filter(r => r.status === 'failed'
+    && Date.now() - new Date(r.created_at).getTime() < DAY).slice(0, 4);
+
+  // Per-workflow triage state: latest outcome, failure streak, 7-day rate,
+  // next occurrence, and silent-scheduler (overdue) detection.
+  const tiles = flows.map(w => {
+    const mine = runs.filter(r => r.workflow_id === w.id);
+    const completed = mine.filter(r => r.status === 'success' || r.status === 'failed');
+    const last = completed[0];
+    let streak = 0;
+    while (streak < completed.length && completed[streak].status === 'failed') streak++;
+    const streakStart = streak ? completed[streak - 1].created_at : null;
+    const week = completed.filter(r => Date.now() - new Date(r.created_at).getTime() < 7 * DAY);
+    const rate7d = week.length ? Math.round(week.filter(r => r.status === 'success').length / week.length * 100) : null;
+    const running = live.some(r => r.workflow_id === w.id && r.status === 'running');
+    const next = w.enabled && w.schedule_cron ? nextCronOccurrence(w.schedule_cron, clock) : null;
+    // Overdue: the schedule should have fired after the latest run, gave it a
+    // 2-minute grace, and no newer run ever appeared — a silently dead scheduler.
+    let overdue = false;
+    if (w.enabled && w.schedule_cron && mine.length) {
+      const expected = nextCronOccurrence(w.schedule_cron, new Date(mine[0].created_at));
+      overdue = !!expected && expected.getTime() < clock.getTime() - 120_000
+        && !mine.some(r => new Date(r.created_at) >= expected);
+    }
+    const status = running ? 'running'
+      : last?.status === 'failed' ? 'failed'
+      : overdue ? 'overdue'
+      : (last?.status ?? (mine.length ? mine[0].status : 'never'));
+    return { flow: w, mine, last, streak, streakStart, rate7d, next, overdue, status };
+  }).sort((a, b) =>
+    (WB_RANK[a.status] ?? 9) - (WB_RANK[b.status] ?? 9)
+    || b.streak - a.streak
+    || a.flow.name.localeCompare(b.flow.name));
+
+  // One-shot bloom when a tile's status transitions.
+  const signature = tiles.map(t => `${t.flow.id}:${t.status}`).join('|');
+  useEffect(() => {
+    const fresh: Record<number, string> = {};
+    for (const tile of tiles) {
+      const prev = prevStatuses.current.get(tile.flow.id);
+      if (prev && prev !== tile.status) fresh[tile.flow.id] = tile.status;
+      prevStatuses.current.set(tile.flow.id, tile.status);
+    }
+    if (Object.keys(fresh).length) setBlooms(b => ({ ...b, ...fresh }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature]);
+  useFlip(gridRef, [signature]);
+
+  const failing = tiles.filter(t => t.status === 'failed').length;
+  const overdueCount = tiles.filter(t => t.status === 'overdue').length;
+  const runningCount = live.filter(r => r.status === 'running').length;
+  const mood = failing || overdueCount ? 'attention' : runningCount ? 'active' : 'calm';
+  const verdict = failing ? `${failing} failing`
+    : overdueCount ? `${overdueCount} overdue`
+    : runningCount ? `${runningCount} running`
+    : 'All systems nominal';
+  const nextUp = tiles.filter(t => t.next).sort((a, b) => a.next!.getTime() - b.next!.getTime())[0];
+
+  return (
+    <div className={`wallboard wallboard--${mood}`}>
+      <div className="wallboard-aurora" aria-hidden />
+      <header className="wallboard-head">
+        <span className="wallboard-brand">
+          <span className="sidebar-logo"><span className="sidebar-logo-inner"><span /><span /><span /></span></span>
+          RunRail
+        </span>
+        <span className={`wallboard-health wallboard-health--${mood}`}>
+          <span className="wallboard-health-dot" />{verdict}
+        </span>
+        {nextUp && (
+          <span className="wallboard-next" title={nextUp.next!.toLocaleString()}>
+            <Clock size={13} /> Next: {nextUp.flow.name} in {formatEta(nextUp.next!.getTime() - clock.getTime())}
+          </span>
+        )}
+        <span className="wallboard-clock">
+          {clock.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+        </span>
+        <Link to="/" className="wallboard-exit" title="Back to the app"><X size={16} /></Link>
+      </header>
+
+      {live.length > 0 && (
+        <div className="wallboard-strip">
+          {live.map(r => {
+            const expected = r.status === 'running' ? medianDuration(runs, r.workflow_id) : null;
+            const elapsed = r.started_at ? (now - new Date(r.started_at).getTime()) / 1000 : 0;
+            const pct = expected ? Math.min(100, elapsed / expected * 100) : null;
+            const over = expected != null && elapsed > expected * 1.15;
+            return (
+              <div key={r.id} className={`wallboard-live-card ${r.status}`}>
+                <span className={`run-pulse ${r.status}`} />
+                <div className="wallboard-live-body">
+                  <b>{flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`}</b>
+                  <small>#{r.id} · {r.status} · {liveDuration(r, now)}</small>
+                  {pct != null && (
+                    <div className={`wb-progress${over ? ' wb-progress--over' : ''}`}>
+                      <div className="wb-progress-fill" style={{ width: `${pct}%` }} />
+                    </div>
+                  )}
+                </div>
+                {expected != null && r.status === 'running' && (
+                  <span className={`wb-eta${over ? ' wb-eta--over' : ''}`}>
+                    {over ? 'running long' : `~${formatEta(Math.max(0, (expected - elapsed) * 1000))} left`}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="wallboard-grid" ref={gridRef}>
+        {tiles.map(({ flow: w, last, streak, streakStart, rate7d, next, status }) => (
+          <div key={w.id} data-flip-id={String(w.id)}
+               className={`wallboard-tile wb-${status}${blooms[w.id] ? ` wb-bloom wb-bloom-${blooms[w.id]}` : ''}`}
+               onAnimationEnd={e => {
+                 if (e.animationName === 'tile-bloom') setBlooms(({ [w.id]: _, ...rest }) => rest);
+               }}>
+            <div className="wallboard-tile-name">{w.name}</div>
+            <div className="wallboard-tile-status" key={status}>{status === 'never' ? 'no runs' : status}</div>
+            {status === 'failed' && streak > 0 && (
+              <div className="wallboard-tile-streak">
+                {streak} consecutive failure{streak === 1 ? '' : 's'}
+                {streakStart ? ` · red for ${formatEta(clock.getTime() - new Date(streakStart).getTime())}` : ''}
+              </div>
+            )}
+            <div className="wallboard-tile-meta">
+              {last ? `${timeAgo(last.finished_at || last.created_at)}` : '—'}
+              {w.schedule_cron ? ` · ${cronLabel(w.schedule_cron)}` : ' · manual'}
+              {next ? ` · next in ${formatEta(next.getTime() - clock.getTime())}` : ''}
+              {status !== 'failed' && rate7d != null ? ` · ${rate7d}% · 7d` : ''}
+              {!w.enabled ? ' · paused' : ''}
+            </div>
+            <WorkflowSparkline runs={runs.filter(r => r.workflow_id === w.id).slice(0, 16)} />
+          </div>
+        ))}
+        {flows.length === 0 && <div className="wallboard-empty">No workflows yet.</div>}
+      </div>
+
+      {failures.length > 0 && (
+        <div className="wallboard-failures">
+          <span className="wallboard-failures-label"><AlertTriangle size={14} /> Failures · 24h</span>
+          {failures.map(r => (
+            <span key={r.id} className="wallboard-failure">
+              {flows.find(w => w.id === r.workflow_id)?.name ?? r.workflow_id} #{r.id} · {timeAgo(r.created_at)}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── App Entry ───────────────────────────────────────── */
 export default function App() {
+  const location = useLocation();
+  if (location.pathname === '/wallboard') return <Wallboard />;
   return <Shell />;
 }

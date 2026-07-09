@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   CheckCircle2, XCircle, Loader2, Clock, CircleDot,
   MinusCircle, AlertCircle, AlertTriangle
@@ -155,6 +156,17 @@ export function MetricCard({
   );
 }
 
+/* ─── Loading bar ─────────────────────────────────────
+   The twinkling dot-matrix as a reusable indeterminate loader. */
+export function LoadingBar({ tone, size, className }: {
+  tone?: 'running' | 'warning' | 'success'; size?: 'sm'; className?: string;
+}) {
+  return (
+    <div className={clsx('dot-loader', size, tone && tone !== 'running' && tone, className)}
+         role="progressbar" aria-label="In progress" />
+  );
+}
+
 /* ─── Empty State ────────────────────────────────────── */
 export function EmptyState({
   icon, title, text, action
@@ -170,10 +182,13 @@ export function EmptyState({
 }
 
 /* ─── Modal ──────────────────────────────────────────── */
+/* Portaled to <body>: the app shell blurs and recedes behind open dialogs
+   (depth-of-field), and a filtered ancestor would otherwise drag the
+   fixed-position dialog into its own blur. */
 export function Modal({
   title, subtitle, onClose, children
 }: { title: string; subtitle?: string; onClose: () => void; children: ReactNode }) {
-  return (
+  return createPortal(
     <div
       className="modal-shade"
       onMouseDown={e => e.target === e.currentTarget && onClose()}
@@ -188,7 +203,8 @@ export function Modal({
         </div>
         {children}
       </section>
-    </div>
+    </div>,
+    document.body
   );
 }
 
