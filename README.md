@@ -1,16 +1,29 @@
 # RunRail
 
-RunRail is a lightweight, open-source workflow control plane for the Python scripts, notebooks, SQL files, and shell commands you already have. It adds schedules, dependency-ordered workflows, logs, retries, backfills, artifacts, and a practical web UI without requiring application rewrites.
+**A self-hosted workflow orchestrator for the scripts you already have.** Schedule Python scripts, Jupyter notebooks, SQL files, and shell commands with dependencies, retries, logs, backfills, and a fast web UI — without rewriting anything.
 
-RunRail is **not** an enterprise orchestrator, a hosted compute platform, or a replacement for Kubernetes. The alpha is intentionally local/self-hosted, subprocess-based, and easy to understand.
+[![CI](https://github.com/rutr-labs/runrail/actions/workflows/ci.yml/badge.svg)](https://github.com/rutr-labs/runrail/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 
-## Why it exists
+Most teams outgrow cron long before they need a distributed orchestrator. RunRail covers that middle ground: one process, one SQLite file, and your existing code running on a real scheduler with full observability. No DAG files to author, no decorators to add, no platform to operate.
 
-Teams often outgrow cron long before they need Airflow, Dagster, or Prefect. RunRail occupies that useful middle: a local Databricks Workflows-like experience whose first principle is “bring your existing code.”
+## Features
 
-## Install and quickstart
+- **Bring your own code** — point RunRail at a folder; scripts, notebooks, SQL, and shell commands run as-is in isolated subprocesses
+- **Dependency graphs with parallel execution** — independent tasks run concurrently; each task starts the moment its dependencies succeed
+- **Cron scheduling built for high frequency** — minute-level schedules with per-workflow concurrency limits, coalescing, and missed-run tolerance
+- **Managed Python environments** — declare pip requirements in the UI; RunRail builds and atomically swaps isolated virtualenvs, keeping the last working build on failure
+- **Failure webhooks with sane semantics** — one alert on the first failure, one on recovery; Slack and Teams incoming webhooks work as-is
+- **Auto-pause** — optionally disable a workflow after N consecutive failures instead of failing hundreds of times overnight
+- **Backfills and retries** — queue one run per date over a range; re-run any finished run with identical parameters in one click
+- **Workflows as code** — `runrail export` / `runrail apply` round-trip definitions through YAML for version control and code review
+- **Live logs and artifacts** — streamed stdout/stderr with tail-follow, timestamped notebook outputs, automatic retention cleanup
+- **A UI you'll actually use** — command palette (⌘K), live run timelines, dark and light themes, local-timezone schedule previews
 
-Python 3.11 or newer is required. Node is only needed when changing the frontend.
+## Quick start
+
+Requires Python 3.11+. Node is only needed for frontend development.
 
 ```bash
 pip install -e .
@@ -18,81 +31,63 @@ runrail init
 runrail serve
 ```
 
-Open http://127.0.0.1:8080. Create a project pointing at your code directory, create a separate Python environment, then create a workflow and add its tasks. `runrail serve` starts the API, bundled UI, scheduler, and local worker together—no npm, separate worker, or separate scheduler.
+Open http://127.0.0.1:8080, connect a project folder, add an environment, and build your first workflow. `runrail serve` runs the API, web UI, scheduler, and worker in a single process.
 
-Python and notebook tasks never fall back to RunRail's own interpreter. Select an environment on the task, workflow, or project (in that precedence order).
+## Core concepts
 
-The recommended flow is **Environments → New environment → Managed Python**. A managed environment is RunRail's local equivalent of a Databricks compute runtime:
+**Projects** point at directories where your code lives. **Environments** define how Python runs — a managed virtualenv built from declared pip requirements, an existing interpreter, or a Conda environment. **Workflows** group **tasks** into a dependency graph with an optional cron schedule. Environments resolve per task, falling back to the workflow default, then the project default; Python and notebook tasks never silently run on RunRail's own interpreter.
 
-- RunRail creates an isolated virtual environment under `RUNRAIL_HOME/environments`.
-- You declare pip requirements (for example `pandas==2.3.0` or `sqlalchemy>=2,<3`) in the UI.
-- Build status, Python version, errors, and the latest pip build log are retained.
-- Editing libraries performs an atomic rebuild. A failed rebuild preserves the last working runtime.
-- The environment can be assigned at project, workflow, or task level.
-
-Managed environments work with the selected base Python on Windows, macOS, and Linux. You can alternatively register an existing Python/virtualenv executable or a Conda environment; external runtimes are validated before they can be assigned. For repeatable production jobs, pin package versions or bounded version ranges.
-
-The equivalent external-environment setup is:
-
-```bash
-python -m venv .venv
-.venv/bin/python -m pip install pandas sqlalchemy papermill
-```
+The recommended environment setup is *Environments → New environment → Managed Python*: declare requirements such as `pandas==2.3.0`, and RunRail builds an isolated virtualenv, records the build log and Python version, and rebuilds atomically when the requirements change. A failed rebuild preserves the previous working runtime.
 
 ## CLI
 
 ```bash
-runrail run daily-refresh --param region=ca
+runrail run daily-refresh --param region=ca      # queue a manual run
 runrail backfill daily-refresh --from 2026-06-01 --to 2026-06-30
+runrail export -o workflows.yml                  # workflows as version-controllable YAML
+runrail apply workflows.yml                      # declarative upsert by name
+runrail cleanup --older-than-days 30 --dry-run   # prune old runs, logs, artifacts
 runrail status
 
-# Advanced split processes
+# run components as separate processes
 runrail api
 runrail scheduler
-runrail worker
+runrail worker --concurrency 8
 ```
 
-Backfills are inclusive and inject `ds` into each run. Templates also receive `ts`, `ts_nodash` (e.g. `20260702T141005`, for high-frequency schedules where a date alone is ambiguous), `run_id`, `workflow_run_id`, `task_run_id`, `project_root`, `artifacts_dir`, and all task/run parameters.
+## Templating
 
-Old finished runs and their log/artifact files can be pruned with `runrail cleanup --older-than-days 30` (add `--dry-run` to preview), or automatically by setting `RUNRAIL_RETENTION_DAYS` — recommended for workflows scheduled every few minutes.
+Task commands and paths are Jinja templates. Every run receives:
 
-## Examples
-
-### Python script
-
-Create a Python task with `script_path` set to `examples/simple-python/hello.py`. RunRail adds the project root, working directory, script/notebook directory, and a conventional project `src/` directory to `PYTHONPATH`; scripts inside Python packages run with `python -m`, so project, sibling, src-layout, and package-relative imports work. It intentionally does not add every recursive directory because that makes module resolution ambiguous. For arguments, use a command task:
+| Variable | Meaning |
+|---|---|
+| `ds` | Logical date (`2026-07-08`); injected per-date during backfills |
+| `ts` / `ts_nodash` | Run timestamp, ISO and compact (`20260708T141005`) |
+| `run_id`, `task_run_id` | Identifiers for the current execution |
+| `project_root`, `artifacts_dir` | Resolved paths for the run |
+| *your parameters* | Run parameters and per-task parameters, merged |
 
 ```bash
-python examples/simple-python/hello.py --date {{ ds }}
+python scripts/daily.py --date {{ ds }} --region {{ region }}
 ```
 
-### Notebook with Papermill
+## Notifications
 
-Install Papermill in the selected task environment, then create a notebook task with its input path. The executed notebook is written under `.runrail/artifacts/<run-id>/`, named with the run timestamp and task-run id so frequent runs and retries never overwrite each other.
+Set `RUNRAIL_NOTIFY_WEBHOOK_URL` globally or a webhook per workflow. RunRail posts on the first failure after a success and again on recovery — never once per red run, so a broken two-minute schedule produces one alert rather than three hundred. The payload's `text` field renders directly in Slack and Microsoft Teams; structured fields are included for custom receivers. Pair with per-workflow auto-pause to stop repeat failures entirely.
 
-### Multi-task workflow
-
-Create `extract` as a shell task, then `transform` as a Python or shell task with `depends_on_json` containing `extract` (the UI accepts comma-separated names). Tasks with no dependency between them run in parallel; a task starts once all of its dependencies succeed. Failed dependencies skip downstream tasks.
-
-### SQL
-
-SQL tasks execute SQLite scripts only. Set a run parameter such as `sqlite_db_path=/tmp/demo.db` and point `sql_path` to `examples/sql-task/schema.sql`.
-
-## Docker Compose
+## Docker
 
 ```bash
 docker compose up --build
 ```
 
-Compose runs RunRail and PostgreSQL, persists both data volumes, and exposes the UI on port 8080. Local usage does not require Docker.
+Compose starts RunRail with PostgreSQL and persistent volumes on port 8080. Docker is optional for local use.
 
 ## Architecture
 
-FastAPI serves the API and prebuilt React application. APScheduler is only a scheduling clock: it writes due runs into the SQL database; while a run is executing, the next scheduled iteration is queued (coalesced to one waiting run) rather than dropped. A local worker atomically claims queued workflow runs and executes them on a bounded thread pool (`RUNRAIL_WORKER_CONCURRENCY`, default 4, or `runrail worker --concurrency N`), so different workflows run in parallel — a one-hour job never blocks a five-minute schedule. Runs of the same workflow are serialized according to its `max_concurrent_runs` (default 1). Each run resolves its task graph and executes every user task in a subprocess; independent tasks in a run execute in parallel (`RUNRAIL_TASK_PARALLELISM`, default 4), and each task starts as soon as everything it depends on has succeeded. stdout/stderr live under `.runrail/logs/run_<run-id>/`; generated artifacts live under `.runrail/artifacts/<run-id>/` with timestamped filenames. SQLite is the default (WAL mode) and `RUNRAIL_DB_URL` enables PostgreSQL.
+A FastAPI process serves the API and the prebuilt React UI. APScheduler acts purely as a clock, writing due runs to the database; while a run executes, the next scheduled iteration coalesces to a single queued run instead of piling up or being dropped. Workers claim queued runs atomically, so multiple workflows execute in parallel and a long job never blocks a frequent one. Within a run, the task graph executes with real parallelism (`RUNRAIL_TASK_PARALLELISM`): independent branches run concurrently and every task is a subprocess with its own logs, timeout, and process-group cleanup.
 
-Subprocesses receive the selected runtime's `PATH`, project-root `PYTHONPATH`, environment variables, working directory, timeout, and logs. Python package scripts run as modules when needed for relative imports. Timeouts terminate the subprocess group/tree so spawned child processes are not left behind.
-
-Frontend development uses `cd frontend && npm install && npm run build`; Vite writes the production bundle directly into `src/runrail/web/static`.
+SQLite in WAL mode is the default store; set `RUNRAIL_DB_URL` for PostgreSQL. Logs live under `.runrail/logs/run_<id>/`, artifacts under `.runrail/artifacts/<id>/` with timestamped filenames so frequent runs and retries never collide.
 
 ## Configuration
 
@@ -100,25 +95,25 @@ Frontend development uses `cd frontend && npm install && npm run build`; Vite wr
 |---|---|
 | `RUNRAIL_HOME` | `.runrail` |
 | `RUNRAIL_DB_URL` | SQLite at `.runrail/runrail.db` |
-| `RUNRAIL_HOST` | `127.0.0.1` |
-| `RUNRAIL_PORT` | `8080` |
-| `RUNRAIL_WORKER_CONCURRENCY` | `4` |
-| `RUNRAIL_TASK_PARALLELISM` | `4` (max tasks of one run executing at once) |
-| `RUNRAIL_BROWSE_ROOT` | Current user's home directory |
-| `RUNRAIL_RETENTION_DAYS` | Unset (keep runs forever); when set, finished runs older than this are auto-deleted with their logs and artifacts |
+| `RUNRAIL_HOST` / `RUNRAIL_PORT` | `127.0.0.1` / `8080` |
+| `RUNRAIL_WORKER_CONCURRENCY` | `4` concurrent runs |
+| `RUNRAIL_TASK_PARALLELISM` | `4` concurrent tasks per run |
+| `RUNRAIL_RETENTION_DAYS` | unset; when set, finished runs older than this are deleted with their logs and artifacts |
+| `RUNRAIL_NOTIFY_WEBHOOK_URL` | unset; default failure/recovery webhook |
+| `RUNRAIL_BROWSE_ROOT` | user home; confines the UI file picker |
 
-The UI includes a server-side file picker for project roots, task files, Python executables, and working directories. For deployments exposed beyond a trusted local network, set `RUNRAIL_BROWSE_ROOT` to a narrow mounted project directory. Paths outside that root are rejected.
+Schedules evaluate in UTC; the UI displays them in your local timezone. For deployments reachable beyond localhost, set `RUNRAIL_BROWSE_ROOT` to a narrow directory and place the server behind authentication — RunRail does not yet ship its own.
 
 ## Current limitations
 
-- No remote workers, authentication/RBAC, SSO, visual DAG editor, or Kubernetes executor
-- Minimal SQLite-only task SQL support
-- Basic environment-variable secrets only
-- No parallel task execution inside a workflow
+- Single-machine execution; no remote workers yet
+- No built-in authentication or RBAC
+- SQL tasks execute against SQLite only
+- Secrets are plain environment variables
 
 ## Roadmap
 
-Remote workers and worker tokens; PostgreSQL, SQL Server, Snowflake, and Databricks SQL adapters; a Databricks Jobs adapter; artifact previews; Slack, Teams, email, and webhook notifications; secrets management; RBAC; React DAG visualization; and an optional hosted control plane.
+Warehouse and database adapters, artifact previews, secrets management, API tokens and authentication, and richer run analytics. See open issues for details.
 
 ## Development
 
@@ -126,6 +121,7 @@ Remote workers and worker tokens; PostgreSQL, SQL Server, Snowflake, and Databri
 pip install -e '.[dev]'
 pytest
 ruff check .
+cd frontend && npm install && npm run build   # writes the bundle into src/runrail/web/static
 ```
 
-Licensed under Apache-2.0.
+Licensed under [Apache-2.0](LICENSE).
