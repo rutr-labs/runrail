@@ -18,8 +18,9 @@ Most teams outgrow cron long before they need a distributed orchestrator. RunRai
 - **Auto-pause** — optionally disable a workflow after N consecutive failures instead of failing hundreds of times overnight
 - **Backfills and retries** — queue one run per date over a range; re-run any finished run with identical parameters in one click
 - **Workflows as code** — `runrail export` / `runrail apply` round-trip definitions through YAML for version control and code review
-- **Live logs and artifacts** — streamed stdout/stderr with tail-follow, timestamped notebook outputs, automatic retention cleanup
-- **A UI you'll actually use** — command palette (⌘K), live run timelines, dark and light themes, local-timezone schedule previews
+- **Live dependency graph** — every run renders its task DAG with statuses updating in place as branches execute
+- **Live logs and artifacts** — streamed stdout/stderr with ANSI colors, search, tail-follow, timestamped notebook outputs, automatic retention cleanup
+- **A UI you'll actually use** — command palette (⌘K), Gantt timelines, activity heatmaps, a full-screen wallboard for the team TV, dark and light themes
 
 ## Quick start
 
