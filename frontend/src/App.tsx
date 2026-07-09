@@ -55,6 +55,8 @@ type Workflow = {
   max_concurrent_runs: number;
   project_id?: number | null;
   default_environment_id?: number | null;
+  notify_webhook_url?: string | null;
+  auto_pause_failures?: number | null;
 };
 
 type Project = {
@@ -167,7 +169,8 @@ const stepOf = (part: string): number | null => {
   return match ? Number(match[1]) || null : null;
 };
 
-/** Schedules evaluate in UTC on the server, so occurrences are computed in UTC. */
+/** Schedules evaluate in UTC on the server, so occurrences are computed in UTC.
+ *  Display always converts to the viewer's local timezone. */
 function nextCronOccurrence(expr: string, after = new Date()): Date | null {
   const parts = expr.trim().split(/\s+/);
   if (parts.length !== 5) return null;
@@ -185,10 +188,18 @@ function nextCronOccurrence(expr: string, after = new Date()): Date | null {
     return next;
   }
 
-  // Every N hours: "M */6 * * *"
-  const hourStep = stepOf(hourPart);
   const minute = minutePart === '*' ? 0 : Number(minutePart);
   if (Number.isNaN(minute)) return null;
+
+  // Hourly at a fixed minute: "30 * * * *"
+  if (hourPart === '*' && dowPart === '*') {
+    next.setUTCMinutes(minute, 0, 0);
+    if (next <= after) next.setUTCHours(next.getUTCHours() + 1);
+    return next;
+  }
+
+  // Every N hours: "M */6 * * *"
+  const hourStep = stepOf(hourPart);
   if (hourStep != null && dowPart === '*') {
     next.setUTCMinutes(minute, 0, 0);
     while (next <= after || next.getUTCHours() % hourStep !== 0) {
@@ -214,6 +225,8 @@ function nextCronOccurrence(expr: string, after = new Date()): Date | null {
   return next;
 }
 
+/** Human label for a cron, in the viewer's local timezone so it agrees with the
+ *  timestamps shown next to it (the raw expression stays UTC on the server). */
 function cronLabel(expr: string): string {
   const parts = expr.trim().split(/\s+/);
   if (parts.length !== 5) return expr;
@@ -230,17 +243,16 @@ function cronLabel(expr: string): string {
     return hourStep === 1 ? 'hourly' : `every ${hourStep}h`;
   }
 
-  const minute = minutePart === '*' ? 0 : Number(minutePart);
-  const hour = hourPart === '*' ? 0 : Number(hourPart);
-  if (Number.isNaN(minute) || Number.isNaN(hour)) return expr;
-
-  const time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} UTC`;
+  // Fixed-time schedules: derive the label from a real occurrence so the
+  // local-time conversion (including weekday shifts across midnight) is exact.
+  const next = nextCronOccurrence(expr);
+  if (!next) return expr;
+  const time = next.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  if (hourPart === '*' && dowPart === '*') {
+    return `hourly at :${String(next.getMinutes()).padStart(2, '0')}`;
+  }
   if (dowPart === '*') return `daily at ${time}`;
-
-  const weekday = Number(dowPart);
-  if (Number.isNaN(weekday)) return expr;
-  const labels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  return `every ${labels[weekday] ?? dowPart} at ${time}`;
+  return `every ${next.toLocaleDateString(undefined, { weekday: 'short' })} at ${time}`;
 }
 
 /** Runs with live statuses keep pages fresh even when the WebSocket is unavailable
@@ -609,7 +621,9 @@ function UpcomingList({ flows }: { flows: Workflow[] }) {
         const next = nextCronOccurrence(flow.schedule_cron, cursor);
         if (!next || next.getTime() - now.getTime() > 7 * DAY) break;
         items.push({ flow, next, label: cronLabel(flow.schedule_cron) });
-        cursor = new Date(next.getTime() + 60_000);
+        // +1s, not +1min: a full minute would skip the very next occurrence
+        // of an every-minute schedule.
+        cursor = new Date(next.getTime() + 1000);
       }
     }
     return items.sort((a, b) => a.next.getTime() - b.next.getTime()).slice(0, 8);
@@ -983,6 +997,18 @@ function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const [run, setRun] = useState<Run>();
   const [flow, setFlow] = useState<Workflow>();
+  const navTo = useNavigate();
+  const { toast } = useToast();
+
+  const retry = async () => {
+    try {
+      const fresh = await post<Run>(`/runs/${id}/retry`, {});
+      toast('Run queued with the same parameters');
+      navTo(`/runs/${fresh.id}`);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not retry run', 'error');
+    }
+  };
 
   const refresh = () => { void api<Run>(`/runs/${id}`).then(setRun).catch(() => {}); };
   useEffect(() => { setRun(undefined); refresh(); }, [id]);
@@ -1018,6 +1044,12 @@ function RunDetail() {
           </div>
           <div className="detail-actions">
             <CancelRunButton run={run} onDone={refresh} size="md" />
+            {!LIVE(run.status) && (
+              <Button variant={run.status === 'failed' ? 'primary' : 'ghost'} onClick={retry}
+                      title="Queue a new run with this run's parameters">
+                <RefreshCw size={13} /> {run.status === 'failed' ? 'Retry' : 'Run again'}
+              </Button>
+            )}
             {flow && <Link className="btn btn-ghost btn-md" to={`/workflows/${flow.id}`}><GitBranch size={13} /> Workflow</Link>}
             <StatusBadge value={run.status} />
           </div>
@@ -1546,6 +1578,8 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
         max_concurrent_runs: Number(f.get('concurrency')),
         project_id: projectId ? Number(projectId) : null,
         default_environment_id: environmentId ? Number(environmentId) : null,
+        notify_webhook_url: f.get('webhook') || null,
+        auto_pause_failures: f.get('autopause') ? Number(f.get('autopause')) : null,
       });
       toast('Workflow created');
       done(w.id);
@@ -1559,7 +1593,7 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
         <label className="field"><span>Workflow name</span><input name="name" placeholder="Daily customer refresh" required autoFocus /></label>
         <label className="field"><span>Description <em>Optional</em></span><textarea name="description" placeholder="What does this workflow accomplish?" /></label>
         <div className="field-row">
-          <label className="field"><span>Cron schedule <em>Optional</em></span><input name="cron" placeholder="0 6 * * *" /><small>Times evaluated in UTC.</small></label>
+          <label className="field"><span>Cron schedule <em>Optional</em></span><input name="cron" placeholder="0 6 * * *" /><small>Evaluated in UTC; shown elsewhere in your local time.</small></label>
           <label className="field compact"><span>Max active runs</span><input name="concurrency" type="number" min="1" defaultValue="1" /></label>
         </div>
         <div className="field-row">
@@ -1574,6 +1608,16 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
               <option value="">No environment</option>
               {envs.map(e => <option key={e.id} value={e.id} disabled={!environmentUsable(e)}>{e.name}{e.status !== 'ready' ? ` (${e.status})` : ''}</option>)}
             </select>
+          </label>
+        </div>
+        <div className="field-row">
+          <label className="field"><span>Failure webhook <em>Optional — Slack/Teams URL</em></span>
+            <input name="webhook" placeholder="https://hooks.slack.com/…" />
+            <small>Notified on first failure and on recovery.</small>
+          </label>
+          <label className="field compact"><span>Auto-pause after <em>Optional</em></span>
+            <input name="autopause" type="number" min="1" placeholder="e.g. 5" />
+            <small>Consecutive failures before pausing.</small>
           </label>
         </div>
         <div className="modal-actions">
@@ -1605,6 +1649,8 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
         max_concurrent_runs: Number(f.get('concurrency')),
         project_id: projectId ? Number(projectId) : null,
         default_environment_id: environmentId ? Number(environmentId) : null,
+        notify_webhook_url: f.get('webhook') || null,
+        auto_pause_failures: f.get('autopause') ? Number(f.get('autopause')) : null,
       });
       toast('Workflow saved');
       done();
@@ -1618,7 +1664,7 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
         <label className="field"><span>Workflow name</span><input name="name" defaultValue={w.name} required autoFocus /></label>
         <label className="field"><span>Description <em>Optional</em></span><textarea name="description" defaultValue={w.description || ''} placeholder="What does this workflow accomplish?" /></label>
         <div className="field-row">
-          <label className="field"><span>Cron schedule <em>Optional</em></span><input name="cron" defaultValue={w.schedule_cron || ''} placeholder="0 6 * * *" /><small>Times evaluated in UTC.</small></label>
+          <label className="field"><span>Cron schedule <em>Optional</em></span><input name="cron" defaultValue={w.schedule_cron || ''} placeholder="0 6 * * *" /><small>Evaluated in UTC; shown elsewhere in your local time.</small></label>
           <label className="field compact"><span>Max active runs</span><input name="concurrency" type="number" min="1" defaultValue={w.max_concurrent_runs} /></label>
         </div>
         <div className="field-row">
@@ -1633,6 +1679,16 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
               <option value="">No environment</option>
               {envs.map(e => <option key={e.id} value={e.id} disabled={!environmentUsable(e)}>{e.name}{e.status !== 'ready' ? ` (${e.status})` : ''}</option>)}
             </select>
+          </label>
+        </div>
+        <div className="field-row">
+          <label className="field"><span>Failure webhook <em>Optional — Slack/Teams URL</em></span>
+            <input name="webhook" defaultValue={w.notify_webhook_url || ''} placeholder="https://hooks.slack.com/…" />
+            <small>Notified on first failure and on recovery.</small>
+          </label>
+          <label className="field compact"><span>Auto-pause after <em>Optional</em></span>
+            <input name="autopause" type="number" min="1" defaultValue={w.auto_pause_failures ?? ''} placeholder="e.g. 5" />
+            <small>Consecutive failures before pausing.</small>
           </label>
         </div>
         <label className="field toggle-field">

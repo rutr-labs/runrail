@@ -26,6 +26,15 @@ export function LogViewer({ taskRunId, taskStatus, initialTab = 'stdout', errorM
       .catch(() => { setLog(''); setLoading(false); });
   };
 
+  // Follow the tail while streaming, but never fight the user: only stick to
+  // the bottom if they were already reading the bottom.
+  useEffect(() => {
+    const pre = preRef.current;
+    if (!pre || !isRunning) return;
+    const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 120;
+    if (nearBottom) pre.scrollTop = pre.scrollHeight;
+  }, [log, isRunning]);
+
   useEffect(() => {
     if (!isRunning) {
       loadLog(tab);
@@ -93,9 +102,12 @@ export function LogViewer({ taskRunId, taskStatus, initialTab = 'stdout', errorM
           ? 'Loading…'
           : log.trim()
           ? log
+          : isRunning
+          ? ''
           : tab === 'stderr'
           ? '(no stderr output captured)'
           : '(no stdout output captured)'}
+        {isRunning && !loading && <span className="log-caret" aria-hidden />}
       </pre>
     </div>
   );
