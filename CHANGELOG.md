@@ -2,6 +2,25 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-07-09
+
+### Added
+- Live dependency graph: workflow pages render the task DAG, and run pages overlay live statuses — nodes highlight while running, edges trace as branches execute.
+- Gantt timeline v2: one lane per task with retry attempts as separate bars, a time axis, and detailed hover tooltips; parallel execution is visible at a glance, and running bars grow live against the wall clock.
+- ANSI color rendering in the log viewer (16-color, 256-color, and truecolor), plus in-log search with match navigation and tail-follow.
+- GitHub-style activity heatmap on the dashboard and per workflow, backed by a new `GET /api/stats/daily` aggregation endpoint.
+- Wallboard: a full-screen, auto-refreshing status view at `/wallboard` for a team TV — health verdict, live-run cards with ETA, urgency-sorted tiles, failure streaks, overdue-schedule detection, and a failures strip.
+- Sparkle-fill progress indicator: running progress bars render as a dot-matrix that fills left-to-right with a scattered sparkle as a run advances toward its median duration; reused as a shared `LoadingBar` for environment builds and queued runs.
+- Graceful shutdown: `runrail serve` reports which runs are still executing (with a median-based ETA) on the first Ctrl+C and force-quits on the second; interrupted runs are recovered as failed on the next start so a killed worker never leaves a phantom run holding a concurrency slot.
+
+### Changed
+- Dashboard reorganized: the activity heatmap moved into the hero beside the headline, removing a large half-empty panel.
+- Run and dashboard views refresh reliably while live — a polling regression (the interval was torn down every render) is fixed, so the Gantt and statuses update without a manual reload.
+
+### Fixed
+- Removed a "premium" visual pass (film grain, cursor-tracked specular wash, and a modal depth-of-field blur) that desaturated content and hurt readability; surfaces are flat and legible again in both themes.
+- WebSocket log streams close promptly instead of hanging graceful shutdown, and no longer emit `CancelledError` tracebacks on exit.
+
 ## [0.2.0] — 2026-07-08
 
 ### Added
@@ -23,5 +42,6 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 
 Initial public release: projects, managed Python environments, workflows with dependency-ordered tasks (shell, Python, notebook, SQL), cron scheduling with coalescing, parallel task execution, backfills, retries, live logs, artifacts with retention cleanup, and the bundled web UI.
 
+[0.3.0]: https://github.com/rutr-labs/runrail/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rutr-labs/runrail/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rutr-labs/runrail/releases/tag/v0.1.0
