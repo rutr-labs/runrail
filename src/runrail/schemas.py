@@ -99,6 +99,8 @@ class WorkflowIn(BaseModel):
     max_concurrent_runs: int = Field(default=1, ge=1)
     project_id: int | None = None
     default_environment_id: int | None = None
+    notify_webhook_url: str | None = None
+    auto_pause_failures: int | None = Field(default=None, ge=1)
 
 
 class WorkflowOut(WorkflowIn, ORMModel):

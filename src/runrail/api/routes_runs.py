@@ -5,10 +5,19 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from runrail.api.crud import get_or_404
+from runrail.api.crud import create_run, get_or_404
 from runrail.api.ws import manager as ws_manager
 from runrail.db import get_db
-from runrail.models import Artifact, RunStatus, TaskRun, TaskRunStatus, WorkflowRun, now
+from runrail.models import (
+    Artifact,
+    RunStatus,
+    TaskRun,
+    TaskRunStatus,
+    TriggerType,
+    Workflow,
+    WorkflowRun,
+    now,
+)
 from runrail.schemas import TaskRunOut, WorkflowRunDetail, WorkflowRunOut
 
 router = APIRouter(prefix="/api")
@@ -47,6 +56,22 @@ def cancel_run(object_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(run)
     ws_manager.notify({"type": "run_updated", "id": run.id})
+    return run
+
+
+@router.post("/runs/{object_id}/retry", response_model=WorkflowRunOut, status_code=201)
+def retry_run(object_id: int, db: Session = Depends(get_db)):
+    """Queue a fresh run of the same workflow with this run's parameters.
+
+    Allowed even when the workflow is disabled/auto-paused: 'enabled' only
+    gates the scheduler, and retrying is how you verify a fix before unpausing.
+    """
+    source = get_or_404(db, WorkflowRun, object_id)
+    if source.status in (RunStatus.queued, RunStatus.running):
+        raise HTTPException(409, "Run is still in progress")
+    workflow = get_or_404(db, Workflow, source.workflow_id)
+    run = create_run(db, workflow, TriggerType.manual, dict(source.parameters_json or {}))
+    ws_manager.notify({"type": "run_created", "id": run.id, "workflow_id": run.workflow_id})
     return run
 
 

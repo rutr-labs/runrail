@@ -34,6 +34,7 @@ from runrail.models import (
     WorkflowRun,
     now,
 )
+from runrail.notify import notify_run_outcome
 from runrail.worker.queue import claim_next_run
 from runrail.worker.runners import (
     CommandSpec,
@@ -352,6 +353,11 @@ def execute_workflow_run(db: Session, run: WorkflowRun) -> None:
                .values(finished_at=finished, duration_seconds=duration))
     db.commit()
     _ws_manager.notify({"type": "run_updated", "id": run.id})
+    # Read the status that actually landed (a cancellation may have won the race).
+    landed = db.scalar(select(WorkflowRun.status).where(WorkflowRun.id == run.id))
+    if landed in (RunStatus.success, RunStatus.failed):
+        run.status = landed
+        notify_run_outcome(db, run)
 
 
 def _building_environment(db: Session, run: WorkflowRun) -> Environment | None:

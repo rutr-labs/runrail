@@ -121,6 +121,8 @@ class Workflow(TimestampMixin, Base):
     schedule_cron: Mapped[str | None] = mapped_column(String(255))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     max_concurrent_runs: Mapped[int] = mapped_column(Integer, default=1)
+    notify_webhook_url: Mapped[str | None] = mapped_column(Text)
+    auto_pause_failures: Mapped[int | None] = mapped_column(Integer)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"))
     default_environment_id: Mapped[int | None] = mapped_column(ForeignKey("environments.id", ondelete="SET NULL"))
     tasks: Mapped[list["Task"]] = relationship(cascade="all, delete-orphan", back_populates="workflow")

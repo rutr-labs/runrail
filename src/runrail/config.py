@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # files) are deleted automatically by the scheduler. Essential for
     # high-frequency schedules that create hundreds of runs per day.
     retention_days: int | None = None
+    # Default webhook for run notifications (Slack/Teams incoming webhooks work);
+    # a workflow's own notify_webhook_url overrides this.
+    notify_webhook_url: str | None = None
 
     @property
     def database_url(self) -> str:
