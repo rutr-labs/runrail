@@ -383,6 +383,30 @@ def _building_environment(db: Session, run: WorkflowRun) -> Environment | None:
     return None
 
 
+def recover_interrupted_runs(db: Session) -> int:
+    """Mark runs left 'running' by a killed worker as failed.
+
+    Without this, a force-quit leaves phantom running runs that permanently
+    occupy their workflow's max_concurrent_runs slot — the workflow silently
+    never runs again. Called on worker startup, before claiming anything.
+    """
+    stale = db.scalars(select(WorkflowRun).where(WorkflowRun.status == RunStatus.running)).all()
+    if not stale:
+        return 0
+    finished = now()
+    for run in stale:
+        run.status = RunStatus.failed
+        run.finished_at = finished
+        run.duration_seconds = _duration(run.started_at or run.created_at)
+    db.execute(update(TaskRun)
+               .where(TaskRun.workflow_run_id.in_([run.id for run in stale]),
+                      TaskRun.status == TaskRunStatus.running)
+               .values(status=TaskRunStatus.failed, finished_at=finished,
+                       error_message="Interrupted by worker shutdown"))
+    db.commit()
+    return len(stale)
+
+
 class WorkerService:
     """Claims queued work and executes it on a bounded thread pool.
 
@@ -391,13 +415,31 @@ class WorkerService:
     claim_next_run according to the workflow's max_concurrent_runs. Managed
     environment builds share the pool, so a slow pip install no longer stalls
     every workflow.
+
+    Shutdown is two-stage: the first stop() finishes executing runs and exits;
+    a second stop() (second Ctrl+C) force-quits immediately — interrupted runs
+    are recovered as failed on the next start.
     """
 
     def __init__(self, concurrency: int | None = None):
         self.concurrency = max(1, concurrency or get_settings().worker_concurrency)
         self.running = True
+        self._active: dict[Future, int | None] = {}  # future -> run id (None for env builds)
 
-    def stop(self, *_): self.running = False
+    def stop(self, *_):
+        if not self.running:  # second signal: the user really means it
+            print("\nForce quitting — interrupted runs will be marked failed on the next start.",
+                  flush=True)
+            os._exit(130)
+        self.running = False
+        executing = len(self.executing_run_ids())
+        if executing:
+            print(f"\nStopping: waiting for {executing} executing run(s) to finish. "
+                  "Press Ctrl+C again to force quit.", flush=True)
+
+    def executing_run_ids(self) -> list[int]:
+        return [run_id for future, run_id in self._active.items()
+                if run_id is not None and not future.done()]
 
     @staticmethod
     def _execute_run_job(run_id: int) -> None:
@@ -416,13 +458,18 @@ class WorkerService:
     def run(self, install_signals: bool = True) -> None:
         if install_signals:
             signal.signal(signal.SIGTERM, self.stop); signal.signal(signal.SIGINT, self.stop)
-        active: set[Future] = set()
+        with SessionLocal() as db:
+            recovered = recover_interrupted_runs(db)
+            if recovered:
+                print(f"Recovered {recovered} run(s) interrupted by a previous shutdown "
+                      "(marked failed).", flush=True)
         with ThreadPoolExecutor(max_workers=self.concurrency,
                                 thread_name_prefix="runrail-worker") as pool:
             while self.running:
-                active = {future for future in active if not future.done()}
+                self._active = {future: run_id for future, run_id in self._active.items()
+                                if not future.done()}
                 claimed = False
-                if len(active) < self.concurrency:
+                if len(self._active) < self.concurrency:
                     # Claim in a short-lived session; the job threads open their own.
                     with SessionLocal() as db:
                         environment = claim_next_environment(db)
@@ -439,11 +486,12 @@ class WorkerService:
                         environment_id = environment.id if environment else None
                         run_id = run.id if run else None
                     if environment_id is not None:
-                        active.add(pool.submit(self._provision_job, environment_id))
+                        self._active[pool.submit(self._provision_job, environment_id)] = None
                         claimed = True
                     elif run_id is not None:
                         _ws_manager.notify({"type": "run_updated", "id": run_id})
-                        active.add(pool.submit(self._execute_run_job, run_id))
+                        self._active[pool.submit(self._execute_run_job, run_id)] = run_id
                         claimed = True
                 if not claimed:
                     time.sleep(get_settings().worker_poll_seconds)
+            # Pool context exit waits for executing runs to finish (stage one).

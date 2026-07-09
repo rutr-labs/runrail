@@ -23,7 +23,8 @@ async def global_ws(ws: WebSocket) -> None:
     try:
         while True:
             await ws.receive_text()  # keeps the connection alive; client may send pings
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        # Client left or the server is shutting down — nothing to report.
         manager.disconnect(ws)
 
 
@@ -60,9 +61,16 @@ async def stream_logs(ws: WebSocket, task_run_id: int, stream: str = "stdout") -
                             await ws.send_text(text)
             if task_run.status in _TERMINAL:
                 break
-            await asyncio.sleep(0.25)
-    except WebSocketDisconnect:
-        pass
+            # Wait on the socket instead of sleeping blind: this raises
+            # WebSocketDisconnect the moment the client leaves or the server
+            # closes connections during shutdown — a bare sleep loop kept these
+            # handlers alive forever and hung graceful shutdown.
+            try:
+                await asyncio.wait_for(ws.receive_text(), timeout=0.25)
+            except TimeoutError:
+                pass
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        pass  # client gone or server shutting down — just clean up quietly
     except Exception:
         pass
     finally:

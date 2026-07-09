@@ -1,5 +1,8 @@
+import os
+import signal
 import threading
-from datetime import date
+import time
+from datetime import date, datetime, timezone
 
 import typer
 import uvicorn
@@ -8,7 +11,7 @@ from sqlalchemy import select
 from runrail.api.crud import create_backfill, create_run
 from runrail.config import get_settings
 from runrail.db import SessionLocal, init_db
-from runrail.models import TriggerType, Workflow, WorkflowRun
+from runrail.models import RunStatus, TriggerType, Workflow, WorkflowRun
 from runrail.scheduler.service import SchedulerService
 from runrail.worker.service import WorkerService
 
@@ -59,6 +62,64 @@ def scheduler() -> None:
     init_db(); typer.echo("RunRail scheduler started"); SchedulerService().run_forever()
 
 
+def _executing_summary(worker_service: WorkerService) -> list[str]:
+    """Human lines for what is still executing, with a median-based ETA."""
+    run_ids = worker_service.executing_run_ids()
+    if not run_ids:
+        return ["Waiting for the worker to finish up… (Ctrl+C to force quit)"]
+    lines = []
+    with SessionLocal() as db:
+        for run_id in run_ids:
+            run = db.get(WorkflowRun, run_id)
+            if run is None:
+                continue
+            workflow = db.get(Workflow, run.workflow_id)
+            name = workflow.name if workflow else f"workflow {run.workflow_id}"
+            started = run.started_at or run.created_at
+            elapsed = (datetime.now(timezone.utc).replace(tzinfo=None) - started).total_seconds()
+            durations = sorted(d for d in db.scalars(
+                select(WorkflowRun.duration_seconds).where(
+                    WorkflowRun.workflow_id == run.workflow_id,
+                    WorkflowRun.status == RunStatus.success,
+                    WorkflowRun.duration_seconds.is_not(None),
+                ).order_by(WorkflowRun.id.desc()).limit(5)
+            ) if d is not None)
+            median = durations[len(durations) // 2] if durations else None
+            eta = (f"~{max(0.0, median - elapsed):.0f}s remaining (median {median:.0f}s)"
+                   if median is not None else f"{elapsed:.0f}s elapsed")
+            lines.append(f"  run #{run.id} of '{name}' — {eta}")
+    if lines:
+        lines.append("Waiting for the run(s) above to finish. Press Ctrl+C again to force quit.")
+    return lines or ["Waiting for the worker to finish up… (Ctrl+C to force quit)"]
+
+
+def _drain_worker(worker_service: WorkerService, thread: threading.Thread) -> None:
+    """Wait for executing runs after shutdown begins; a second Ctrl+C force-quits."""
+    def force(*_):
+        typer.echo("\nForce quitting — interrupted runs will be marked failed on the next start.")
+        os._exit(130)
+    # Explicit handler: uvicorn/asyncio leave SIGINT dispositions in an
+    # unreliable state after their own shutdown dance.
+    try:
+        signal.signal(signal.SIGINT, force)
+        signal.signal(signal.SIGTERM, force)
+    except ValueError:
+        pass  # not the main thread; KeyboardInterrupt fallback below still applies
+    try:
+        last_note = 0.0
+        while thread.is_alive():
+            thread.join(timeout=1)
+            if not thread.is_alive():
+                break
+            if time.monotonic() - last_note >= 5:
+                last_note = time.monotonic()
+                for line in _executing_summary(worker_service):
+                    typer.echo(line)
+        typer.echo("RunRail stopped cleanly.")
+    except KeyboardInterrupt:
+        force()
+
+
 @app.command()
 def serve(host: str | None = None, port: int | None = None) -> None:
     """Start API, UI, scheduler, and local worker together."""
@@ -70,8 +131,12 @@ def serve(host: str | None = None, port: int | None = None) -> None:
     typer.echo(f"RunRail is ready at http://{host or settings.host}:{port or settings.port}")
     try:
         uvicorn.run("runrail.api.app:app", host=host or settings.host, port=port or settings.port)
+    except KeyboardInterrupt:
+        pass  # uvicorn re-raises the captured SIGINT after its own shutdown
     finally:
-        worker_service.stop(); scheduler_service.shutdown(); thread.join(timeout=5)
+        scheduler_service.shutdown()
+        worker_service.stop()
+        _drain_worker(worker_service, thread)
 
 
 @app.command("run")
