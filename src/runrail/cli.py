@@ -99,6 +99,54 @@ def backfill(name: str, from_date: str = typer.Option(..., "--from"),
 
 
 @app.command()
+def export(name: str | None = typer.Argument(None, help="Workflow name; omit for all"),
+           output: str | None = typer.Option(None, "--output", "-o",
+                                             help="Write to a file instead of stdout")) -> None:
+    """Export workflows and their tasks as YAML (projects/environments by name)."""
+    import yaml
+
+    from runrail.workflow_io import export_workflows
+
+    init_db()
+    with SessionLocal() as db:
+        try:
+            data = export_workflows(db, name)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    if output:
+        from pathlib import Path
+        Path(output).write_text(text)
+        typer.echo(f"Wrote {len(data['workflows'])} workflow(s) to {output}")
+    else:
+        typer.echo(text)
+
+
+@app.command()
+def apply(file: str = typer.Argument(..., help="YAML file produced by 'runrail export'")) -> None:
+    """Create or update workflows from a YAML file (declarative upsert by name)."""
+    from pathlib import Path
+
+    import yaml
+
+    from runrail.workflow_io import apply_workflows
+
+    init_db()
+    try:
+        data = yaml.safe_load(Path(file).read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        raise typer.BadParameter(f"Could not read {file}: {exc}") from exc
+    with SessionLocal() as db:
+        try:
+            summary = apply_workflows(db, data or {})
+        except (ValueError, KeyError) as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    for verb in ("created", "updated"):
+        for wf_name in summary[verb]:
+            typer.echo(f"{verb}: {wf_name}")
+
+
+@app.command()
 def cleanup(older_than_days: int = typer.Option(30, "--older-than-days", min=1,
                                                 help="Delete finished runs older than this"),
             dry_run: bool = typer.Option(False, "--dry-run",
