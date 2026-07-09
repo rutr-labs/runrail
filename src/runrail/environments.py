@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -117,6 +118,37 @@ def validate_external(environment: Environment) -> None:
     environment.last_error = None
 
 
+def _replace_directory(src: Path, dst: Path, attempts: int = 6, delay: float = 0.5) -> None:
+    """Move a directory, retrying transient locks before falling back to copy+delete.
+
+    On Windows, a rename of a venv directory can fail with WinError 5 (access
+    denied) even though nothing in the app holds the files open: OneDrive/other
+    sync clients and antivirus real-time scanning routinely lock the hundreds of
+    small files a fresh `pip install` just wrote for a moment after the writer
+    process exits. Retrying with backoff clears almost all of these; a copy+delete
+    fallback survives the rest, at the cost of a slower move.
+    """
+    last_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            src.rename(dst)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt < attempts - 1:
+                time.sleep(delay * (attempt + 1))
+    try:
+        shutil.copytree(src, dst)
+    except OSError as exc:
+        shutil.rmtree(dst, ignore_errors=True)
+        raise RuntimeError(
+            f"Could not move '{src}' to '{dst}': {last_error}. On Windows this is usually "
+            "OneDrive or antivirus locking files inside the environment folder — try setting "
+            "RUNRAIL_HOME to a path outside any synced folder (e.g. not under OneDrive)."
+        ) from exc
+    shutil.rmtree(src, ignore_errors=True)
+
+
 def provision_managed(db: Session, environment: Environment) -> Environment:
     if not environment.managed:
         raise ValueError("Only managed environments can be provisioned")
@@ -161,8 +193,8 @@ def provision_managed(db: Session, environment: Environment) -> Environment:
         _, version = validate_python(str(python))
         if target.exists():
             backup = target.with_name(f".{target.name}.previous-{uuid.uuid4().hex[:8]}")
-            target.rename(backup)
-        staging.rename(target)
+            _replace_directory(target, backup)
+        _replace_directory(staging, target)
         # pip's shebang still points to the staging path after the rename; reinstalling
         # pip via the venv's own python rewrites the script with the correct path.
         pip_fixup = _run(
@@ -182,7 +214,7 @@ def provision_managed(db: Session, environment: Environment) -> Environment:
         environment.last_error = None
     except Exception as exc:
         if backup and backup.exists() and not target.exists():
-            backup.rename(target)
+            _replace_directory(backup, target)
         environment.status = (
             EnvironmentStatus.degraded if had_working_environment else EnvironmentStatus.failed
         )
