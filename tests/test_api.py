@@ -221,3 +221,26 @@ def test_managed_environment_runs_python_with_package_imports(client, tmp_path):
         db.refresh(run)
         assert run.status.value == "success"
         assert Path(run.task_runs[0].stdout_log_path).read_text() == "environment works with src layout\n"
+
+
+def test_daily_stats_aggregates_runs_by_outcome(client):
+    workflow = client.post("/api/workflows", json={
+        "name": "stats-wf", "enabled": True, "max_concurrent_runs": 1,
+    }).json()
+    client.post(f"/api/workflows/{workflow['id']}/tasks", json={
+        "name": "ok", "task_type": "shell", "command": "printf hi",
+        "depends_on_json": [], "retries": 0, "retry_delay_seconds": 0,
+    })
+    for _ in range(2):
+        client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
+        build = __import__("runrail.db", fromlist=["SessionLocal"])
+        from runrail.worker.queue import claim_next_run
+        from runrail.worker.service import execute_workflow_run
+        with build.SessionLocal() as db:
+            execute_workflow_run(db, claim_next_run(db))
+
+    stats = client.get("/api/stats/daily", params={"days": 7}).json()
+    assert len(stats) == 1
+    assert stats[0]["success"] == 2 and stats[0]["failed"] == 0
+    scoped = client.get("/api/stats/daily", params={"workflow_id": workflow["id"] + 1}).json()
+    assert scoped == []

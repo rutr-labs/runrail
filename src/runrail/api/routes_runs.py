@@ -1,8 +1,9 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, PlainTextResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from runrail.api.crud import create_run, get_or_404
@@ -106,6 +107,28 @@ def stdout(object_id: int, tail_bytes: int | None = Query(None, ge=1),
 def stderr(object_id: int, tail_bytes: int | None = Query(None, ge=1),
            db: Session = Depends(get_db)):
     return log_response(get_or_404(db, TaskRun, object_id), "stderr_log_path", tail_bytes)
+
+
+@router.get("/stats/daily")
+def daily_stats(days: int = Query(112, ge=1, le=366), workflow_id: int | None = None,
+                db: Session = Depends(get_db)):
+    """Per-day run counts by outcome, for activity heatmaps."""
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+    day = func.date(WorkflowRun.created_at)
+    stmt = (select(day.label("day"), WorkflowRun.status, func.count())
+            .where(WorkflowRun.created_at >= since)
+            .group_by(day, WorkflowRun.status))
+    if workflow_id:
+        stmt = stmt.where(WorkflowRun.workflow_id == workflow_id)
+    buckets: dict[str, dict] = {}
+    for value, status, count in db.execute(stmt):
+        entry = buckets.setdefault(str(value), {"date": str(value), "success": 0, "failed": 0, "other": 0})
+        key = getattr(status, "value", str(status))
+        if key in ("success", "failed"):
+            entry[key] += count
+        else:
+            entry["other"] += count
+    return sorted(buckets.values(), key=lambda item: item["date"])
 
 
 @router.get("/artifacts")
