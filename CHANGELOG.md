@@ -8,6 +8,7 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 - Aggregated stats endpoints: `GET /api/stats/summary` computes the dashboard and run-history metrics (live counts, 24-hour totals, 7-day success rate, average duration) in SQL, so the numbers stay accurate no matter how much history the browser has loaded.
 - Activity heatmap range selector: 4, 8, or 16 weeks or 6 months on the dashboard and workflow pages, remembered across sessions. The grid runs Monday through Sunday with every weekday labelled.
 - Task timeouts can be entered in seconds, minutes, hours, or days; values are stored as seconds and shown in the friendliest unit.
+- First-run import: when `runrail serve` targets a brand-new home from an interactive terminal, it offers to bring over an existing setup — either a previous RunRail data directory (database, logs, artifacts, and environments are copied after an integrity check, then upgraded by the normal startup migrations) or a workflows YAML from `runrail export`. Also available any time as `runrail import <path>`; it never overwrites an existing database.
 
 ### Changed
 - Running progress bars redesigned as a comet: the fill grows with progress behind a bright twinkling head and leaves a dimmer, still-lit dot trail. Past the median duration the trail gradually shifts toward amber — fully amber at 135% — while the head holds its color until it catches up. One reusable treatment covers the wallboard, the run timeline, and indeterminate loaders.

@@ -1,8 +1,10 @@
 import os
 import signal
+import sys
 import threading
 import time
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import typer
 import uvicorn
@@ -37,6 +39,87 @@ def init() -> None:
     """Create RunRail's home, database, log, and artifact directories."""
     init_db()
     typer.echo(f"RunRail initialized at {get_settings().home.resolve()}")
+
+
+def _apply_yaml(file: Path) -> None:
+    """Apply a workflows YAML (shared by 'apply', 'import', and first-run)."""
+    import yaml
+
+    from runrail.workflow_io import apply_workflows
+
+    init_db()
+    try:
+        data = yaml.safe_load(file.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        raise typer.BadParameter(f"Could not read {file}: {exc}") from exc
+    with SessionLocal() as db:
+        try:
+            summary = apply_workflows(db, data or {})
+        except (ValueError, KeyError) as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    for verb in ("created", "updated"):
+        for wf_name in summary[verb]:
+            typer.echo(f"{verb}: {wf_name}")
+
+
+def _import_source(source: Path) -> None:
+    """Import a previous data directory or a workflows YAML into this home.
+
+    Directories are copied before init_db so the normal startup migrations
+    upgrade the imported database; YAML files need the schema first, so there
+    the order flips.
+    """
+    from runrail.importer import ImportSourceError, import_home
+
+    source = source.expanduser()
+    if source.is_dir():
+        settings = get_settings()
+        try:
+            lines = import_home(source, settings.home, on_progress=typer.echo)
+        except ImportSourceError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        init_db()  # upgrades the imported database to the current schema
+        typer.echo(f"Imported {source.expanduser().resolve()} → {settings.home.resolve()}")
+        for line in lines:
+            typer.echo(f"  {line}")
+    elif source.is_file():
+        _apply_yaml(source)
+    else:
+        raise typer.BadParameter(f"{source} does not exist")
+
+
+@app.command("import")
+def import_data(source: str = typer.Argument(
+        ..., help="A previous RunRail data directory, or a YAML file from 'runrail export'")) -> None:
+    """Import an existing RunRail data directory or workflows YAML into this home."""
+    _import_source(Path(source))
+
+
+def _offer_first_run_import() -> None:
+    """On a brand-new home, offer to bring over an existing setup (TTY only)."""
+    from runrail.importer import is_fresh_home
+
+    settings = get_settings()
+    if not is_fresh_home(settings) or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    typer.echo(f"Setting up a new RunRail workspace at {settings.home.resolve()}")
+    typer.echo("  Have an existing setup? Enter the path to its data directory")
+    typer.echo("  (e.g. ./.runrail) or a workflows YAML from 'runrail export'.")
+    typer.echo("  Press Enter to start fresh.")
+    try:
+        answer = typer.prompt("Import from", default="", show_default=False).strip()
+    except typer.Abort:  # Ctrl+C / Ctrl+D at the offer means "no import", not "don't start"
+        typer.echo("")
+        return
+    if not answer:
+        return
+    try:
+        _import_source(Path(answer))
+    except typer.BadParameter as exc:
+        typer.echo(f"Import failed: {exc.message}", err=True)
+        typer.echo("Fix the source and retry with 'runrail import <path>', or run "
+                   "'runrail serve' again to start fresh.", err=True)
+        raise typer.Exit(1) from exc
 
 
 @app.command()
@@ -123,6 +206,7 @@ def _drain_worker(worker_service: WorkerService, thread: threading.Thread) -> No
 @app.command()
 def serve(host: str | None = None, port: int | None = None) -> None:
     """Start API, UI, scheduler, and local worker together."""
+    _offer_first_run_import()
     init_db(); settings = get_settings()
     worker_service = WorkerService(); scheduler_service = SchedulerService()
     thread = threading.Thread(target=worker_service.run, kwargs={"install_signals": False},
@@ -180,7 +264,6 @@ def export(name: str | None = typer.Argument(None, help="Workflow name; omit for
             raise typer.BadParameter(str(exc)) from exc
     text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
     if output:
-        from pathlib import Path
         Path(output).write_text(text)
         typer.echo(f"Wrote {len(data['workflows'])} workflow(s) to {output}")
     else:
@@ -190,25 +273,7 @@ def export(name: str | None = typer.Argument(None, help="Workflow name; omit for
 @app.command()
 def apply(file: str = typer.Argument(..., help="YAML file produced by 'runrail export'")) -> None:
     """Create or update workflows from a YAML file (declarative upsert by name)."""
-    from pathlib import Path
-
-    import yaml
-
-    from runrail.workflow_io import apply_workflows
-
-    init_db()
-    try:
-        data = yaml.safe_load(Path(file).read_text())
-    except (OSError, yaml.YAMLError) as exc:
-        raise typer.BadParameter(f"Could not read {file}: {exc}") from exc
-    with SessionLocal() as db:
-        try:
-            summary = apply_workflows(db, data or {})
-        except (ValueError, KeyError) as exc:
-            raise typer.BadParameter(str(exc)) from exc
-    for verb in ("created", "updated"):
-        for wf_name in summary[verb]:
-            typer.echo(f"{verb}: {wf_name}")
+    _apply_yaml(Path(file))
 
 
 @app.command()

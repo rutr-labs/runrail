@@ -47,6 +47,7 @@ runrail run daily-refresh --param region=ca      # queue a manual run
 runrail backfill daily-refresh --from 2026-06-01 --to 2026-06-30
 runrail export -o workflows.yml                  # workflows as version-controllable YAML
 runrail apply workflows.yml                      # declarative upsert by name
+runrail import ~/old/.runrail                    # bring a previous setup into this home
 runrail cleanup --older-than-days 30 --dry-run   # prune old runs, logs, artifacts
 runrail status
 
