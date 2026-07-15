@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef, useState } from 'react';
+import { CSSProperties, ReactNode, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   CheckCircle2, XCircle, Loader2, Clock, CircleDot,
@@ -10,14 +10,19 @@ import clsx from 'clsx';
 const REDUCED_MOTION = typeof window !== 'undefined'
   && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
-/** Eases a number from its previous value to `target` (live metrics tick smoothly). */
-function useCountUp(target: number, duration = 650): number {
-  const fromRef = useRef(0);
-  const [value, setValue] = useState(REDUCED_MOTION ? target : 0);
+/** Eases from the previous value to `target` on genuine live changes.
+ *  Shows the value immediately on first load / when coming from 0, so metrics
+ *  never dwell at 0 while data arrives (which also kept breaking screenshots). */
+function useCountUp(target: number, duration = 600): number {
+  const fromRef = useRef(target);
+  const [value, setValue] = useState(target);
   useEffect(() => {
-    if (REDUCED_MOTION) { setValue(target); return; }
     const from = fromRef.current;
-    if (from === target) { setValue(target); return; }
+    if (REDUCED_MOTION || from === target || from === 0) {
+      fromRef.current = target;
+      setValue(target);
+      return;
+    }
     let raf = 0;
     const start = performance.now();
     const tick = (now: number) => {
@@ -25,10 +30,10 @@ function useCountUp(target: number, duration = 650): number {
       const eased = 1 - Math.pow(1 - progress, 3);
       setValue(Math.round(from + (target - from) * eased));
       if (progress < 1) raf = requestAnimationFrame(tick);
-      else fromRef.current = target;
+      else { fromRef.current = target; setValue(target); }
     };
     raf = requestAnimationFrame(tick);
-    return () => { cancelAnimationFrame(raf); fromRef.current = target; };
+    return () => cancelAnimationFrame(raf);
   }, [target, duration]);
   return value;
 }
@@ -157,13 +162,17 @@ export function MetricCard({
 }
 
 /* ─── Loading bar ─────────────────────────────────────
-   The twinkling dot-matrix as a reusable indeterminate loader. */
-export function LoadingBar({ tone, size, className }: {
+   The comet dot-matrix as a reusable indeterminate loader.
+   `overRatio` (0..1) optionally crystallizes it toward amber when the
+   awaited thing is running past its expected duration. */
+export function LoadingBar({ tone, size, className, overRatio }: {
   tone?: 'running' | 'warning' | 'success'; size?: 'sm'; className?: string;
+  overRatio?: number;
 }) {
   return (
     <div className={clsx('dot-loader', size, tone && tone !== 'running' && tone, className)}
-         role="progressbar" aria-label="In progress" />
+         role="progressbar" aria-label="In progress"
+         style={overRatio ? { '--over-ratio': Math.min(1, Math.max(0, overRatio)).toFixed(3) } as CSSProperties : undefined} />
   );
 }
 

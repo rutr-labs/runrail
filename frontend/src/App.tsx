@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -144,6 +144,37 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 }
+
+/** Split a stored second-count into the largest whole unit for editing. */
+function splitTimeout(seconds?: number | null): { value: string; unit: string } {
+  if (!seconds) return { value: '', unit: '1' };
+  for (const unit of [86400, 3600, 60]) {
+    if (seconds % unit === 0) return { value: String(seconds / unit), unit: String(unit) };
+  }
+  return { value: String(seconds), unit: '1' };
+}
+
+/** Render a number input + unit selector that submit as `timeout` and `timeout_unit`. */
+function TimeoutField({ seconds }: { seconds?: number | null }) {
+  const initial = splitTimeout(seconds);
+  return (
+    <label className="field"><span>Timeout <em>Optional — kills the task if it runs past this</em></span>
+      <div className="path-input">
+        <input name="timeout" type="number" min="1" placeholder="e.g. 30"
+               defaultValue={initial.value} style={{ flex: 1 }} />
+        <select name="timeout_unit" defaultValue={initial.unit} style={{ maxWidth: 120 }}>
+          <option value="1">seconds</option>
+          <option value="60">minutes</option>
+          <option value="3600">hours</option>
+          <option value="86400">days</option>
+        </select>
+      </div>
+    </label>
+  );
+}
+
+const timeoutSeconds = (f: FormData): number | null =>
+  f.get('timeout') ? Number(f.get('timeout')) * Number(f.get('timeout_unit') || 1) : null;
 
 const environmentUsable = (e: Env) => e.status === 'ready' || e.status === 'degraded';
 
@@ -711,24 +742,30 @@ function UpcomingList({ flows }: { flows: Workflow[] }) {
   );
 }
 
-function WeeklyChart({ runs }: { runs: Run[] }) {
+type DailyStat = { date: string; success: number; failed: number; other: number };
+
+type Summary = {
+  running: number; queued: number; live: number;
+  runs_24h: number; succeeded_24h: number; failed_24h: number;
+  avg_duration_24h: number | null;
+  done_7d: number; success_7d: number; success_rate_7d: number | null;
+};
+
+function WeeklyChart() {
+  // Aggregated server-side so the counts stay correct no matter how many runs
+  // a day holds (a client-side bucket of a capped /runs fetch under-counts).
+  const [stats, setStats] = useState<Record<string, DailyStat>>({});
+  useEffect(() => {
+    api<DailyStat[]>('/stats/daily?days=7')
+      .then(rows => setStats(Object.fromEntries(rows.map(r => [r.date, r])))).catch(() => {});
+  }, []);
+  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date();
-    d.setDate(d.getDate() - 6 + i);
-    d.setHours(0, 0, 0, 0);
-    const label = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];
-    const start = d.getTime();
-    const dr = runs.filter(r => {
-      const t = new Date(r.created_at).getTime();
-      return t >= start && t < start + DAY;
-    });
-    return {
-      label, key: start,
-      success: dr.filter(r => r.status === 'success').length,
-      failed: dr.filter(r => r.status === 'failed').length,
-      other: dr.filter(r => r.status !== 'success' && r.status !== 'failed').length,
-      total: dr.length,
-    };
+    d.setUTCDate(d.getUTCDate() - 6 + i);
+    const key = d.toISOString().slice(0, 10);
+    const s = stats[key] ?? { success: 0, failed: 0, other: 0 };
+    return { label: names[d.getUTCDay()], key, ...s, total: s.success + s.failed + s.other };
   });
   const max = Math.max(...days.map(d => d.total), 1);
   return (
@@ -757,37 +794,48 @@ function WeeklyChart({ runs }: { runs: Run[] }) {
 function Dashboard() {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [flows, setFlows] = useState<Workflow[] | null>(null);
+  const [summary, setSummary] = useState<Summary | null>(null);
   const navTo = useNavigate();
   const { toast } = useToast();
 
+  // Lists (recent table, live, failures, sparklines) come from a small recent
+  // fetch; headline metrics come from the server-aggregated /stats/summary so
+  // they don't under-count once a workflow overflows the fetch limit.
+  const loadStats = () => {
+    void api<Run[]>('/runs?limit=100').then(setRuns).catch(() => {});
+    void api<Summary>('/stats/summary').then(setSummary).catch(() => {});
+  };
   const load = () => {
-    api<Run[]>('/runs?limit=300').then(setRuns).catch(() => setRuns([]));
+    api<Run[]>('/runs?limit=100').then(setRuns).catch(() => setRuns([]));
     api<Workflow[]>('/workflows').then(setFlows).catch(() => setFlows([]));
+    api<Summary>('/stats/summary').then(setSummary).catch(() => {});
   };
   useEffect(() => { load(); }, []);
   useEffect(() => {
-    const refresh = () => void api<Run[]>('/runs?limit=300').then(setRuns).catch(() => {});
-    const u1 = rrws.on('run_created', refresh);
-    const u2 = rrws.on('run_updated', refresh);
-    const u3 = rrws.on('task_run_updated', refresh);
+    const u1 = rrws.on('run_created', loadStats);
+    const u2 = rrws.on('run_updated', loadStats);
+    const u3 = rrws.on('task_run_updated', loadStats);
     return () => { u1(); u2(); u3(); };
   }, []);
-  useLiveRefresh(Boolean(runs?.some(r => LIVE(r.status))), () => void api<Run[]>('/runs?limit=300').then(setRuns).catch(() => {}));
+  useLiveRefresh(Boolean(runs?.some(r => LIVE(r.status))), loadStats);
 
   if (runs === null || flows === null) {
     return <div><div style={{ height: 28, width: 160, marginBottom: 24 }} className="skeleton-line" /><SkeletonCard /><SkeletonCard /></div>;
   }
 
   const liveRuns = runs.filter(r => LIVE(r.status)).slice(0, 6);
-  const recent24h = runs.filter(r => Date.now() - new Date(r.created_at).getTime() < DAY);
-  const failed24h = recent24h.filter(r => r.status === 'failed').length;
-  const done7d = runs.filter(r => (r.status === 'success' || r.status === 'failed')
-    && Date.now() - new Date(r.created_at).getTime() < 7 * DAY);
-  const successRate = done7d.length ? Math.round(done7d.filter(r => r.status === 'success').length / done7d.length * 100) : null;
-  const withDuration = recent24h.filter(r => r.duration_seconds != null);
-  const avgDuration = withDuration.length ? withDuration.reduce((sum, r) => sum + (r.duration_seconds ?? 0), 0) / withDuration.length : null;
   const failures = runs.filter(r => r.status === 'failed').slice(0, 4);
   const empty = flows.length === 0;
+  // Server-aggregated headline metrics (fall back to the recent fetch until loaded).
+  const liveCount = summary?.live ?? liveRuns.length;
+  const runningCount = summary?.running ?? liveRuns.filter(r => r.status === 'running').length;
+  const queuedCount = summary?.queued ?? liveRuns.filter(r => r.status === 'queued').length;
+  const runs24h = summary?.runs_24h ?? 0;
+  const succeeded24h = summary?.succeeded_24h ?? 0;
+  const failed24h = summary?.failed_24h ?? 0;
+  const done7d = summary?.done_7d ?? 0;
+  const successRate = summary?.success_rate_7d ?? null;
+  const avgDuration = summary?.avg_duration_24h ?? null;
 
   const runNow = async (id: number) => {
     try {
@@ -807,7 +855,7 @@ function Dashboard() {
           <p className="dashboard-sub">
             {empty
               ? 'Schedules, retries, logs, and history for the scripts you already have.'
-              : `${flows.filter(w => w.enabled).length} active workflow${flows.filter(w => w.enabled).length === 1 ? '' : 's'} · ${recent24h.length} run${recent24h.length === 1 ? '' : 's'} in the last 24 hours`}
+              : `${flows.filter(w => w.enabled).length} active workflow${flows.filter(w => w.enabled).length === 1 ? '' : 's'} · ${runs24h} run${runs24h === 1 ? '' : 's'} in the last 24 hours`}
           </p>
           <div className="dashboard-cta-row">
             <Button onClick={() => navTo('/workflows')}><GitBranch size={14} /> {empty ? 'Create a workflow' : 'View workflows'}</Button>
@@ -815,12 +863,12 @@ function Dashboard() {
           </div>
           {!empty && (
             <div className="dash-status-bar">
-              <span className={`dash-stat${liveRuns.some(r => r.status === 'running') ? ' stat-running' : ''}`}>
-                <Activity size={12} /> {liveRuns.filter(r => r.status === 'running').length} running
+              <span className={`dash-stat${runningCount ? ' stat-running' : ''}`}>
+                <Activity size={12} /> {runningCount} running
               </span>
               <span className="dash-sep">·</span>
-              <span className={`dash-stat${liveRuns.some(r => r.status === 'queued') ? ' stat-queued' : ''}`}>
-                <Clock size={12} /> {liveRuns.filter(r => r.status === 'queued').length} queued
+              <span className={`dash-stat${queuedCount ? ' stat-queued' : ''}`}>
+                <Clock size={12} /> {queuedCount} queued
               </span>
               <span className="dash-sep">·</span>
               <span className="dash-stat"><AlertTriangle size={12} /> {failed24h} failed today</span>
@@ -830,10 +878,10 @@ function Dashboard() {
         {!empty && (
           <div className="dashboard-hero-aside">
             <div className="dashboard-hero-aside-head">
-              <span>Activity · 16 weeks</span>
+              <span>Activity</span>
               <Link className="panel-link" to="/wallboard">Wallboard →</Link>
             </div>
-            <RunHeatmap weeks={16} />
+            <RunHeatmap selectable />
           </div>
         )}
       </div>
@@ -841,16 +889,16 @@ function Dashboard() {
       {empty ? <QuickStart /> : (
         <>
           <div className="metric-grid dashboard-metric-grid">
-            <MetricCard icon={<Activity size={18} />} label="Live now" value={liveRuns.length} tone={liveRuns.length ? 'running' : 'default'} note="Running and queued" />
-            <MetricCard icon={<Zap size={18} />} label="Runs · 24h" value={recent24h.length} note={`${recent24h.filter(r => r.status === 'success').length} succeeded`} />
-            <MetricCard icon={<CheckCircle2 size={18} />} label="Success rate · 7d" value={successRate != null ? `${successRate}%` : '—'} tone={successRate != null && successRate < 80 ? 'warning' : 'success'} note={`${done7d.length} completed runs`} />
+            <MetricCard icon={<Activity size={18} />} label="Live now" value={liveCount} tone={liveCount ? 'running' : 'default'} note="Running and queued" />
+            <MetricCard icon={<Zap size={18} />} label="Runs · 24h" value={runs24h} note={`${succeeded24h} succeeded`} />
+            <MetricCard icon={<CheckCircle2 size={18} />} label="Success rate · 7d" value={successRate != null ? `${successRate}%` : '—'} tone={successRate != null && successRate < 80 ? 'warning' : 'success'} note={`${done7d} completed runs`} />
             <MetricCard icon={<AlertTriangle size={18} />} label="Failures · 24h" value={failed24h} tone={failed24h ? 'danger' : 'default'} note={failed24h ? 'Needs attention' : 'All clear'} />
             <MetricCard icon={<Clock size={18} />} label="Avg duration · 24h" value={avgDuration != null ? formatDuration(avgDuration) : '—'} note="Completed runs" />
           </div>
 
           <div className="dashboard-panels">
             <div>
-              <WeeklyChart runs={runs} />
+              <WeeklyChart />
               <div className="panel dashboard-lead-panel">
                 <div className="panel-head">
                   <div><h2>Recent runs</h2><p>The latest executions across all workflows</p></div>
@@ -948,24 +996,29 @@ function QuickStart() {
 function Runs() {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [flows, setFlows] = useState<Workflow[]>([]);
+  const [summary, setSummary] = useState<Summary | null>(null);
   const [status, setStatus] = useState('');
   const [workflowId, setWorkflowId] = useState('');
   const [trigger, setTrigger] = useState('');
   const [query, setQuery] = useState('');
 
+  const loadStats = () => {
+    void api<Run[]>('/runs?limit=500').then(setRuns).catch(() => {});
+    void api<Summary>('/stats/summary').then(setSummary).catch(() => {});
+  };
   const load = () => {
     api<Run[]>('/runs?limit=500').then(setRuns).catch(() => setRuns([]));
     api<Workflow[]>('/workflows').then(setFlows).catch(() => {});
+    api<Summary>('/stats/summary').then(setSummary).catch(() => {});
   };
   useEffect(() => { load(); }, []);
   useEffect(() => {
-    const refresh = () => void api<Run[]>('/runs?limit=500').then(setRuns).catch(() => {});
-    const u1 = rrws.on('run_created', refresh);
-    const u2 = rrws.on('run_updated', refresh);
-    const u3 = rrws.on('task_run_updated', refresh);
+    const u1 = rrws.on('run_created', loadStats);
+    const u2 = rrws.on('run_updated', loadStats);
+    const u3 = rrws.on('task_run_updated', loadStats);
     return () => { u1(); u2(); u3(); };
   }, []);
-  useLiveRefresh(Boolean(runs?.some(r => LIVE(r.status))), () => void api<Run[]>('/runs?limit=500').then(setRuns).catch(() => {}));
+  useLiveRefresh(Boolean(runs?.some(r => LIVE(r.status))), loadStats);
 
   const flowName = (id: number) => flows.find(w => w.id === id)?.name ?? `Workflow ${id}`;
   const shown = useMemo(() => {
@@ -984,10 +1037,7 @@ function Runs() {
   }
 
   const liveRuns = runs.filter(r => LIVE(r.status)).slice(0, 6);
-  const recent24h = runs.filter(r => Date.now() - new Date(r.created_at).getTime() < DAY);
-  const failed24h = recent24h.filter(r => r.status === 'failed').length;
-  const withDuration = recent24h.filter(r => r.duration_seconds != null);
-  const avgDuration = withDuration.length ? withDuration.reduce((sum, r) => sum + (r.duration_seconds ?? 0), 0) / withDuration.length : null;
+  const avgDuration = summary?.avg_duration_24h ?? null;
   const filtersActive = Boolean(status || workflowId || trigger || query);
 
   return (
@@ -995,9 +1045,9 @@ function Runs() {
       <PageHeader eyebrow="OBSERVABILITY" title="Runs" subtitle="Live activity, schedule context, and the full execution history." />
 
       <div className="summary-strip">
-        <div><span>Live</span><strong>{liveRuns.length}</strong></div>
-        <div><span>Runs · 24h</span><strong>{recent24h.length}</strong></div>
-        <div><span>Failures · 24h</span><strong>{failed24h}</strong></div>
+        <div><span>Live</span><strong>{summary?.live ?? liveRuns.length}</strong></div>
+        <div><span>Runs · 24h</span><strong>{summary?.runs_24h ?? '—'}</strong></div>
+        <div><span>Failures · 24h</span><strong>{summary?.failed_24h ?? '—'}</strong></div>
         <div><span>Avg duration · 24h</span><strong>{avgDuration != null ? formatDuration(avgDuration) : '—'}</strong></div>
         <div><span>History loaded</span><strong>{runs.length}</strong></div>
       </div>
@@ -1041,7 +1091,7 @@ function Runs() {
               </div>
             )}
           </div>
-          {runs.length > 0 && <WeeklyChart runs={runs} />}
+          {runs.length > 0 && <WeeklyChart />}
         </div>
 
         <div>
@@ -1170,7 +1220,7 @@ function RunDetail() {
         </div>
       )}
 
-      {run.task_runs && run.task_runs.length > 1 && (
+      {run.task_runs && run.task_runs.some(t => t.started_at) && (
         <TaskTimeline taskRuns={run.task_runs} runStart={run.started_at || run.created_at} now={now} />
       )}
 
@@ -1355,18 +1405,19 @@ function Projects() {
         <div className="card-grid">
           {items.map(x => (
             <article className="resource-card" key={x.id}>
-              <div className="resource-icon folder"><FolderOpen size={17} /></div>
-              <div className="resource-main">
-                <div className="resource-title">
-                  <h3>{x.name}</h3>
-                  <div className="row-actions">
-                    <button className="edit-link" onClick={() => setEditing(x)}>Edit</button>
-                    <button className="delete-link" onClick={() => removeProject(x)}>Remove</button>
-                  </div>
+              <div className="resource-top">
+                <div className="resource-icon folder"><FolderOpen size={18} /></div>
+                <div className="row-actions">
+                  <button className="edit-link" onClick={() => setEditing(x)}>Edit</button>
+                  <button className="delete-link" onClick={() => removeProject(x)}>Remove</button>
                 </div>
-                <p>{x.description || 'No description yet'}</p>
-                <div className="path-chip"><span>⌁</span>{x.root_path}</div>
-                <div className="resource-foot"><span>Ready to use</span></div>
+              </div>
+              <h3>{x.name}</h3>
+              <p>{x.description || 'No description yet'}</p>
+              <div className="path-chip"><span>⌁</span>{x.root_path}</div>
+              <div className="resource-actions">
+                <Link className="resource-open" to="/workflows"><GitBranch size={12} /> New workflow</Link>
+                <span>Ready to use</span>
               </div>
             </article>
           ))}
@@ -1962,7 +2013,7 @@ function WorkflowDetail() {
       {runs.length > 0 && (
         <div className="panel" style={{ marginBottom: 20 }}>
           <div className="panel-head"><div><h2>Activity</h2><p>Runs per day, this workflow only</p></div></div>
-          <RunHeatmap workflowId={Number(id)} />
+          <RunHeatmap workflowId={Number(id)} selectable />
         </div>
       )}
 
@@ -2190,7 +2241,7 @@ function TaskModal({ workflowId, tasks, project, defaultEnvironment, onClose, do
         cwd: cwd || null, depends_on_json: f.getAll('dependencies'),
         parameters_json: parameters,
         retries: Number(f.get('retries')), retry_delay_seconds: Number(f.get('delay')),
-        timeout_seconds: f.get('timeout') ? Number(f.get('timeout')) : null,
+        timeout_seconds: timeoutSeconds(f),
         environment_id: f.get('environment_id') ? Number(f.get('environment_id')) : null,
       });
       toast('Task added');
@@ -2252,7 +2303,7 @@ function TaskModal({ workflowId, tasks, project, defaultEnvironment, onClose, do
           <label className="field"><span>Retries</span><input name="retries" type="number" min="0" defaultValue="0" /></label>
           <label className="field"><span>Retry delay (sec)</span><input name="delay" type="number" min="0" defaultValue="0" /></label>
         </div>
-        <label className="field"><span>Timeout (sec) <em>Optional</em></span><input name="timeout" type="number" min="1" /></label>
+        <TimeoutField />
         <div className="modal-actions">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button type="submit" disabled={needsEnvironment}>Add task</Button>
@@ -2286,7 +2337,7 @@ function EditTaskModal({ task, tasks, project, onClose, done }: { task: Task; ta
         cwd: cwd || null, depends_on_json: f.getAll('dependencies'),
         parameters_json: parameters,
         retries: Number(f.get('retries')), retry_delay_seconds: Number(f.get('delay')),
-        timeout_seconds: f.get('timeout') ? Number(f.get('timeout')) : null,
+        timeout_seconds: timeoutSeconds(f),
         project_id: task.project_id ?? null,
         environment_id: environmentId ? Number(environmentId) : null,
       });
@@ -2335,7 +2386,7 @@ function EditTaskModal({ task, tasks, project, onClose, done }: { task: Task; ta
           <label className="field"><span>Retries</span><input name="retries" type="number" min="0" defaultValue={task.retries} /></label>
           <label className="field"><span>Retry delay (sec)</span><input name="delay" type="number" min="0" defaultValue={task.retry_delay_seconds} /></label>
         </div>
-        <label className="field"><span>Timeout (sec) <em>Optional</em></span><input name="timeout" type="number" min="1" defaultValue={task.timeout_seconds ?? ''} /></label>
+        <TimeoutField seconds={task.timeout_seconds} />
         <div className="modal-actions">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button type="submit">Save changes</Button>
@@ -2600,6 +2651,8 @@ function Wallboard() {
             const elapsed = r.started_at ? (now - new Date(r.started_at).getTime()) / 1000 : 0;
             const pct = expected ? Math.min(100, elapsed / expected * 100) : null;
             const over = expected != null && elapsed > expected * 1.15;
+            // 0 at/under median → 1 at 135% of median (fully amber)
+            const overRatio = expected ? Math.min(1, Math.max(0, (elapsed / expected - 1) / 0.35)) : 0;
             return (
               <div key={r.id} className={`wallboard-live-card ${r.status}`}>
                 <span className={`run-pulse ${r.status}`} />
@@ -2607,7 +2660,7 @@ function Wallboard() {
                   <b>{flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`}</b>
                   <small>#{r.id} · {r.status} · {liveDuration(r, now)}</small>
                   {pct != null && (
-                    <div className={`wb-progress${over ? ' wb-progress--over' : ''}`}>
+                    <div className="wb-progress" style={{ '--over-ratio': overRatio.toFixed(3) } as CSSProperties}>
                       <div className="wb-progress-fill" style={{ width: `${pct}%` }} />
                     </div>
                   )}
@@ -2625,12 +2678,15 @@ function Wallboard() {
 
       <div className="wallboard-grid" ref={gridRef}>
         {tiles.map(({ flow: w, last, streak, streakStart, rate7d, next, status }) => (
-          <div key={w.id} data-flip-id={String(w.id)}
+          <Link key={w.id} to={`/workflows/${w.id}`} data-flip-id={String(w.id)}
                className={`wallboard-tile wb-${status}${blooms[w.id] ? ` wb-bloom wb-bloom-${blooms[w.id]}` : ''}`}
                onAnimationEnd={e => {
                  if (e.animationName === 'tile-bloom') setBlooms(({ [w.id]: _, ...rest }) => rest);
                }}>
-            <div className="wallboard-tile-name">{w.name}</div>
+            <div className="wallboard-tile-top">
+              <div className="wallboard-tile-name">{w.name}</div>
+              <ChevronRight className="wallboard-tile-arrow" size={20} />
+            </div>
             <div className="wallboard-tile-status" key={status}>{status === 'never' ? 'no runs' : status}</div>
             {status === 'failed' && streak > 0 && (
               <div className="wallboard-tile-streak">
@@ -2646,7 +2702,7 @@ function Wallboard() {
               {!w.enabled ? ' · paused' : ''}
             </div>
             <WorkflowSparkline runs={runs.filter(r => r.workflow_id === w.id).slice(0, 16)} />
-          </div>
+          </Link>
         ))}
         {flows.length === 0 && <div className="wallboard-empty">No workflows yet.</div>}
       </div>

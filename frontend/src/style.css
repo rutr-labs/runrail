@@ -562,23 +562,49 @@ main {
 
 /* ─── Status Badge ────────────────────────────────────── */
 .status-badge {
+  /* chip-scoped skin — each .status-* class below overrides these.
+     Scoped locally so the shared --*-soft / --*-border tokens
+     (metric icons, health chips, toggles, toasts) are untouched. */
+  --chip-ink:     var(--text-2);
+  --chip-tint-hi: var(--bg-card-r);
+  --chip-tint-lo: var(--bg-card-r);
+  --chip-line:    var(--border-strong);
+
   display: inline-flex;
   align-items: center;
   gap: 5px;
   font-size: 11.5px;
-  font-weight: 600;
-  padding: 3px 8px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  padding: 3.5px 9px;
   border-radius: 20px;
   line-height: 1;
   white-space: nowrap;
-  border: 1px solid transparent;
+  color: var(--chip-ink);
+  border: 1px solid var(--chip-line);
+  /* top gloss for glass depth + richer vertical tint; no box-shadow,
+     so the badge-pulse ring on running chips composites cleanly */
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0) 45%),
+    linear-gradient(180deg, var(--chip-tint-hi), var(--chip-tint-lo));
 }
-.status-success  { background: var(--success-soft); color: var(--success); border-color: var(--success-border); }
-.status-danger   { background: var(--danger-soft);  color: var(--danger);  border-color: var(--danger-border);  }
-.status-running  { background: var(--running-soft); color: var(--running); border-color: var(--running-border); }
-.status-warning  { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-border); }
-.status-queued   { background: var(--queued-soft);  color: var(--queued);  border-color: var(--queued-border);  }
-.status-muted    { background: var(--bg-card-r);    color: var(--text-3);  border-color: var(--border);         }
+
+/* Dark (default): 22%→12% fills, full-strength ink, 45% borders */
+.status-success { --chip-ink: var(--success); --chip-tint-hi: rgba(52,211,153,0.22);  --chip-tint-lo: rgba(52,211,153,0.12);  --chip-line: rgba(52,211,153,0.45);  }
+.status-danger  { --chip-ink: var(--danger);  --chip-tint-hi: rgba(248,113,113,0.22); --chip-tint-lo: rgba(248,113,113,0.12); --chip-line: rgba(248,113,113,0.45); }
+.status-running { --chip-ink: var(--running); --chip-tint-hi: rgba(56,189,248,0.22);  --chip-tint-lo: rgba(56,189,248,0.12);  --chip-line: rgba(56,189,248,0.45);  }
+.status-warning { --chip-ink: var(--warning); --chip-tint-hi: rgba(251,191,36,0.20);  --chip-tint-lo: rgba(251,191,36,0.11);  --chip-line: rgba(251,191,36,0.42);  }
+.status-queued  { --chip-ink: #94a3b8;        --chip-tint-hi: rgba(148,163,184,0.16); --chip-tint-lo: rgba(148,163,184,0.09); --chip-line: rgba(148,163,184,0.38); }
+.status-muted   { --chip-ink: var(--text-3);  --chip-tint-hi: var(--bg-card-r);       --chip-tint-lo: var(--bg-card-r);       --chip-line: var(--border);          }
+
+/* Light theme: darker inks for contrast on pale tints
+   (the global status tokens have no light overrides, so the
+   dark pastels would wash out on white without these) */
+[data-theme="light"] .status-success { --chip-ink: #047857; --chip-tint-hi: rgba(52,211,153,0.18);  --chip-tint-lo: rgba(52,211,153,0.09);  --chip-line: rgba(4,120,87,0.38);  }
+[data-theme="light"] .status-danger  { --chip-ink: #dc2626; --chip-tint-hi: rgba(248,113,113,0.16); --chip-tint-lo: rgba(248,113,113,0.08); --chip-line: rgba(220,38,38,0.38); }
+[data-theme="light"] .status-running { --chip-ink: #0369a1; --chip-tint-hi: rgba(56,189,248,0.16);  --chip-tint-lo: rgba(56,189,248,0.08);  --chip-line: rgba(3,105,161,0.38); }
+[data-theme="light"] .status-warning { --chip-ink: #b45309; --chip-tint-hi: rgba(251,191,36,0.20);  --chip-tint-lo: rgba(251,191,36,0.10);  --chip-line: rgba(180,83,9,0.38);  }
+[data-theme="light"] .status-queued  { --chip-ink: #475569; --chip-tint-hi: rgba(100,116,139,0.12); --chip-tint-lo: rgba(100,116,139,0.06); --chip-line: rgba(71,85,105,0.32); }
 
 @keyframes badge-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(56,189,248,0.4); }
@@ -597,32 +623,34 @@ main {
   margin-bottom: 24px;
 }
 .metric-card {
-  padding: 20px;
+  padding: 22px 22px 20px;
   border-radius: var(--r-lg);
   border: 1px solid var(--border);
   background: var(--bg-card);
   display: flex;
   align-items: flex-start;
-  gap: 14px;
+  gap: 15px;
   box-shadow: var(--shadow-sm), var(--shadow-inner);
-  transition: transform .2s, box-shadow .2s;
+  transition: transform .2s var(--ease-out), box-shadow .2s, border-color .2s;
 }
-.metric-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md), var(--shadow-inner); }
+.metric-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md), var(--shadow-inner); border-color: var(--border-strong); }
 .metric-icon-wrap {
-  width: 40px; height: 40px;
+  width: 46px; height: 46px;
   border-radius: var(--r-md);
   display: grid; place-items: center;
   flex-shrink: 0;
+  transition: box-shadow .25s var(--ease-swift);
 }
-.metric-default .metric-icon-wrap { background: var(--accent-soft);  color: var(--accent);  border: 1px solid var(--accent-border);  }
-.metric-success .metric-icon-wrap { background: var(--success-soft); color: var(--success); border: 1px solid var(--success-border); }
-.metric-danger  .metric-icon-wrap { background: var(--danger-soft);  color: var(--danger);  border: 1px solid var(--danger-border);  }
-.metric-running .metric-icon-wrap { background: var(--running-soft); color: var(--running); border: 1px solid var(--running-border); }
-.metric-warning .metric-icon-wrap { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning-border); }
+.metric-default .metric-icon-wrap { background: var(--accent-soft);  color: var(--accent);  border: 1px solid var(--accent-border);  box-shadow: 0 0 22px -8px var(--accent);  }
+.metric-success .metric-icon-wrap { background: var(--success-soft); color: var(--success); border: 1px solid var(--success-border); box-shadow: 0 0 22px -8px var(--success); }
+.metric-danger  .metric-icon-wrap { background: var(--danger-soft);  color: var(--danger);  border: 1px solid var(--danger-border);  box-shadow: 0 0 22px -8px var(--danger);  }
+.metric-running .metric-icon-wrap { background: var(--running-soft); color: var(--running); border: 1px solid var(--running-border); box-shadow: 0 0 22px -8px var(--running); }
+.metric-warning .metric-icon-wrap { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning-border); box-shadow: 0 0 22px -8px var(--warning); }
+.metric-card:hover .metric-icon-wrap { box-shadow: 0 0 28px -6px currentColor; }
 .metric-body { flex: 1; min-width: 0; }
-.metric-label { display: block; font-size: 12px; color: var(--text-2); font-weight: 500; margin-bottom: 4px; }
-.metric-value { display: block; font-size: 28px; font-weight: 700; letter-spacing: -0.5px; color: var(--text-1); line-height: 1; margin-bottom: 4px; }
-.metric-note  { font-size: 11.5px; color: var(--text-3); }
+.metric-label { display: block; font-size: 12px; color: var(--text-2); font-weight: 500; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+.metric-value { display: block; font-size: 34px; font-weight: 800; letter-spacing: -0.8px; color: var(--text-1); line-height: 1; margin-bottom: 6px; font-variant-numeric: tabular-nums; }
+.metric-note  { font-size: 12px; color: var(--text-3); }
 
 /* ─── Health Chips ────────────────────────────────────── */
 .health-chips-row { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -648,11 +676,12 @@ main {
   text-align: center; gap: 10px;
 }
 .empty-icon {
-  width: 56px; height: 56px; border-radius: var(--r-xl);
-  background: var(--bg-card-r); border: 1px solid var(--border);
-  display: grid; place-items: center; color: var(--text-3); margin-bottom: 6px;
+  width: 60px; height: 60px; border-radius: var(--r-xl);
+  background: var(--accent-soft); border: 1px solid var(--accent-border);
+  display: grid; place-items: center; color: var(--accent); margin-bottom: 8px;
+  box-shadow: 0 0 34px -10px var(--accent);
 }
-.empty-title  { font-size: 16px; font-weight: 600; color: var(--text-1); }
+.empty-title  { font-size: 17px; font-weight: 700; color: var(--text-1); letter-spacing: -0.2px; }
 .empty-text   { font-size: 13.5px; color: var(--text-2); max-width: 360px; line-height: 1.6; }
 .empty-action { margin-top: 8px; }
 
@@ -1011,24 +1040,29 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .mini-dot.cancelled { background: var(--queued);  }
 
 /* ─── Resource Cards ──────────────────────────────────── */
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-bottom: 20px; }
 .resource-card {
-  padding: 18px; border-radius: var(--r-lg); border: 1px solid var(--border);
+  padding: 20px; border-radius: var(--r-lg); border: 1px solid var(--border);
   background: var(--bg-card); box-shadow: var(--shadow-sm), var(--shadow-inner);
-  transition: transform .2s, box-shadow .2s; display: flex; gap: 14px; align-items: flex-start;
+  transition: transform .2s var(--ease-out), box-shadow .2s, border-color .2s;
+  display: flex; flex-direction: column; gap: 10px;
 }
-.resource-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md), var(--shadow-inner); border-color: var(--border-strong); }
+.resource-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md), var(--shadow-inner); border-color: var(--border-strong); }
+.resource-top { display: flex; align-items: center; justify-content: space-between; }
 .resource-icon {
   width: 38px; height: 38px; border-radius: var(--r-md);
   display: grid; place-items: center; flex-shrink: 0; font-size: 15px; border: 1px solid var(--border);
 }
-.resource-icon.folder   { background: rgba(255,255,255,0.05); color: var(--text-2); border-color: var(--border); }
-.resource-icon.terminal { background: rgba(255,255,255,0.05); color: var(--text-2); border-color: var(--border); }
-.resource-icon.artifact { background: rgba(255,255,255,0.05); color: var(--text-2); border-color: var(--border); }
-.resource-main { flex: 1; min-width: 0; }
-.resource-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
-.resource-title h3 { font-size: 14px; font-weight: 600; color: var(--text-1); line-height: 1.3; }
-.resource-main > p { font-size: 12.5px; color: var(--text-2); margin-bottom: 10px; line-height: 1.5; }
+.resource-icon.folder   { background: var(--accent-soft);  color: var(--accent);  border-color: var(--accent-border);  box-shadow: 0 0 22px -10px var(--accent); }
+.resource-icon.terminal { background: var(--success-soft); color: var(--success); border-color: var(--success-border); box-shadow: 0 0 20px -8px var(--success); }
+.resource-icon.artifact { background: rgba(168,85,247,0.12); color: #a855f7; border-color: rgba(168,85,247,0.28); box-shadow: 0 0 20px -8px #a855f7; }
+/* Inside a card the icon matches the 42px .workflow-glyph and brightens on
+   hover; the 38px base stays for compact .list-item rows (Environments,
+   Artifacts). */
+.resource-card .resource-icon { width: 42px; height: 42px; transition: box-shadow .25s var(--ease-swift); }
+.resource-card:hover .resource-icon { box-shadow: 0 0 26px -6px currentColor; }
+.resource-card h3 { font-size: 17px; font-weight: 700; color: var(--text-1); line-height: 1.3; letter-spacing: -0.2px; }
+.resource-card > p { font-size: 13px; color: var(--text-2); line-height: 1.5; }
 .path-chip {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 11.5px; font-family: "SF Mono","Consolas",monospace;
@@ -1036,8 +1070,18 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
   border-radius: var(--r-xs); max-width: 100%; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
 }
-.resource-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.resource-foot span { font-size: 11.5px; color: var(--text-3); }
+.resource-card .path-chip { align-self: flex-start; } /* don't stretch in the column layout */
+.resource-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+.resource-open {
+  font-size: 12.5px; font-weight: 600; color: var(--accent);
+  background: var(--accent-soft); border: 1px solid var(--accent-border);
+  border-radius: var(--r-sm); height: 30px; padding: 0 12px;
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: background .15s var(--ease-swift), color .15s, border-color .15s;
+}
+.resource-open:hover { background: var(--accent); color: #06121f; border-color: var(--accent); }
+.resource-actions > span { font-size: 12.5px; color: var(--text-3); font-weight: 500; }
+.resource-card:hover .resource-actions > span { color: var(--text-2); }
 .row-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .edit-link, .delete-link { background: none; border: none; font-size: 12px; font-weight: 500; cursor: pointer; padding: 2px 6px; border-radius: var(--r-xs); }
 .edit-link   { color: var(--accent); }
@@ -1066,25 +1110,30 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .workflow-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md), var(--shadow-inner); border-color: var(--border-strong); }
 .workflow-top { display: flex; align-items: center; justify-content: space-between; }
 .workflow-glyph {
-  width: 36px; height: 36px; border-radius: var(--r-md);
-  background: rgba(255,255,255,0.05); border: 1px solid var(--border);
-  display: grid; place-items: center; color: var(--text-2);
+  width: 42px; height: 42px; border-radius: var(--r-md);
+  background: var(--accent-soft); border: 1px solid var(--accent-border);
+  display: grid; place-items: center; color: var(--accent);
+  box-shadow: 0 0 22px -10px var(--accent);
+  transition: box-shadow .25s var(--ease-swift);
 }
+.workflow-card:hover .workflow-glyph { box-shadow: 0 0 26px -6px var(--accent); }
 .workflow-glyph.large { width: 48px; height: 48px; border-radius: var(--r-lg); font-size: 20px; }
-.workflow-card h3 { font-size: 15px; font-weight: 700; color: var(--text-1); line-height: 1.3; }
+.workflow-card h3 { font-size: 17px; font-weight: 700; color: var(--text-1); line-height: 1.3; letter-spacing: -0.2px; }
 .workflow-card > p { font-size: 13px; color: var(--text-2); line-height: 1.5; }
 .workflow-meta { display: flex; gap: 12px; flex-wrap: wrap; }
 .workflow-meta span { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-3); }
 .workflow-meta i { font-style: normal; }
 .workflow-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
 .workflow-actions button {
-  font-size: 12.5px; font-weight: 600; color: var(--text-2);
-  background: rgba(255,255,255,0.05); border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm); height: 28px; padding: 0 10px;
-  display: flex; align-items: center; gap: 5px;
+  font-size: 12.5px; font-weight: 600; color: var(--accent);
+  background: var(--accent-soft); border: 1px solid var(--accent-border);
+  border-radius: var(--r-sm); height: 30px; padding: 0 12px;
+  display: flex; align-items: center; gap: 6px;
+  transition: background .15s, color .15s, border-color .15s;
 }
-.workflow-actions button:hover { background: rgba(255,255,255,0.09); color: var(--text-1); }
+.workflow-actions button:hover { background: var(--accent); color: #06121f; border-color: var(--accent); }
 .workflow-actions > span { font-size: 12.5px; color: var(--text-3); font-weight: 500; }
+.workflow-card:hover .workflow-actions > span { color: var(--text-2); }
 
 /* ─── Detail Page ─────────────────────────────────────── */
 .detail-head { margin-bottom: 24px; }
@@ -1680,9 +1729,9 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
 }
 .dag-node-clickable { cursor: pointer; }
 .dag-node-clickable:hover .dag-node-body { filter: brightness(1.35); }
-.dag-node-name { font-size: 12.5px; font-weight: 600; fill: var(--text-1); }
-.dag-node-status { font-size: 10px; fill: var(--text-3); text-transform: capitalize; }
-.dag-node-type { font-size: 10px; font-weight: 700; }
+.dag-node-name { font-size: 14px; font-weight: 600; fill: var(--text-1); }
+.dag-node-status { font-size: 11.5px; fill: var(--text-3); text-transform: capitalize; }
+.dag-node-type { font-size: 11.5px; font-weight: 700; }
 .dag-node-running .dag-node-body { animation: dag-pulse 2s var(--ease-swift) infinite; }
 @keyframes dag-pulse {
   0%, 100% { filter: drop-shadow(0 0 0 rgba(56,189,248,0)); }
@@ -1767,6 +1816,26 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
   font-size: 10.5px; color: var(--text-3);
 }
 
+/* Range selector — slim segmented variant, uppercase to match header rows */
+.run-heatmap-wrap { display: flex; flex-direction: column; min-width: 0; }
+.run-heatmap-range { align-self: flex-end; margin: 8px 20px 0; }
+.segmented.slim { gap: 2px; padding: 2px; border-radius: var(--r-sm); }
+.segmented.slim button {
+  flex: none; height: 18px; padding: 0 7px;
+  border-radius: var(--r-xs);
+  font-size: 9.5px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-3);
+  transition: color .15s var(--ease-out);
+}
+.segmented.slim button.active { color: var(--text-1); }
+
+/* Dashboard hero aside: tuck the selector flush under the header row */
+.dashboard-hero-aside .run-heatmap-range { margin: 0 20px 0 auto; }
+@media (max-width: 980px) {
+  .dashboard-hero-aside .run-heatmap-range { margin-right: 0; }
+}
+
 /* ─── Wallboard ───────────────────────────────────────── */
 .wallboard {
   min-height: 100vh; background: #07070a; color: #f1f5f9;
@@ -1794,24 +1863,36 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
 .wallboard-exit:hover { color: #f1f5f9; background: rgba(255,255,255,0.06); }
 .wallboard-strip { display: flex; gap: 14px; flex-wrap: wrap; }
 .wallboard-live-card {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 18px; border-radius: var(--r-lg);
-  border: 1px solid rgba(56,189,248,0.3); background: rgba(56,189,248,0.07);
+  display: flex; align-items: center; gap: 16px;
+  padding: 16px 22px; border-radius: var(--r-xl);
+  border: 1px solid rgba(56,189,248,0.32); background: rgba(56,189,248,0.08);
+  box-shadow: 0 0 60px -30px rgba(56,189,248,0.6);
 }
-.wallboard-live-card.queued { border-color: rgba(251,191,36,0.3); background: rgba(251,191,36,0.06); }
-.wallboard-live-card b { display: block; font-size: 15px; }
-.wallboard-live-card small { color: #94a3b8; font-size: 12.5px; }
+.wallboard-live-card.queued { border-color: rgba(251,191,36,0.3); background: rgba(251,191,36,0.06); box-shadow: none; }
+.wallboard-live-card b { display: block; font-size: 16.5px; font-weight: 700; }
+.wallboard-live-card small { color: #94a3b8; font-size: 13px; }
 .wallboard-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 18px; flex: 1; align-content: start;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 22px; flex: 1; align-content: start;
 }
 .wallboard-tile {
-  padding: 22px 24px; border-radius: 18px;
-  border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.028);
-  display: flex; flex-direction: column; gap: 6px;
+  padding: 28px 30px; border-radius: 22px;
+  border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03);
+  display: flex; flex-direction: column; gap: 8px;
+  color: inherit; text-decoration: none;
+  transition: transform .2s var(--ease-out), border-color .2s, box-shadow .2s, background .2s;
 }
-.wallboard-tile-name { font-size: 18px; font-weight: 700; letter-spacing: -0.2px; }
-.wallboard-tile-status { font-size: 26px; font-weight: 800; text-transform: capitalize; letter-spacing: -0.5px; }
+.wallboard-tile:hover {
+  transform: translateY(-4px);
+  border-color: rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.05);
+  box-shadow: 0 24px 60px -24px rgba(0,0,0,0.7);
+}
+.wallboard-tile-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.wallboard-tile-arrow { color: #475569; flex-shrink: 0; transition: transform .2s var(--ease-out), color .2s; }
+.wallboard-tile:hover .wallboard-tile-arrow { color: #cbd5e1; transform: translateX(3px); }
+.wallboard-tile-name { font-size: 21px; font-weight: 700; letter-spacing: -0.2px; }
+.wallboard-tile-status { font-size: 34px; font-weight: 800; text-transform: capitalize; letter-spacing: -0.6px; line-height: 1.1; }
 .wb-success .wallboard-tile-status { color: #34d399; }
 .wb-failed  { border-color: rgba(248,113,113,0.4); background: rgba(248,113,113,0.06); }
 .wb-failed .wallboard-tile-status { color: #f87171; }
@@ -1907,7 +1988,7 @@ html.vt-active main { animation: none; }
 .wb-bloom-overdue { --bloom: rgba(251,191,36,0.45);  --bloom-soft: rgba(251,191,36,0.14); }
 
 /* Live progress with ETA from historical medians */
-.wallboard-live-body { display: flex; flex-direction: column; gap: 4px; min-width: 200px; }
+.wallboard-live-body { display: flex; flex-direction: column; gap: 6px; min-width: 300px; }
 .wb-progress {
   height: 4px; border-radius: 2px; overflow: hidden;
   background: rgba(255,255,255,0.08); margin-top: 2px;
@@ -1929,31 +2010,69 @@ html.vt-active main { animation: none; }
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   SPARKLE-FILL DOT-MATRIX — live/running fills
+   COMET-FILL DOT-MATRIX — live/running fills
    (.wb-progress-fill wallboard, .tl-bar.running Gantt, .dot-loader)
 
-   MODEL — a progress-bound sparkling fill (not a looping travel band):
+   MODEL — a comet bound to progress:
    • The bar's WIDTH is the progress (elapsed/median on the wallboard,
-     elapsed on the Gantt), so the dots occupy exactly the filled
-     region and grow left→right as the run advances.
-   • Those dots twinkle in a scattered, random cadence (irregular
-     opacity envelope + a whole-cell shuffle) → "shimmery/sparkling".
-   • A soft glow rides the leading (right) edge — the advancing fill
-     frontier — so fresh dots sparkle in as progress completes.
-   Determinate bars pin that frontier to their right edge (= progress);
-   the indeterminate .dot-loader sweeps a fill frontier left→right on
-   repeat (env builds / queued runs have no % to bind to).
+     elapsed on the Gantt), so the comet grows with the run: a young
+     bar is all head; the trail lengthens behind it as it advances.
+   • Three pinned lattice layers build a rightward lit-dot density ramp:
+       host      dim full-width lattice + faint head-ward wash + facet
+                 striae (alpha ∝ --over-ratio) — the TRAIL: clearly
+                 dimmer than the head but unmistakably lit. Static.
+       ::before  sparse glints (one near-white-hot layer) under a
+                 left→right alpha-ramp mask that never hits zero at
+                 the left — stray embers keep firing down the trail —
+                 twinkling on an irregular envelope + cell re-deal.
+       ::after   right-pinned 84px HEAD: full bright lattice + two
+                 near-white hot-glint tiles, melting leftward via
+                 mask, twinkling faster/hotter on co-prime periods.
+     Head = host+before+after (dense) · body = host+before · tail ≈ host.
+   • CRYSTALLIZING over-median colour, one knob: --over-ratio
+     (0 = at/under median → 1 = 135% of median, inline style from JS,
+     registered + transitioned so 1 Hz ticks GLIDE):
+       the TRAIL colour tracks the ratio directly (oklab mix toward
+       --warning: frosts through a pale mineral mid-state, never
+       green, never red); the HEAD holds hot sky until ratio .35 and
+       catches up by 1 — the bar crystallizes from the back forward
+       while the frontier stays hot. Facet striae fade in with the
+       ratio.
+   • Indeterminate .dot-loader: full-width twinkle field + a comet
+     head sweeping L→R, transform-only; the moving layer carries NO
+     fine lattice, so it cannot moiré against the pinned host lattice.
 
-   Cost: 2 compositor opacity animations + ~0.3 tiny shuffle repaints/s
-   per bar. Colour via one knob, --dot-color. Dots are painted on the
-   static host and never transformed → lattice-aligned, crisp, no moiré.
+   Cost per bar: 2 compositor opacity twinkles + ~0.7 tiny whole-cell
+   re-deal repaints/s; masks static; lattices never move. Colour via
+   one knob (--dot-color) and one scalar (--over-ratio).
 ═══════════════════════════════════════════════════════════════ */
 
-/* Geometry: wallboard track 4px → 10px; keep the fill's width easing so
-   progress advances smoothly. .tl-bar.running is position:absolute
-   (left/width from JS) and already a containing block + overflow:hidden;
-   .dot-loader is already position:relative + overflow:hidden. */
-.wb-progress { height: 10px; border-radius: 5px; }
+/* Registered so it interpolates: crystallization GLIDES between JS
+   ticks. Engines without @property fall back to var(--over-ratio, 0)
+   → colours step once per tick, nothing breaks. */
+@property --over-ratio {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+/* Glide where the ratio is actually set: the wallboard wrapper (JS
+   inline style) and any host handed it directly. NOT on the fill —
+   it inherits the wrapper's already-gliding value (double-smoothing
+   would lag ~1.8s). */
+.wb-progress,
+.tl-bar.running,
+.dot-loader {
+  transition: --over-ratio .9s linear;
+}
+
+/* Geometry: wallboard track (4px base → 16px here, as before). Flat
+   track — an inset hairline only, no outer glow: the comet inside is
+   the signal, and glow outside the bar just haloed the tile. */
+.wb-progress {
+  height: 16px; border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05);
+}
 .wb-progress-fill {
   height: 100%;
   border-radius: 5px;
@@ -1962,35 +2081,64 @@ html.vt-active main { animation: none; }
   transition: width .9s linear;
 }
 
-/* ── Host: the filled dot lattice, pinned and steady ── */
+/* ── Host: the TRAIL — dim, pinned, still reads as filled ── */
 .wb-progress-fill,
 .tl-bar.running,
 .dot-loader {
-  --dot-color: var(--running);
-  --dot-shift-y: 1px;          /* rows land on whole device pixels */
-  --dm-phase: 0s;              /* per-bar desync (set below) */
+  --dot-color: var(--running);  /* colour knob (as before) */
+  --dot-shift-y: 1px;           /* rows land on whole device pixels */
+  --dm-phase: 0s;               /* per-bar desync (set below) */
+  --trail-alpha: 48%;           /* trail lattice brightness knob */
+
+  /* Crystallizing ramp — trail amberizes first; head holds hot until
+     --over-ratio ≈ .35, catches up by 1. oklab = frosted mid-state. */
+  --dot-trail: color-mix(in oklab, var(--dot-color), var(--warning) calc(var(--over-ratio, 0) * 100%));
+  --dot-head:  color-mix(in oklab, var(--dot-color), var(--warning) calc(max(0, var(--over-ratio, 0) - 0.35) / 0.65 * 100%));
+  --glint: color-mix(in srgb, #fff 72%, var(--dot-head));
+
   /* Parse-time solid fallback for engines without color-mix. MUST be
      first so the longhands win where supported. */
   background: var(--dot-color);
-  animation: none;             /* retire any legacy bar-shimmer */
-  background-color: color-mix(in srgb, var(--dot-color) 10%, transparent);
-  background-image: radial-gradient(circle,
-    color-mix(in srgb, var(--dot-color) 60%, transparent) .6px, transparent 1.4px);
-  background-size: 4px 4px;
-  background-position: 0 var(--dot-shift-y);   /* PINNED — never animated */
+  animation: none;              /* retire any legacy bar-shimmer */
+  background-color: color-mix(in srgb, var(--dot-trail) 12%, transparent);
+  background-image:
+    /* facet striae — invisible on time, "sets" as the run overruns */
+    repeating-linear-gradient(112deg,
+      color-mix(in srgb, var(--dot-trail) clamp(0%, var(--over-ratio, 0) * 14%, 14%), transparent) 0 1px,
+      transparent 1px 6px),
+    radial-gradient(circle,
+      color-mix(in srgb, var(--dot-trail) var(--trail-alpha), transparent) .6px, transparent 1.4px),
+    linear-gradient(90deg,
+      transparent 30%,
+      color-mix(in srgb, var(--dot-head) 6%, transparent) 70%,
+      color-mix(in srgb, var(--dot-head) 15%, transparent));
+  background-size: auto, 4px 4px, 100% 100%;
+  background-position: 0 0, 0 var(--dot-shift-y), 0 0;  /* lattice PINNED — never animated */
+  background-repeat: repeat, repeat, no-repeat;
 }
 [data-theme="light"] .wb-progress-fill,
 [data-theme="light"] .tl-bar.running,
 [data-theme="light"] .dot-loader {
-  background-color: color-mix(in srgb, var(--dot-color) 16%, transparent);
-  background-image: radial-gradient(circle,
-    color-mix(in srgb, var(--dot-color) 82%, transparent) .6px, transparent 1.4px);
+  --trail-alpha: 68%;
+  --glint: color-mix(in srgb, var(--dot-head) 80%, #0f172a);  /* white glints vanish on light glass */
+  background-color: color-mix(in srgb, var(--dot-trail) 18%, transparent);
+  background-image:
+    repeating-linear-gradient(112deg,
+      color-mix(in srgb, var(--dot-trail) clamp(0%, var(--over-ratio, 0) * 18%, 18%), transparent) 0 1px,
+      transparent 1px 6px),
+    radial-gradient(circle,
+      color-mix(in srgb, var(--dot-trail) var(--trail-alpha), transparent) .6px, transparent 1.4px),
+    linear-gradient(90deg,
+      transparent 30%,
+      color-mix(in srgb, var(--dot-head) 9%, transparent) 70%,
+      color-mix(in srgb, var(--dot-head) 20%, transparent));
 }
 
-/* ── ::before — scattered random sparkle over the filled dots ──
-   A sparse subset of bright dots whose opacity rides an irregular
-   envelope while a whole-cell shuffle re-deals which dots glint, so the
-   sparkle reads as random glitter rather than a uniform blink. */
+/* ── ::before — scattered glints, ramped toward the head ──
+   Three sparse layers (sparsest is near-white-hot), every centre on
+   the 4px lattice. Irregular envelope + whole-cell re-deal = glitter
+   with no beat. The STATIC mask shapes the comet: faint stray embers
+   far left (the trail is alive, not dead), full sparkle at the head. */
 .wb-progress-fill::before,
 .tl-bar.running::before,
 .dot-loader::before {
@@ -2001,65 +2149,91 @@ html.vt-active main { animation: none; }
   pointer-events: none;
   will-change: opacity;
   background-image:
-    radial-gradient(circle at 2px 2px,  var(--dot-color) .8px, transparent 1.6px),
-    radial-gradient(circle at 14px 6px, var(--dot-color) .8px, transparent 1.6px),
-    radial-gradient(circle at 26px 2px, var(--dot-color) .8px, transparent 1.6px);
+    radial-gradient(circle at 2px 2px,  var(--dot-trail) .8px, transparent 1.6px),
+    radial-gradient(circle at 14px 6px, var(--dot-trail) .8px, transparent 1.6px),
+    radial-gradient(circle at 26px 2px, var(--glint) .7px, transparent 1.5px);
   background-size: 16px 8px, 24px 8px, 36px 8px;
   background-position: 0 var(--dot-shift-y);
+  -webkit-mask: linear-gradient(90deg,
+      rgba(0,0,0,.42), rgba(0,0,0,.52) 40%, rgba(0,0,0,.72) 70%, #000 90%);
+          mask: linear-gradient(90deg,
+      rgba(0,0,0,.42), rgba(0,0,0,.52) 40%, rgba(0,0,0,.72) 70%, #000 90%);
   animation:
     dm-sparkle 2.1s ease-in-out infinite,
     dm-shuffle 3.7s steps(1, end) infinite;
   animation-delay: var(--dm-phase), var(--dm-phase);
 }
+/* The loader's head TRAVELS, so let the whole field twinkle evenly. */
+.dot-loader::before {
+  -webkit-mask: none;
+          mask: none;
+}
 
-/* ── ::after (determinate) — glow riding the leading fill edge ──
-   Pinned to the right edge, which IS the progress frontier (fill width
-   = progress), so fresh dots sparkle in as the bar fills. Masked to be
-   strongest at the frontier and fade back into the settled dots. */
+/* ── ::after (determinate) — the comet HEAD at the frontier ──
+   Pinned to the right edge, which IS the progress frontier. A full
+   bright lattice + two near-white hot-glint tiles = visibly denser
+   lit dots than the body; the mask melts it back into the trail.
+   Twinkles faster and hotter than the body on co-prime periods. */
 .wb-progress-fill::after,
 .tl-bar.running::after {
   content: "";
   position: absolute;
-  top: 0;
-  bottom: 0;
-  right: 0;
-  width: 30px;
+  top: 0; bottom: 0; right: 0;
+  width: 84px;
+  max-width: 100%;
   border-radius: inherit;
   pointer-events: none;
   z-index: 0;
-  background-image: radial-gradient(circle, var(--dot-color) .9px, transparent 1.6px);
-  background-size: 4px 4px;
+  will-change: opacity;
+  background-image:
+    radial-gradient(circle, var(--dot-head) .9px, transparent 1.6px),
+    radial-gradient(circle at 3px 1px, var(--glint) .8px, transparent 1.6px),
+    radial-gradient(circle at 9px 5px, var(--glint) .8px, transparent 1.6px);
+  background-size: 4px 4px, 12px 8px, 20px 8px;
   background-position: 0 var(--dot-shift-y);
-  -webkit-mask: linear-gradient(90deg, transparent, #000 88%);
-          mask: linear-gradient(90deg, transparent, #000 88%);
-  animation: dm-frontier 1.4s ease-in-out infinite;
-  animation-delay: var(--dm-phase);
+  -webkit-mask: linear-gradient(90deg,
+      transparent, rgba(0,0,0,.3) 40%, rgba(0,0,0,.72) 72%, #000);
+          mask: linear-gradient(90deg,
+      transparent, rgba(0,0,0,.3) 40%, rgba(0,0,0,.72) 72%, #000);
+  animation:
+    dm-head-twinkle 1.3s ease-in-out infinite,
+    dm-head-shuffle 2.3s steps(1, end) infinite;
+  animation-delay: calc(var(--dm-phase) - .4s), var(--dm-phase);
 }
 
-/* ── ::after (indeterminate loader) — a fill frontier sweeping L→R ──
-   No % to bind to (env builds / queued runs), so a soft bright band
-   repeatedly fills from the left, transform-only on the compositor. */
+/* ── ::after (indeterminate loader) — comet head sweeping L→R ──
+   No % to bind to (env builds / queued runs). The moving layer holds
+   only a soft wash + SPARSE glints — deliberately no 4px lattice, so
+   translating it over the pinned host lattice cannot moiré.
+   Transform-only on the compositor. */
 .dot-loader::after {
   content: "";
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 45%;
+  top: 0; bottom: 0; left: 0;
+  width: 55%;
   border-radius: inherit;
   pointer-events: none;
-  background-image: radial-gradient(circle, var(--dot-color) .9px, transparent 1.6px);
-  background-size: 4px 4px;
-  background-position: 0 var(--dot-shift-y);
-  -webkit-mask: linear-gradient(90deg, transparent, #000 55%, #000 78%, transparent);
-          mask: linear-gradient(90deg, transparent, #000 55%, #000 78%, transparent);
+  background-image:
+    radial-gradient(circle at 3px 1px, var(--glint) .8px, transparent 1.6px),
+    radial-gradient(circle at 9px 5px, var(--dot-head) .8px, transparent 1.6px),
+    linear-gradient(90deg, transparent,
+      color-mix(in srgb, var(--dot-head) 30%, transparent));
+  background-size: 12px 8px, 20px 8px, 100% 100%;
+  background-position: 0 var(--dot-shift-y), 0 var(--dot-shift-y), 0 0;
+  background-repeat: repeat, repeat, no-repeat;
+  /* bright at the leading (right) edge, soft tip, trail melting off */
+  -webkit-mask: linear-gradient(90deg,
+      transparent, rgba(0,0,0,.35) 55%, #000 86%, rgba(0,0,0,.6) 96%, transparent);
+          mask: linear-gradient(90deg,
+      transparent, rgba(0,0,0,.35) 55%, #000 86%, rgba(0,0,0,.6) 96%, transparent);
   will-change: transform;
-  animation: dm-loader-fill 1.9s ease-in-out infinite;
+  animation: dm-comet-sweep 1.9s ease-in-out infinite;
   animation-delay: var(--dm-phase);
 }
 
-/* Irregular envelope: uneven stops + partial-amplitude peaks so glints
-   never pulse in unison. */
+/* Irregular envelopes: uneven stops + partial-amplitude peaks so
+   glints never pulse in unison. Head runs hotter and faster than the
+   body on co-prime periods (1.3/2.3 vs 2.1/3.7) → never in lockstep. */
 @keyframes dm-sparkle {
   0%   { opacity: .30; }
   22%  { opacity: .90; }
@@ -2068,18 +2242,30 @@ html.vt-active main { animation: none; }
   78%  { opacity: .22; }
   100% { opacity: .55; }
 }
-/* Whole-cell jumps (multiples of the 4px cell) keep every glint on the
-   lattice — the membership teleports, nothing ever slides. */
+@keyframes dm-head-twinkle {
+  0%   { opacity: .55; }
+  18%  { opacity: 1; }
+  41%  { opacity: .62; }
+  57%  { opacity: .95; }
+  83%  { opacity: .48; }
+  100% { opacity: .80; }
+}
+/* Whole-cell jumps (multiples of the 4px cell) keep every glint on
+   the lattice — membership teleports, nothing ever slides. (On the
+   head, 4px-multiple jumps leave the dense lattice layer invariant
+   while the 12/20px glint tiles re-deal — the lattice stays pinned.) */
 @keyframes dm-shuffle {
   0%, 100% { background-position: 0    var(--dot-shift-y); }
   33%      { background-position: 8px  var(--dot-shift-y); }
   66%      { background-position: 4px  calc(var(--dot-shift-y) + 4px); }
 }
-@keyframes dm-frontier {
-  0%, 100% { opacity: .35; }
-  50%      { opacity: .95; }
+@keyframes dm-head-shuffle {
+  0%, 100% { background-position: 0    var(--dot-shift-y); }
+  25%      { background-position: 4px  calc(var(--dot-shift-y) + 4px); }
+  50%      { background-position: 8px  var(--dot-shift-y); }
+  75%      { background-position: 12px calc(var(--dot-shift-y) + 4px); }
 }
-@keyframes dm-loader-fill {
+@keyframes dm-comet-sweep {
   0%   { transform: translateX(-100%); }
   100% { transform: translateX(250%); }
 }
@@ -2092,8 +2278,8 @@ html.vt-active main { animation: none; }
 .wallboard-tile:nth-child(5n) .wb-progress-fill,
 .tl-row:nth-child(5n) .tl-bar.running { --dm-phase: -2.0s; }
 
-/* ── Variants: one line each ── */
-.wb-progress--over .wb-progress-fill { --dot-color: var(--warning); }
+/* ── Variants: one line each (trail/head/glint all derive from
+   --dot-color; over-median is continuous now — no --over class) ── */
 .dot-loader.warning { --dot-color: var(--warning); }
 .dot-loader.success { --dot-color: var(--success); }
 
@@ -2104,23 +2290,37 @@ html.vt-active main { animation: none; }
   color: var(--text-1);
 }
 
-/* ── Reduced motion: freeze to a static, readable filled field ── */
+/* ── Reduced motion: a STILL comet — the static masks alone shape the
+   dim-trail→bright-head profile, and the crystallizing colour still
+   lands (colour is state feedback, not movement — same rationale as
+   the tile bloom; the .9s ratio glide is calmer than 1 Hz stepping,
+   so it stays). Only twinkle and sweep stop. ── */
 @media (prefers-reduced-motion: reduce) {
-  .wb-progress-fill::before, .wb-progress-fill::after,
-  .tl-bar.running::before,  .tl-bar.running::after,
-  .dot-loader::before,      .dot-loader::after {
+  .wb-progress-fill::before, .tl-bar.running::before, .dot-loader::before,
+  .wb-progress-fill::after,  .tl-bar.running::after,  .dot-loader::after {
     animation: none !important;
     transform: none !important;
-    opacity: .5;
+  }
+  .wb-progress-fill::before, .tl-bar.running::before, .dot-loader::before { opacity: .45; }
+  .wb-progress-fill::after,  .tl-bar.running::after,  .dot-loader::after  { opacity: .8; }
+  /* Park the loader's swept head at the leading edge, solid to it */
+  .dot-loader::after {
+    left: auto; right: 0;
+    -webkit-mask: linear-gradient(90deg, transparent, rgba(0,0,0,.4) 55%, #000);
+            mask: linear-gradient(90deg, transparent, rgba(0,0,0,.4) 55%, #000);
   }
 }
 
-/* ── Reusable indeterminate loader shell ── */
+/* ── Reusable indeterminate loader shell ──
+   (--trail-alpha here overrides the shared 34% by source order —
+   keep this rule below the shared host rule. The light-theme 60%
+   still wins over it by specificity.) */
 .dot-loader {
   position: relative;
   overflow: hidden;
   width: 100%;
   height: 10px;
   border-radius: 5px;
+  --trail-alpha: 58%;   /* brighter trail: no static head to anchor it */
 }
 .dot-loader.sm { height: 6px; border-radius: 3px; }

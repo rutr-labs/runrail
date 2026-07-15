@@ -6,11 +6,11 @@ import { useMemo } from 'react';
 
 export type DagTask = { name: string; task_type: string; depends_on: string[] };
 
-const NODE_W = 168;
-const NODE_H = 50;
-const GAP_X = 64;
-const GAP_Y = 18;
-const PAD = 16;
+const NODE_W = 210;
+const NODE_H = 66;
+const GAP_X = 76;
+const GAP_Y = 22;
+const PAD = 20;
 
 const TYPE_LABELS: Record<string, string> = { shell: '›_', python: 'Py', notebook: 'Nb', sql: 'SQL' };
 const TYPE_FILL: Record<string, string> = {
@@ -101,17 +101,17 @@ export function DagGraph({ tasks, statuses, onSelect }: {
             <g key={node.name} transform={`translate(${node.x}, ${node.y})`}
                className={`dag-node${status === 'running' ? ' dag-node-running' : ''}${onSelect ? ' dag-node-clickable' : ''}`}
                onClick={() => onSelect?.(node.name)}>
-              <rect width={NODE_W} height={NODE_H} rx={10} className="dag-node-body" style={{ stroke }} />
-              <rect x={10} y={13} width={26} height={24} rx={6}
+              <rect width={NODE_W} height={NODE_H} rx={13} className="dag-node-body" style={{ stroke }} />
+              <rect x={14} y={17} width={34} height={32} rx={8}
                     fill={TYPE_FILL[node.task_type] ?? TYPE_FILL.shell} />
-              <text x={23} y={29} textAnchor="middle" className="dag-node-type"
+              <text x={31} y={38} textAnchor="middle" className="dag-node-type"
                     fill={TYPE_TEXT[node.task_type] ?? TYPE_TEXT.shell}>
                 {TYPE_LABELS[node.task_type] ?? '?'}
               </text>
-              <text x={44} y={24} className="dag-node-name">
-                {node.name.length > 16 ? `${node.name.slice(0, 15)}…` : node.name}
+              <text x={58} y={31} className="dag-node-name">
+                {node.name.length > 18 ? `${node.name.slice(0, 17)}…` : node.name}
               </text>
-              <text x={44} y={38} className="dag-node-status">
+              <text x={58} y={48} className="dag-node-status">
                 {status ?? node.task_type}
               </text>
             </g>
