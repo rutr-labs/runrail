@@ -2,7 +2,7 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.1] — 2026-07-15
 
 ### Packaging
 - Available on PyPI — `pipx install runrail`. The wheel bundles the prebuilt web UI, so no Node is needed at runtime, and `pyproject.toml` now carries full metadata (description, Rutr Labs authors, keywords, trove classifiers, and project URLs).
@@ -65,7 +65,7 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 
 Initial public release: projects, managed Python environments, workflows with dependency-ordered tasks (shell, Python, notebook, SQL), cron scheduling with coalescing, parallel task execution, backfills, retries, live logs, artifacts with retention cleanup, and the bundled web UI.
 
-[Unreleased]: https://github.com/rutr-labs/runrail/compare/v0.3.0...HEAD
+[0.3.1]: https://github.com/rutr-labs/runrail/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/rutr-labs/runrail/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rutr-labs/runrail/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rutr-labs/runrail/releases/tag/v0.1.0
