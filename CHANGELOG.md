@@ -4,6 +4,11 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 
 ## [Unreleased]
 
+### Packaging
+- Available on PyPI — `pipx install runrail`. The wheel bundles the prebuilt web UI, so no Node is needed at runtime, and `pyproject.toml` now carries full metadata (description, Rutr Labs authors, keywords, trove classifiers, and project URLs).
+- Releases publish to PyPI via Trusted Publishing (OIDC) from CI when a release is published; a manual dispatch can dry-run to TestPyPI.
+- Data now lives in a stable per-user application-data directory by default — `~/Library/Application Support/RunRail` (macOS), `~/.local/share/RunRail` (Linux, honouring `$XDG_DATA_HOME`), `%LOCALAPPDATA%\RunRail` (Windows) — instead of `./.runrail` in the current directory. Override with `RUNRAIL_HOME` (e.g. `RUNRAIL_HOME=./.runrail`). `runrail serve` creates the directory and database on first run, so a fresh install needs only `pipx install runrail && runrail serve`.
+
 ### Added
 - Aggregated stats endpoints: `GET /api/stats/summary` computes the dashboard and run-history metrics (live counts, 24-hour totals, 7-day success rate, average duration) in SQL, so the numbers stay accurate no matter how much history the browser has loaded.
 - Activity heatmap range selector: 4, 8, or 16 weeks or 6 months on the dashboard and workflow pages, remembered across sessions. The grid runs Monday through Sunday with every weekday labelled.

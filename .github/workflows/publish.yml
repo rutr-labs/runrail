@@ -1,0 +1,89 @@
+name: Publish to PyPI
+
+# Publishes to PyPI when a GitHub Release is published (e.g. the v0.3.0 release).
+# Uses PyPI Trusted Publishing (OIDC) — no API token/secret is stored.
+#
+# One-time PyPI setup (Project → Settings → Publishing → Add a pending publisher):
+#   Owner:            rutr-labs
+#   Repository:       runrail
+#   Workflow name:    publish.yml
+#   Environment:      pypi
+# TestPyPI dry runs are available via the manual "Run workflow" button.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Publish target"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Rebuild the React UI so the wheel always ships the current bundle.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Verify the wheel bundles the web UI
+        run: |
+          python - <<'PY'
+          import glob, zipfile, sys
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          assert any(n.endswith("web/static/index.html") for n in names), "UI missing from wheel"
+          assert any("web/static/assets/" in n for n in names), "UI assets missing from wheel"
+          print("OK: web UI is bundled in", whl)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    needs: build
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

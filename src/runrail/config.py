@@ -1,13 +1,29 @@
 from functools import lru_cache
 from pathlib import Path
 
+from platformdirs import user_data_path
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_home() -> Path:
+    """Per-user application-data directory, chosen per OS by platformdirs.
+
+    macOS:   ~/Library/Application Support/RunRail
+    Linux:   ~/.local/share/RunRail   (honours $XDG_DATA_HOME)
+    Windows: %LOCALAPPDATA%\\RunRail
+
+    Overridden by RUNRAIL_HOME. A stable location (rather than ./.runrail in
+    the current directory) means `pipx install runrail && runrail serve` keeps
+    one database, log, and artifact store regardless of where it is launched.
+    """
+    return user_data_path("RunRail", appauthor=False, roaming=False)
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="RUNRAIL_", env_file=".env", extra="ignore")
 
-    home: Path = Path(".runrail")
+    home: Path = Field(default_factory=_default_home)
     db_url: str | None = None
     host: str = "127.0.0.1"
     port: int = 8080
@@ -41,6 +57,7 @@ class Settings(BaseSettings):
         return self.home / "environments"
 
     def ensure_directories(self) -> None:
+        self.home.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.environments_dir.mkdir(parents=True, exist_ok=True)

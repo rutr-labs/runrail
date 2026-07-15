@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="RunRail", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="RunRail", version="0.3.1", lifespan=lifespan)
     app.include_router(ws_router)
     app.include_router(resources_router); app.include_router(workflows_router); app.include_router(runs_router)
 

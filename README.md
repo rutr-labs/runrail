@@ -22,17 +22,28 @@ Most teams outgrow cron long before they need a distributed orchestrator. RunRai
 - **Live logs and artifacts** — streamed stdout/stderr with ANSI colors, search, tail-follow, timestamped notebook outputs, automatic retention cleanup
 - **A UI you'll actually use** — command palette (⌘K), Gantt timelines, activity heatmaps, a full-screen wallboard for the team TV, dark and light themes
 
-## Quick start
+## Install
 
-Requires Python 3.11+. Node is only needed for frontend development.
+RunRail ships as a single Python package with the web UI bundled in — **no Node required to run it**. Python 3.11+ is the only prerequisite.
 
 ```bash
-pip install -e .
-runrail init
+pipx install runrail    # isolated, recommended — or: pip install runrail
 runrail serve
 ```
 
-Open http://127.0.0.1:8080, connect a project folder, add an environment, and build your first workflow. `runrail serve` runs the API, web UI, scheduler, and worker in a single process.
+Then open **http://127.0.0.1:8080**. That's the whole setup.
+
+On first launch RunRail creates its database, logs, and artifact store automatically and starts the API, web UI, scheduler, and worker in a single process — no separate `init` step, no migrations to run by hand. Everything lives in a per-user application-data directory:
+
+| OS | Default location |
+|---|---|
+| macOS | `~/Library/Application Support/RunRail` |
+| Linux | `~/.local/share/RunRail` (honours `$XDG_DATA_HOME`) |
+| Windows | `%LOCALAPPDATA%\RunRail` |
+
+Set `RUNRAIL_HOME` to store everything somewhere else (e.g. `RUNRAIL_HOME=./.runrail` to keep data beside a project). For notebook tasks, install the extra: `pipx install "runrail[notebook]"`.
+
+From the UI, connect a project folder, add an environment, and build your first workflow.
 
 ## Core concepts
 
@@ -91,14 +102,14 @@ A FastAPI process serves the API and the prebuilt React UI. APScheduler acts pur
 
 All of that concurrency happens on one machine (threads and subprocesses); RunRail does not yet distribute work across remote worker nodes.
 
-SQLite in WAL mode is the default store; set `RUNRAIL_DB_URL` for PostgreSQL. Logs live under `.runrail/logs/run_<id>/`, artifacts under `.runrail/artifacts/<id>/` with timestamped filenames so frequent runs and retries never collide.
+SQLite in WAL mode is the default store; set `RUNRAIL_DB_URL` for PostgreSQL. Logs live under `$RUNRAIL_HOME/logs/run_<id>/`, artifacts under `$RUNRAIL_HOME/artifacts/<id>/` with timestamped filenames so frequent runs and retries never collide.
 
 ## Configuration
 
 | Variable | Default |
 |---|---|
-| `RUNRAIL_HOME` | `.runrail` |
-| `RUNRAIL_DB_URL` | SQLite at `.runrail/runrail.db` |
+| `RUNRAIL_HOME` | Per-user data dir (see [Install](#install)) |
+| `RUNRAIL_DB_URL` | SQLite at `$RUNRAIL_HOME/runrail.db` |
 | `RUNRAIL_HOST` / `RUNRAIL_PORT` | `127.0.0.1` / `8080` |
 | `RUNRAIL_WORKER_CONCURRENCY` | `4` concurrent runs |
 | `RUNRAIL_TASK_PARALLELISM` | `4` concurrent tasks per run |
