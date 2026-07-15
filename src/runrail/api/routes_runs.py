@@ -109,6 +109,46 @@ def stderr(object_id: int, tail_bytes: int | None = Query(None, ge=1),
     return log_response(get_or_404(db, TaskRun, object_id), "stderr_log_path", tail_bytes)
 
 
+@router.get("/stats/summary")
+def stats_summary(db: Session = Depends(get_db)):
+    """Dashboard headline metrics, aggregated in SQL.
+
+    The UI previously derived these from a capped /runs fetch, which silently
+    under-counts once a workflow runs often enough to overflow the limit (a
+    5-minute schedule is ~288 runs/day). Aggregating in the database keeps the
+    numbers correct at any volume.
+    """
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    since_24h = now_utc - timedelta(days=1)
+    since_7d = now_utc - timedelta(days=7)
+
+    def count(*conditions) -> int:
+        return db.scalar(select(func.count()).select_from(WorkflowRun).where(*conditions)) or 0
+
+    running = count(WorkflowRun.status == RunStatus.running)
+    queued = count(WorkflowRun.status == RunStatus.queued)
+    done_7d = count(WorkflowRun.created_at >= since_7d,
+                    WorkflowRun.status.in_((RunStatus.success, RunStatus.failed)))
+    success_7d = count(WorkflowRun.created_at >= since_7d, WorkflowRun.status == RunStatus.success)
+    avg_24h = db.scalar(
+        select(func.avg(WorkflowRun.duration_seconds)).where(
+            WorkflowRun.created_at >= since_24h, WorkflowRun.duration_seconds.is_not(None)))
+    return {
+        "running": running,
+        "queued": queued,
+        "live": running + queued,
+        "runs_24h": count(WorkflowRun.created_at >= since_24h),
+        "succeeded_24h": count(WorkflowRun.created_at >= since_24h,
+                               WorkflowRun.status == RunStatus.success),
+        "failed_24h": count(WorkflowRun.created_at >= since_24h,
+                            WorkflowRun.status == RunStatus.failed),
+        "avg_duration_24h": float(avg_24h) if avg_24h is not None else None,
+        "done_7d": done_7d,
+        "success_7d": success_7d,
+        "success_rate_7d": round(success_7d / done_7d * 100) if done_7d else None,
+    }
+
+
 @router.get("/stats/daily")
 def daily_stats(days: int = Query(112, ge=1, le=366), workflow_id: int | None = None,
                 db: Session = Depends(get_db)):

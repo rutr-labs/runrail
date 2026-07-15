@@ -27,9 +27,13 @@ def enqueue_scheduled(workflow_id: int) -> None:
         minute = datetime.now(timezone.utc).replace(second=0, microsecond=0)
         key = f"schedule:{workflow_id}:{minute.isoformat()}"
         if db.scalar(select(WorkflowRun).where(WorkflowRun.run_key == key)): return
+        # Don't persist `ds` as an explicit run parameter — it would show up as a
+        # parameter on every scheduled run even when the workflow never templates
+        # it. The worker still defaults `ds` to the run's date for `{{ ds }}`
+        # rendering (see _context in worker/service.py); only backfills, which are
+        # inherently date-driven, set `ds` deliberately.
         run = WorkflowRun(workflow_id=workflow_id, status=RunStatus.queued,
-                          trigger_type=TriggerType.schedule, run_key=key,
-                          parameters_json={"ds": minute.date().isoformat()})
+                          trigger_type=TriggerType.schedule, run_key=key)
         db.add(run)
         try:
             db.commit()
