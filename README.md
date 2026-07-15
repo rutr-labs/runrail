@@ -86,7 +86,9 @@ Compose starts RunRail with PostgreSQL and persistent volumes on port 8080. Dock
 
 ## Architecture
 
-A FastAPI process serves the API and the prebuilt React UI. APScheduler acts purely as a clock, writing due runs to the database; while a run executes, the next scheduled iteration coalesces to a single queued run instead of piling up or being dropped. Workers claim queued runs atomically, so multiple workflows execute in parallel and a long job never blocks a frequent one. Within a run, the task graph executes with real parallelism (`RUNRAIL_TASK_PARALLELISM`): independent branches run concurrently and every task is a subprocess with its own logs, timeout, and process-group cleanup.
+A FastAPI process serves the API and the prebuilt React UI. APScheduler acts purely as a clock, writing due runs to the database; while a run executes, the next scheduled iteration coalesces to a single queued run instead of piling up or being dropped. A bounded worker pool (`RUNRAIL_WORKER_CONCURRENCY`) claims queued runs atomically, so **different workflows execute concurrently** and a long job never blocks a frequent one. Runs of the *same* workflow are serialized by its `max_concurrent_runs` (default 1) so a slow run can't overlap its own next iteration. Within a run, the task graph executes with real parallelism (`RUNRAIL_TASK_PARALLELISM`): **independent tasks run concurrently**, each starting the moment its dependencies succeed, and every task is a subprocess with its own logs, timeout, and process-group cleanup.
+
+All of that concurrency happens on one machine (threads and subprocesses); RunRail does not yet distribute work across remote worker nodes.
 
 SQLite in WAL mode is the default store; set `RUNRAIL_DB_URL` for PostgreSQL. Logs live under `.runrail/logs/run_<id>/`, artifacts under `.runrail/artifacts/<id>/` with timestamped filenames so frequent runs and retries never collide.
 
@@ -107,7 +109,7 @@ Schedules evaluate in UTC; the UI displays them in your local timezone. For depl
 
 ## Current limitations
 
-- Single-machine execution; no remote workers yet
+- Runs on a single machine — workflows and independent tasks run concurrently there, but work is not distributed across remote worker nodes yet
 - No built-in authentication or RBAC
 - SQL tasks execute against SQLite only
 - Secrets are plain environment variables
