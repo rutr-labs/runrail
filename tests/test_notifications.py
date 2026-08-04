@@ -91,3 +91,31 @@ def test_retry_queues_new_run_with_same_parameters(client):
     assert body["status"] == "queued"
     assert body["parameters_json"] == {"region": "ca"}
     assert body["trigger_type"] == "manual"
+
+
+def test_payload_shape_follows_receiver():
+    from runrail.notify import _payload_for
+
+    fields = {"event": "run_failed", "workflow": "etl", "run_id": 7}
+
+    # Slack and generic receivers keep the flat text payload.
+    for url in ("https://hooks.slack.com/services/T/B/x", "https://alerts.internal/hook"):
+        payload = _payload_for(url, "boom", fields)
+        assert payload["text"] == "boom" and payload["event"] == "run_failed"
+
+    # Power Automate (Teams) gets the adaptive-card envelope its default
+    # "when a webhook request is received" template requires.
+    pa = "https://prod-77.westus.logic.azure.com:443/workflows/abc/triggers/manual/paths/invoke?sig=x"
+    payload = _payload_for(pa, "boom", fields)
+    assert payload["type"] == "message"
+    attachment = payload["attachments"][0]
+    assert attachment["contentType"] == "application/vnd.microsoft.card.adaptive"
+    card = attachment["content"]
+    assert card["type"] == "AdaptiveCard"
+    assert card["body"][0]["text"] == "boom"
+    facts = {f["title"]: f["value"] for f in card["body"][1]["facts"]}
+    assert facts == {"Event": "run_failed", "Workflow": "etl", "Run Id": "7"}
+
+    # Newer Power Platform endpoints and legacy connector URLs count as Teams too.
+    assert _payload_for("https://x.api.powerplatform.com/flows/y", "t", {})["type"] == "message"
+    assert _payload_for("https://contoso.webhook.office.com/webhookb2/z", "t", {})["type"] == "message"
