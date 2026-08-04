@@ -12,9 +12,9 @@ Most teams outgrow cron long before they need a distributed orchestrator. RunRai
 
 - **Bring your own code** — point RunRail at a folder; scripts, notebooks, SQL, and shell commands run as-is in isolated subprocesses
 - **Dependency graphs with parallel execution** — independent tasks run concurrently; each task starts the moment its dependencies succeed
-- **Cron scheduling built for high frequency** — minute-level schedules with per-workflow concurrency limits, coalescing, and missed-run tolerance
+- **Timezone-aware scheduling built for high frequency** — pick "daily at 9:00 in Asia/Dubai" from dropdowns (cron stays available as the advanced mode), with minute-level schedules, per-workflow concurrency limits, coalescing, and missed-run tolerance
 - **Managed Python environments** — declare pip requirements in the UI; RunRail builds and atomically swaps isolated virtualenvs, keeping the last working build on failure
-- **Failure webhooks with sane semantics** — one alert on the first failure, one on recovery; Slack and Teams incoming webhooks work as-is
+- **Failure webhooks with sane semantics** — one alert on the first failure, one on recovery; Slack webhooks and Microsoft Teams (Power Automate workflow) URLs work as-is
 - **Auto-pause** — optionally disable a workflow after N consecutive failures instead of failing hundreds of times overnight
 - **Backfills and retries** — queue one run per date over a range; re-run any finished run with identical parameters in one click
 - **Workflows as code** — `runrail export` / `runrail apply` round-trip definitions through YAML for version control and code review
@@ -86,7 +86,7 @@ python scripts/daily.py --date {{ ds }} --region {{ region }}
 
 ## Notifications
 
-Set `RUNRAIL_NOTIFY_WEBHOOK_URL` globally or a webhook per workflow. RunRail posts on the first failure after a success and again on recovery — never once per red run, so a broken two-minute schedule produces one alert rather than three hundred. The payload's `text` field renders directly in Slack and Microsoft Teams; structured fields are included for custom receivers. Pair with per-workflow auto-pause to stop repeat failures entirely.
+Set `RUNRAIL_NOTIFY_WEBHOOK_URL` globally or a webhook per workflow. RunRail posts on the first failure after a success and again on recovery — never once per red run, so a broken two-minute schedule produces one alert rather than three hundred. Slack and custom receivers get a JSON payload whose `text` field renders directly, with structured fields alongside. For Microsoft Teams, create a Workflow from the "when a webhook request is received" template (Teams → channel → Workflows; Microsoft retired the classic Office 365 connector webhooks) and paste the generated URL — RunRail detects Teams-shaped URLs and sends the Adaptive Card envelope that flow expects. Pair with per-workflow auto-pause to stop repeat failures entirely.
 
 ## Docker
 
@@ -117,7 +117,7 @@ SQLite in WAL mode is the default store; set `RUNRAIL_DB_URL` for PostgreSQL. Lo
 | `RUNRAIL_NOTIFY_WEBHOOK_URL` | unset; default failure/recovery webhook |
 | `RUNRAIL_BROWSE_ROOT` | user home; confines the UI file picker |
 
-Schedules evaluate in UTC; the UI displays them in your local timezone. For deployments reachable beyond localhost, set `RUNRAIL_BROWSE_ROOT` to a narrow directory and place the server behind authentication — RunRail does not yet ship its own.
+Schedules evaluate in each workflow's own timezone (UTC when unset), so "daily at 9:00" means 9:00 on that workflow's wall clock across DST changes; the UI displays occurrences in your local timezone. For deployments reachable beyond localhost, set `RUNRAIL_BROWSE_ROOT` to a narrow directory and place the server behind authentication — RunRail does not yet ship its own.
 
 ## Current limitations
 
