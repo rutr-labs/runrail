@@ -60,7 +60,13 @@ class SchedulerService:
             if not workflow.schedule_cron: continue
             job_id = f"workflow-{workflow.id}"; wanted.add(job_id)
             try:
-                trigger = CronTrigger.from_crontab(workflow.schedule_cron, timezone="UTC")
+                # Cron fields are wall-clock in the workflow's timezone (UTC when
+                # unset). APScheduler owns the DST semantics: a time skipped by a
+                # spring-forward gap is not fired; a repeated fall-back time fires
+                # once. pytz's UnknownTimeZoneError subclasses KeyError, hence the
+                # broad except alongside ValueError for bad crontabs.
+                tz = workflow.schedule_timezone or "UTC"
+                trigger = CronTrigger.from_crontab(workflow.schedule_cron, timezone=tz)
                 # misfire_grace_time: APScheduler's default of 1 second silently skips
                 # a firing the moment the process is briefly busy or the host wakes from
                 # sleep. Late enqueueing is safe here — runs are deduped per minute and
@@ -68,7 +74,7 @@ class SchedulerService:
                 self.scheduler.add_job(enqueue_scheduled, trigger, [workflow.id], id=job_id,
                                        replace_existing=True, coalesce=True, max_instances=1,
                                        misfire_grace_time=55)
-            except ValueError:
+            except (ValueError, KeyError):
                 continue
         for job in self.scheduler.get_jobs():
             if job.id not in wanted: self.scheduler.remove_job(job.id)

@@ -119,6 +119,8 @@ class Workflow(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(255), unique=True)
     description: Mapped[str | None] = mapped_column(Text)
     schedule_cron: Mapped[str | None] = mapped_column(String(255))
+    # IANA name (e.g. "Asia/Dubai"); NULL evaluates the cron in UTC as before.
+    schedule_timezone: Mapped[str | None] = mapped_column(String(64))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     max_concurrent_runs: Mapped[int] = mapped_column(Integer, default=1)
     notify_webhook_url: Mapped[str | None] = mapped_column(Text)

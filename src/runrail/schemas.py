@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo
 
 from pydantic import (
     AfterValidator,
@@ -95,12 +96,24 @@ class WorkflowIn(BaseModel):
     name: str
     description: str | None = None
     schedule_cron: str | None = None
+    schedule_timezone: str | None = None
     enabled: bool = True
     max_concurrent_runs: int = Field(default=1, ge=1)
     project_id: int | None = None
     default_environment_id: int | None = None
     notify_webhook_url: str | None = None
     auto_pause_failures: int | None = Field(default=None, ge=1)
+
+    @field_validator("schedule_timezone")
+    @classmethod
+    def _known_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            ZoneInfo(value)
+        except Exception as exc:  # ZoneInfoNotFoundError, ValueError on bad keys
+            raise ValueError(f"Unknown IANA timezone: {value!r}") from exc
+        return value
 
 
 class WorkflowOut(WorkflowIn, ORMModel):

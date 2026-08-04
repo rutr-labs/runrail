@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session, selectinload
 from runrail.models import Environment, Project, Task, Workflow
 from runrail.schemas import TaskIn
 
-_WORKFLOW_FIELDS = ("description", "schedule_cron", "enabled", "max_concurrent_runs",
-                    "notify_webhook_url", "auto_pause_failures")
+_WORKFLOW_FIELDS = ("description", "schedule_cron", "schedule_timezone", "enabled",
+                    "max_concurrent_runs", "notify_webhook_url", "auto_pause_failures")
 _TASK_FIELDS = ("task_type", "command", "script_path", "notebook_path", "sql_path", "cwd",
                 "retries", "retry_delay_seconds", "timeout_seconds")
 
@@ -127,6 +127,7 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
             db.add(workflow)
         workflow.description = entry.get("description")
         workflow.schedule_cron = entry.get("schedule_cron")
+        workflow.schedule_timezone = entry.get("schedule_timezone")
         workflow.enabled = bool(entry.get("enabled", True))
         workflow.max_concurrent_runs = int(entry.get("max_concurrent_runs", 1))
         workflow.notify_webhook_url = entry.get("notify_webhook_url")
