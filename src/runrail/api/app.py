@@ -45,7 +45,8 @@ def create_app() -> FastAPI:
                 return FileResponse(requested)
         index = static / "index.html"
         if index.is_file(): return FileResponse(index)
-        return {"message": "RunRail API is running; frontend assets are not built."}
+        return {"message": "RunRail API is running; frontend assets are not built. "
+                           "Build them with: cd frontend && npm install && npm run build"}
     return app
 
 
