@@ -12,6 +12,9 @@ function Browser({mode,initial,browseFrom,onClose,onSelect}:{mode:'files'|'direc
   const[data,setData]=useState<Listing>();const[error,setError]=useState('');const[selected,setSelected]=useState(initial);
   const load=(path?:string)=>{setError('');api<Listing>(`/filesystem?mode=${mode}${path?`&path=${encodeURIComponent(path)}`:''}`).then(result=>{setData(result);setSelected(mode==='directories'?result.path:'')}).catch(e=>setError(e.message))};
   useEffect(()=>{const separator=Math.max(initial.lastIndexOf('/'),initial.lastIndexOf('\\'));const dir=browseFrom||(separator>=0?(mode==='directories'?initial:initial.slice(0,separator)):undefined);if(dir){setError('');api<Listing>(`/filesystem?mode=${mode}&path=${encodeURIComponent(dir)}`).then(result=>{setData(result);setSelected(mode==='directories'&&initial?initial:'')}).catch(()=>load(undefined))}else{load(undefined)}},[]);
+  // Capture phase: the host Modal's document listener registered earlier and
+  // would otherwise see Escape first and close the whole form under us.
+  useEffect(()=>{const onKey=(e:KeyboardEvent)=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();onClose()}};document.addEventListener('keydown',onKey,true);return()=>document.removeEventListener('keydown',onKey,true)},[onClose]);
   return (
     <div className="modal-shade" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}>
       <section className="modal file-browser" role="dialog" aria-modal="true">

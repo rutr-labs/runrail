@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, FormEvent, ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -14,7 +14,9 @@ import { rrws } from './ws';
 import { FilePicker } from './components/FilePicker';
 import { DagGraph } from './components/DagGraph';
 import { RunHeatmap } from './components/Heatmap';
-import { Button, StatusBadge, MetricCard, EmptyState, Modal, PageHeader, TaskTypeBadge, SkeletonCard, HealthChip, LoadingBar } from './components/ui';
+import { cronLabel, nextCronOccurrence } from './cron';
+import { ScheduleBuilder } from './components/ScheduleBuilder';
+import { Button, CancelButton, StatusBadge, MetricCard, EmptyState, Modal, PageHeader, TaskTypeBadge, SkeletonCard, HealthChip, LoadingBar, CometCanvas } from './components/ui';
 import { LogViewer } from './components/LogViewer';
 import { useToast } from './components/toast';
 
@@ -54,6 +56,7 @@ type Workflow = {
   name: string;
   description?: string | null;
   schedule_cron?: string | null;
+  schedule_timezone?: string | null;
   enabled: boolean;
   max_concurrent_runs: number;
   project_id?: number | null;
@@ -197,98 +200,6 @@ function liveDuration(run: Run, now: number): string {
   return '—';
 }
 
-/* ─── Cron helpers (minute/hour steps + daily/weekly) ─── */
-const stepOf = (part: string): number | null => {
-  const match = part.match(/^\*\/(\d+)$/);
-  return match ? Number(match[1]) || null : null;
-};
-
-/** Schedules evaluate in UTC on the server, so occurrences are computed in UTC.
- *  Display always converts to the viewer's local timezone. */
-function nextCronOccurrence(expr: string, after = new Date()): Date | null {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return null;
-  const [minutePart, hourPart, domPart, monthPart, dowPart] = parts;
-  if (domPart !== '*' || monthPart !== '*') return null;
-
-  const next = new Date(after);
-  next.setUTCSeconds(0, 0);
-
-  // Every minute / every N minutes: "* * * * *", "*/5 * * * *"
-  const minuteStep = minutePart === '*' ? 1 : stepOf(minutePart);
-  if (minuteStep != null && hourPart === '*' && dowPart === '*') {
-    do { next.setUTCMinutes(next.getUTCMinutes() + 1); }
-    while (next.getUTCMinutes() % minuteStep !== 0);
-    return next;
-  }
-
-  const minute = minutePart === '*' ? 0 : Number(minutePart);
-  if (Number.isNaN(minute)) return null;
-
-  // Hourly at a fixed minute: "30 * * * *"
-  if (hourPart === '*' && dowPart === '*') {
-    next.setUTCMinutes(minute, 0, 0);
-    if (next <= after) next.setUTCHours(next.getUTCHours() + 1);
-    return next;
-  }
-
-  // Every N hours: "M */6 * * *"
-  const hourStep = stepOf(hourPart);
-  if (hourStep != null && dowPart === '*') {
-    next.setUTCMinutes(minute, 0, 0);
-    while (next <= after || next.getUTCHours() % hourStep !== 0) {
-      next.setUTCHours(next.getUTCHours() + 1);
-    }
-    return next;
-  }
-
-  const hour = hourPart === '*' ? 0 : Number(hourPart);
-  if (Number.isNaN(hour)) return null;
-  next.setUTCHours(hour, minute, 0, 0);
-
-  if (dowPart === '*') {
-    if (next <= after) next.setUTCDate(next.getUTCDate() + 1);
-    return next;
-  }
-
-  const weekday = Number(dowPart);
-  if (Number.isNaN(weekday)) return null;
-  let delta = (weekday - next.getUTCDay() + 7) % 7;
-  if (delta === 0 && next <= after) delta = 7;
-  next.setUTCDate(next.getUTCDate() + delta);
-  return next;
-}
-
-/** Human label for a cron, in the viewer's local timezone so it agrees with the
- *  timestamps shown next to it (the raw expression stays UTC on the server). */
-function cronLabel(expr: string): string {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return expr;
-  const [minutePart, hourPart, domPart, monthPart, dowPart] = parts;
-  if (domPart !== '*' || monthPart !== '*') return expr;
-
-  if (hourPart === '*' && dowPart === '*') {
-    if (minutePart === '*') return 'every minute';
-    const minuteStep = stepOf(minutePart);
-    if (minuteStep) return `every ${minuteStep} min`;
-  }
-  const hourStep = stepOf(hourPart);
-  if (hourStep && dowPart === '*') {
-    return hourStep === 1 ? 'hourly' : `every ${hourStep}h`;
-  }
-
-  // Fixed-time schedules: derive the label from a real occurrence so the
-  // local-time conversion (including weekday shifts across midnight) is exact.
-  const next = nextCronOccurrence(expr);
-  if (!next) return expr;
-  const time = next.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  if (hourPart === '*' && dowPart === '*') {
-    return `hourly at :${String(next.getMinutes()).padStart(2, '0')}`;
-  }
-  if (dowPart === '*') return `daily at ${time}`;
-  return `every ${next.toLocaleDateString(undefined, { weekday: 'short' })} at ${time}`;
-}
-
 const REDUCED_MOTION = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /** Native View Transition between pages when supported: the run id chip morphs
@@ -374,6 +285,7 @@ function Shell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const location = useLocation();
   const health = useApiHealth();
+  const navRef = useRef<HTMLElement>(null);
   useEffect(() => setMobileOpen(false), [location.pathname]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -385,6 +297,20 @@ function Shell() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+  // The sliding indicator is positioned from measurements so it tracks any
+  // item height; routes outside the nav (e.g. /settings) collapse it to 0.
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const measure = () => {
+      const active = nav.querySelector<HTMLElement>('.sidebar-nav-item.active');
+      nav.style.setProperty('--nav-ind-y', `${active?.offsetTop ?? 0}px`);
+      nav.style.setProperty('--nav-ind-h', `${active?.offsetHeight ?? 0}px`);
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [location.pathname]);
 
   const page = NAV.find(n => n.href !== '/' && location.pathname.startsWith(n.href))
     ?? (location.pathname.startsWith('/runs') ? NAV[1] : NAV[0]);
@@ -401,7 +327,8 @@ function Shell() {
           <span className="sidebar-logo"><span className="sidebar-logo-inner"><span /><span /><span /></span></span>
           <span className="sidebar-wordmark"><b>RunRail</b><span>Control plane</span></span>
         </Link>
-        <nav className="sidebar-nav">
+        <nav className="sidebar-nav" ref={navRef}>
+          <span className="nav-indicator" aria-hidden="true" />
           {sections.map(section => (
             <div key={section}>
               <div className="sidebar-section-label">{section}</div>
@@ -429,7 +356,7 @@ function Shell() {
           <div className="topbar-breadcrumb">
             <span className="bc-root">RunRail</span>
             <span className="bc-sep">›</span>
-            <span className="bc-page">{page.label}</span>
+            <span className="bc-page" key={page.label}>{page.label}</span>
           </div>
           <div className="topbar-actions">
             <button className="cmd-k-btn" onClick={() => setPaletteOpen(true)} aria-label="Open command palette">
@@ -488,6 +415,8 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
   const navTo = useNavigate();
   const { toast } = useToast();
   const [query, setQuery] = useState('');
+  // Entrance stagger plays once per open; clearing the query must not replay it.
+  const [fresh, setFresh] = useState(true);
   const [selected, setSelected] = useState(0);
   const [flows, setFlows] = useState<Workflow[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -565,19 +494,20 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
             autoFocus
             placeholder="Search pages, workflows, runs…"
             value={query}
-            onChange={e => setQuery(e.target.value)}
+            onChange={e => { setQuery(e.target.value); if (e.target.value) setFresh(false); }}
             onKeyDown={onKey}
             aria-label="Command search"
           />
           <kbd className="cmdk-esc">esc</kbd>
         </div>
-        <div className="cmdk-list" ref={listRef}>
+        <div className={`cmdk-list${fresh ? ' cmdk-fresh' : ''}`} ref={listRef}>
           {shown.length === 0 && <div className="cmdk-empty">No matches for “{query}”</div>}
           {shown.map((c, i) => (
             <div key={c.id}>
               {c.section !== shown[i - 1]?.section && <div className="cmdk-section">{c.section}</div>}
               <button
                 className={`cmdk-item${i === selected ? ' selected' : ''}`}
+                title={c.label}
                 onMouseEnter={() => setSelected(i)}
                 onClick={() => c.run()}
               >
@@ -640,26 +570,29 @@ function RunTable({ runs, flows, onChanged }: { runs: Run[]; flows: Workflow[]; 
           </tr>
         </thead>
         <tbody>
-          {runs.map(r => (
-            <tr key={r.id}>
-              <td>
-                <Link className="run-id" to={`/runs/${r.id}`}
-                      style={{ viewTransitionName: `run-${r.id}` } as React.CSSProperties}
-                      onClick={e => { e.preventDefault(); navigateWithTransition(navTo, `/runs/${r.id}`); }}>
-                  #{r.id}
-                </Link>
-              </td>
-              <td><Link to={`/workflows/${r.workflow_id}`} style={{ color: 'inherit', textDecoration: 'none' }}><b>{flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`}</b></Link></td>
-              <td><StatusBadge value={r.status} /></td>
-              <td><span className="trigger-badge">{r.trigger_type}</span></td>
-              <td style={{ color: 'var(--text-2)', fontSize: 13 }} title={formatDate(r.started_at || r.created_at)}>{timeAgo(r.started_at || r.created_at)}</td>
-              <td style={{ color: 'var(--text-2)', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>{liveDuration(r, now)}</td>
-              <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                {LIVE(r.status) && <CancelRunButton run={r} onDone={onChanged} />}
-                <Link className="row-arrow" to={`/runs/${r.id}`}>›</Link>
-              </td>
-            </tr>
-          ))}
+          {runs.map(r => {
+            const flowName = flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`;
+            return (
+              <tr key={r.id}>
+                <td>
+                  <Link className="run-id" to={`/runs/${r.id}`}
+                        style={{ viewTransitionName: `run-${r.id}` } as React.CSSProperties}
+                        onClick={e => { e.preventDefault(); navigateWithTransition(navTo, `/runs/${r.id}`); }}>
+                    #{r.id}
+                  </Link>
+                </td>
+                <td><Link to={`/workflows/${r.workflow_id}`} style={{ color: 'inherit', textDecoration: 'none' }}><b className="run-flow-name" title={flowName}>{flowName}</b></Link></td>
+                <td><StatusBadge value={r.status} /></td>
+                <td><span className="trigger-badge">{r.trigger_type}</span></td>
+                <td style={{ color: 'var(--text-2)', fontSize: 13 }} title={formatDate(r.started_at || r.created_at)}>{timeAgo(r.started_at || r.created_at)}</td>
+                <td style={{ color: 'var(--text-2)', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>{liveDuration(r, now)}</td>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  {LIVE(r.status) && <CancelRunButton run={r} onDone={onChanged} />}
+                  <Link className="row-arrow" to={`/runs/${r.id}`}>›</Link>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -668,6 +601,7 @@ function RunTable({ runs, flows, onChanged }: { runs: Run[]; flows: Workflow[]; 
 
 function FailedRunRow({ run, flows }: { run: Run; flows: Workflow[] }) {
   const flow = flows.find(w => w.id === run.workflow_id);
+  const name = flow?.name ?? `Workflow ${run.workflow_id}`;
   return (
     <Link to={`/runs/${run.id}`} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px', borderBottom: '1px solid var(--border)', transition: 'background .12s', textDecoration: 'none', color: 'inherit' }}
       onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')}
@@ -675,8 +609,8 @@ function FailedRunRow({ run, flows }: { run: Run; flows: Workflow[] }) {
     >
       <StatusBadge value="failed" />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {flow?.name ?? `Workflow ${run.workflow_id}`}
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>
+          {name}
         </div>
         <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>{timeAgo(run.created_at)} · run #{run.id}</div>
       </div>
@@ -687,12 +621,13 @@ function FailedRunRow({ run, flows }: { run: Run; flows: Workflow[] }) {
 
 function LiveRunRow({ run, flows }: { run: Run; flows: Workflow[] }) {
   const flow = flows.find(w => w.id === run.workflow_id);
+  const name = flow?.name ?? `Workflow ${run.workflow_id}`;
   return (
     <Link to={`/runs/${run.id}`} className="active-run-row" style={{ textDecoration: 'none', color: 'inherit' }}>
       <span className={`run-pulse ${run.status}`} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {flow?.name ?? `Workflow ${run.workflow_id}`}
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>
+          {name}
         </div>
         <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 1 }}>#{run.id} · {run.trigger_type} · {timeAgo(run.created_at)}</div>
       </div>
@@ -709,9 +644,9 @@ function UpcomingList({ flows }: { flows: Workflow[] }) {
       if (!flow.enabled || !flow.schedule_cron) continue;
       let cursor = now;
       for (let i = 0; i < 3; i++) {
-        const next = nextCronOccurrence(flow.schedule_cron, cursor);
+        const next = nextCronOccurrence(flow.schedule_cron, flow.schedule_timezone, cursor);
         if (!next || next.getTime() - now.getTime() > 7 * DAY) break;
-        items.push({ flow, next, label: cronLabel(flow.schedule_cron) });
+        items.push({ flow, next, label: cronLabel(flow.schedule_cron, flow.schedule_timezone) });
         // +1s, not +1min: a full minute would skip the very next occurrence
         // of an every-minute schedule.
         cursor = new Date(next.getTime() + 1000);
@@ -729,11 +664,11 @@ function UpcomingList({ flows }: { flows: Workflow[] }) {
         <Link to={`/workflows/${flow.id}`} key={`${flow.id}-${next.toISOString()}`} className="tl-upcoming-row" style={{ textDecoration: 'none', color: 'inherit', display: 'flex', alignItems: 'center', gap: 10 }}>
           <div className="tl-upcoming-dot" />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{flow.name}</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={flow.name}>{flow.name}</div>
             <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 1 }}>{label}</div>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)', fontFamily: 'SF Mono, monospace' }}>{next.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>{next.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</div>
             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{next.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</div>
           </div>
         </Link>
@@ -923,7 +858,7 @@ function Dashboard() {
                 <div style={{ padding: '6px 0 10px' }}>
                   {flows.slice(0, 6).map(w => (
                     <div key={w.id} className="wf-spark-row">
-                      <Link className="wf-spark-name" to={`/workflows/${w.id}`}>{w.name}</Link>
+                      <Link className="wf-spark-name" to={`/workflows/${w.id}`} title={w.name}>{w.name}</Link>
                       <WorkflowSparkline runs={runs.filter(r => r.workflow_id === w.id).slice(0, 12)} />
                       <button className="edit-link" onClick={() => runNow(w.id)} title={`Run ${w.name} now`}><Play size={12} /></button>
                     </div>
@@ -1277,7 +1212,7 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
         <div><h2>Timeline</h2><p>Overlapping bars ran in parallel; multiple bars on a lane are retry attempts</p></div>
       </div>
       <div className="task-timeline">
-        {[...lanes.entries()].map(([name, attempts]) => (
+        {[...lanes.entries()].map(([name, attempts], laneIndex) => (
           <div key={name} className="tl-row">
             <span className="tl-name" title={name}>{name}</span>
             <div className="tl-track">
@@ -1295,7 +1230,9 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
                 ].filter(Boolean).join('\n');
                 return (
                   <div key={t.id} className={`tl-bar ${t.status}`}
-                       style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }} title={tip}>
+                       style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%`, animationDelay: `${Math.min(laneIndex * 30, 240)}ms` }} title={tip}>
+                    {t.status === 'running' ? <CometCanvas kind="fill" />
+                      : (t.status === 'success' || t.status === 'failed') && <CometCanvas kind="still" />}
                     {t.attempt > 1 && <span className="tl-attempt">A{t.attempt}</span>}
                   </div>
                 );
@@ -1327,6 +1264,11 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
 function TaskRunCard({ task, index }: { task: TaskRun; index: number }) {
   const [open, setOpen] = useState(index === 1 || task.status === 'failed' || task.status === 'running');
   const collapsible = task.status !== 'skipped' && task.status !== 'cancelled';
+  const name = task.task_name ?? `Task #${task.task_id}`;
+  const meta = `Attempt ${task.attempt}`
+    + (task.exit_code != null ? ` · exit ${task.exit_code}` : '')
+    + (task.duration_seconds != null ? ` · ${formatDuration(task.duration_seconds)}` : '')
+    + (task.rendered_command ? ` · ${task.rendered_command}` : '');
   return (
     <article className="run-task" id={task.task_name ? `task-${task.task_name}` : undefined}>
       <button className="run-task-head" onClick={() => collapsible && setOpen(!open)}>
@@ -1334,14 +1276,9 @@ function TaskRunCard({ task, index }: { task: TaskRun; index: number }) {
         <div>
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {task.task_type && <TaskTypeBadge type={task.task_type} />}
-            {task.task_name ?? `Task #${task.task_id}`}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>{name}</span>
           </h3>
-          <p>
-            Attempt {task.attempt}
-            {task.exit_code != null ? ` · exit ${task.exit_code}` : ''}
-            {task.duration_seconds != null ? ` · ${formatDuration(task.duration_seconds)}` : ''}
-            {task.rendered_command ? ` · ${task.rendered_command}` : ''}
-          </p>
+          <p title={meta}>{meta}</p>
         </div>
         <StatusBadge value={task.status} />
         {collapsible && <b>{open ? '⌃' : '⌄'}</b>}
@@ -1412,7 +1349,7 @@ function Projects() {
                   <button className="delete-link" onClick={() => removeProject(x)}>Remove</button>
                 </div>
               </div>
-              <h3>{x.name}</h3>
+              <h3 title={x.name}>{x.name}</h3>
               <p>{x.description || 'No description yet'}</p>
               <div className="path-chip"><span>⌁</span>{x.root_path}</div>
               <div className="resource-actions">
@@ -1461,7 +1398,7 @@ function ProjectModal({ onClose, done }: { onClose: () => void; done: () => void
         <label className="field"><span>Description <em>Optional</em></span><textarea name="description" placeholder="What lives in this project?" /></label>
         <div className="callout">RunRail never imports this code. Every task runs safely in a subprocess.</div>
         <div className="modal-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <CancelButton />
           <Button type="submit" disabled={!path}>Connect project</Button>
         </div>
       </form>
@@ -1494,7 +1431,7 @@ function EditProjectModal({ project, onClose, done }: { project: Project; onClos
         <label className="field"><span>Default environment</span><select name="default_environment_id" value={environmentId} onChange={e => setEnvironmentId(e.target.value)}><option value="">None</option>{envs.map(e => <option key={e.id} value={e.id} disabled={!environmentUsable(e)}>{e.name}{e.status !== 'ready' ? ` (${e.status})` : ''}</option>)}</select></label>
         <label className="field"><span>Description <em>Optional</em></span><textarea name="description" defaultValue={project.description || ''} placeholder="What lives in this project?" /></label>
         <div className="modal-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <CancelButton />
           <Button type="submit" disabled={!path}>Save changes</Button>
         </div>
       </form>
@@ -1544,7 +1481,7 @@ function Environments() {
             <div className="list-item" key={x.id}>
               <div className="resource-icon terminal"><Terminal size={16} /></div>
               <div className="list-copy">
-                <h3>{x.name}</h3>
+                <h3 title={x.name}>{x.name}</h3>
                 {x.status === 'creating' || x.status === 'building'
                   ? <div style={{ marginTop: 6, maxWidth: 260 }}>
                       <LoadingBar size="sm" />
@@ -1631,7 +1568,7 @@ function EnvironmentModal({ onClose, done }: { onClose: () => void; done: () => 
         <label className="field"><span>Environment variables <em>JSON, optional</em></span><textarea name="vars" placeholder={'{"API_MODE": "production"}'} /></label>
         <label className="field"><span>Description <em>Optional</em></span><input name="description" placeholder="What is this environment for?" /></label>
         <div className="modal-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <CancelButton />
           <Button type="submit" disabled={creating}>{creating ? 'Creating environment…' : 'Create environment'}</Button>
         </div>
       </form>
@@ -1678,7 +1615,7 @@ function EditEnvironmentModal({ env, onClose, done }: { env: Env; onClose: () =>
         <label className="field"><span>Environment variables <em>JSON, optional</em></span><textarea name="vars" defaultValue={env.env_vars_json ? JSON.stringify(env.env_vars_json, null, 2) : ''} placeholder={'{"API_MODE": "production"}'} /></label>
         <label className="field"><span>Description <em>Optional</em></span><input name="description" defaultValue={env.description || ''} placeholder="What is this environment for?" /></label>
         <div className="modal-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <CancelButton />
           <Button type="submit">{env.managed ? 'Save & rebuild' : 'Save changes'}</Button>
         </div>
       </form>
@@ -1716,15 +1653,15 @@ function Workflows() {
       {items.length > 0 ? (
         <div className="workflow-grid">
           {items.map(w => (
-            <article className="workflow-card" key={w.id} onClick={() => navTo(`/workflows/${w.id}`)}>
+            <article className="workflow-card" key={w.id} onClick={() => navigateWithTransition(navTo, `/workflows/${w.id}`)}>
               <div className="workflow-top">
                 <div className="workflow-glyph"><GitBranch size={18} /></div>
                 <StatusBadge value={w.enabled ? 'enabled' : 'disabled'} />
               </div>
-              <h3>{w.name}</h3>
+              <h3 style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties} title={w.name}>{w.name}</h3>
               <p>{w.description || 'No description yet'}</p>
               <div className="workflow-meta">
-                <span><Clock size={12} />{w.schedule_cron ? cronLabel(w.schedule_cron) : 'Manual runs'}</span>
+                <span><Clock size={12} />{w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'Manual runs'}</span>
                 <span><ChevronsRight size={12} />Max {w.max_concurrent_runs}</span>
               </div>
               <div className="workflow-actions">
@@ -1778,7 +1715,8 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
     try {
       const w = await post<Workflow>('/workflows', {
         name: f.get('name'), description: f.get('description') || null,
-        schedule_cron: f.get('cron') || null, enabled: true,
+        schedule_cron: f.get('cron') || null,
+        schedule_timezone: f.get('schedule_timezone') || null, enabled: true,
         max_concurrent_runs: Number(f.get('concurrency')),
         project_id: projectId ? Number(projectId) : null,
         default_environment_id: environmentId ? Number(environmentId) : null,
@@ -1792,12 +1730,12 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
     }
   }
   return (
-    <Modal title="Create a workflow" subtitle="Start with the basics. Add tasks on the next screen." onClose={onClose}>
+    <Modal title="Create a workflow" subtitle="Start with the basics. Add tasks on the next screen." onClose={onClose} wide>
       <form className="modal-body form-stack" onSubmit={submit}>
         <label className="field"><span>Workflow name</span><input name="name" placeholder="Daily customer refresh" required autoFocus /></label>
         <label className="field"><span>Description <em>Optional</em></span><textarea name="description" placeholder="What does this workflow accomplish?" /></label>
+        <ScheduleBuilder initialCron={null} initialTimezone={null} />
         <div className="field-row">
-          <label className="field"><span>Cron schedule <em>Optional</em></span><input name="cron" placeholder="0 6 * * *" /><small>Evaluated in UTC; shown elsewhere in your local time.</small></label>
           <label className="field compact"><span>Max active runs</span><input name="concurrency" type="number" min="1" defaultValue="1" /></label>
         </div>
         <div className="field-row">
@@ -1825,7 +1763,7 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
           </label>
         </div>
         <div className="modal-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <CancelButton />
           <Button type="submit">Create &amp; add tasks</Button>
         </div>
       </form>
@@ -1849,7 +1787,8 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
     try {
       await put(`/workflows/${w.id}`, {
         name: f.get('name'), description: f.get('description') || null,
-        schedule_cron: f.get('cron') || null, enabled: f.get('enabled') === 'on',
+        schedule_cron: f.get('cron') || null,
+        schedule_timezone: f.get('schedule_timezone') || null, enabled: f.get('enabled') === 'on',
         max_concurrent_runs: Number(f.get('concurrency')),
         project_id: projectId ? Number(projectId) : null,
         default_environment_id: environmentId ? Number(environmentId) : null,
@@ -1863,12 +1802,12 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
     }
   }
   return (
-    <Modal title="Edit workflow" subtitle="Update this workflow's settings." onClose={onClose}>
+    <Modal title="Edit workflow" subtitle="Update this workflow's settings." onClose={onClose} wide>
       <form className="modal-body form-stack" onSubmit={submit}>
         <label className="field"><span>Workflow name</span><input name="name" defaultValue={w.name} required autoFocus /></label>
         <label className="field"><span>Description <em>Optional</em></span><textarea name="description" defaultValue={w.description || ''} placeholder="What does this workflow accomplish?" /></label>
+        <ScheduleBuilder initialCron={w.schedule_cron || null} initialTimezone={w.schedule_timezone || null} />
         <div className="field-row">
-          <label className="field"><span>Cron schedule <em>Optional</em></span><input name="cron" defaultValue={w.schedule_cron || ''} placeholder="0 6 * * *" /><small>Evaluated in UTC; shown elsewhere in your local time.</small></label>
           <label className="field compact"><span>Max active runs</span><input name="concurrency" type="number" min="1" defaultValue={w.max_concurrent_runs} /></label>
         </div>
         <div className="field-row">
@@ -1900,7 +1839,7 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
           <label className="toggle"><input type="checkbox" name="enabled" defaultChecked={w.enabled} /><span /></label>
         </label>
         <div className="modal-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <CancelButton />
           <Button type="submit">Save changes</Button>
         </div>
       </form>
@@ -1976,6 +1915,8 @@ function WorkflowDetail() {
   );
 
   const orderedTasks = topologicallyOrdered(tasks);
+  const projectName = projects.find(p => p.id === w.project_id)?.name ?? '—';
+  const defaultEnvName = envs.find(e => e.id === w.default_environment_id)?.name ?? '—';
   return (
     <>
       <div className="detail-head">
@@ -1984,7 +1925,7 @@ function WorkflowDetail() {
           <div className="workflow-glyph large"><GitBranch size={22} /></div>
           <div className="detail-head-text">
             <span className="eyebrow">WORKFLOW</span>
-            <h1>{w.name}</h1>
+            <h1 style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties}>{w.name}</h1>
             <p>{w.description || 'No description yet'}</p>
           </div>
           <div className="detail-actions">
@@ -2000,12 +1941,12 @@ function WorkflowDetail() {
 
       <div className="summary-strip">
         <div><span>Status</span><StatusBadge value={w.enabled ? 'enabled' : 'disabled'} /></div>
-        <div><span>Schedule</span><strong>{w.schedule_cron ? cronLabel(w.schedule_cron) : 'Manual only'}</strong></div>
+        <div><span>Schedule</span><strong title={w.schedule_timezone || undefined}>{w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'Manual only'}</strong></div>
         <div><span>Tasks</span><strong>{tasks.length}</strong></div>
         <div><span>Max active runs</span><strong>{w.max_concurrent_runs}</strong></div>
         <div><span>Total runs</span><strong>{runs.length}</strong></div>
-        {w.project_id && <div><span>Project</span><strong>{projects.find(p => p.id === w.project_id)?.name ?? '—'}</strong></div>}
-        {w.default_environment_id && <div><span>Default env</span><strong>{envs.find(e => e.id === w.default_environment_id)?.name ?? '—'}</strong></div>}
+        {w.project_id && <div><span>Project</span><strong title={projectName}>{projectName}</strong></div>}
+        {w.default_environment_id && <div><span>Default env</span><strong title={defaultEnvName}>{defaultEnvName}</strong></div>}
       </div>
 
       {runs.length > 0 && <RunMiniHistory runs={runs} />}
@@ -2044,7 +1985,7 @@ function WorkflowDetail() {
                 <div className="task-card">
                   <div className="task-card-top">
                     <TaskTypeBadge type={t.task_type} />
-                    <span className="task-card-name">{t.name}</span>
+                    <span className="task-card-name" title={t.name}>{t.name}</span>
                     <div className="task-card-actions">
                       <button className="edit-link" onClick={() => setEditingTask(t)}>Edit</button>
                       <button className="delete-link" onClick={() => removeTask(t)}>Remove</button>
@@ -2128,8 +2069,8 @@ function RunMiniHistory({ runs }: { runs: Run[] }) {
         </div>
       </div>
       <div className="mini-dots">
-        {recent.map(r => (
-          <Link key={r.id} to={`/runs/${r.id}`} className={`mini-dot ${r.status}`} title={`#${r.id} · ${r.status} · ${formatDate(r.created_at)}`} />
+        {recent.map((r, i) => (
+          <Link key={r.id} to={`/runs/${r.id}`} className={`mini-dot ${r.status}`} style={{ animationDelay: `${i * 5}ms` }} title={`#${r.id} · ${r.status} · ${formatDate(r.created_at)}`} />
         ))}
       </div>
     </div>
@@ -2168,7 +2109,7 @@ function RunParamsModal({ workflowId, onClose }: { workflowId: string; onClose: 
           They override the built-ins (<code>ds</code>, <code>ts</code>) and merge under any per-task parameters.
         </div>
         <div className="modal-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <CancelButton />
           <Button type="submit" disabled={busy}>{busy ? 'Starting…' : 'Run workflow'}</Button>
         </div>
       </form>
@@ -2210,7 +2151,7 @@ function BackfillModal({ workflowId, onClose }: { workflowId: string; onClose: (
         </label>
         <div className="callout">Dates are inclusive. Days that already have a backfill run are skipped automatically.</div>
         <div className="modal-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <CancelButton />
           <Button type="submit" disabled={busy}>{busy ? 'Queueing…' : 'Queue backfill'}</Button>
         </div>
       </form>
@@ -2294,7 +2235,7 @@ function TaskModal({ workflowId, tasks, project, defaultEnvironment, onClose, do
             <legend style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)', padding: '0 6px' }}>Run after <em style={{ fontWeight: 400, color: 'var(--text-3)' }}>Optional</em></legend>
             <div className="checks">
               {tasks.map(t => (
-                <label key={t.id}><input type="checkbox" name="dependencies" value={t.name} />{t.name}</label>
+                <label key={t.id}><input type="checkbox" name="dependencies" value={t.name} /><span title={t.name}>{t.name}</span></label>
               ))}
             </div>
           </fieldset>
@@ -2305,7 +2246,7 @@ function TaskModal({ workflowId, tasks, project, defaultEnvironment, onClose, do
         </div>
         <TimeoutField />
         <div className="modal-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <CancelButton />
           <Button type="submit" disabled={needsEnvironment}>Add task</Button>
         </div>
       </form>
@@ -2377,7 +2318,7 @@ function EditTaskModal({ task, tasks, project, onClose, done }: { task: Task; ta
             <legend style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)', padding: '0 6px' }}>Run after <em style={{ fontWeight: 400, color: 'var(--text-3)' }}>Optional</em></legend>
             <div className="checks">
               {tasks.filter(t => t.id !== task.id).map(t => (
-                <label key={t.id}><input type="checkbox" name="dependencies" value={t.name} defaultChecked={task.depends_on_json.includes(t.name)} />{t.name}</label>
+                <label key={t.id}><input type="checkbox" name="dependencies" value={t.name} defaultChecked={task.depends_on_json.includes(t.name)} /><span title={t.name}>{t.name}</span></label>
               ))}
             </div>
           </fieldset>
@@ -2388,7 +2329,7 @@ function EditTaskModal({ task, tasks, project, onClose, done }: { task: Task; ta
         </div>
         <TimeoutField seconds={task.timeout_seconds} />
         <div className="modal-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <CancelButton />
           <Button type="submit">Save changes</Button>
         </div>
       </form>
@@ -2419,7 +2360,7 @@ function Artifacts() {
             <div className="list-item" key={x.id}>
               <div className="resource-icon artifact"><Package size={16} /></div>
               <div className="list-copy">
-                <h3>{x.name}</h3>
+                <h3 title={x.name}>{x.name}</h3>
                 <p>
                   {x.artifact_type} · {x.size_bytes ? formatBytes(x.size_bytes) : 'Size unavailable'} · {timeAgo(x.created_at)}
                   {x.workflow_run_id && <> · <Link to={`/runs/${x.workflow_run_id}`} style={{ color: 'var(--accent)' }}>run #{x.workflow_run_id}</Link></>}
@@ -2579,12 +2520,12 @@ function Wallboard() {
     const week = completed.filter(r => Date.now() - new Date(r.created_at).getTime() < 7 * DAY);
     const rate7d = week.length ? Math.round(week.filter(r => r.status === 'success').length / week.length * 100) : null;
     const running = live.some(r => r.workflow_id === w.id && r.status === 'running');
-    const next = w.enabled && w.schedule_cron ? nextCronOccurrence(w.schedule_cron, clock) : null;
+    const next = w.enabled && w.schedule_cron ? nextCronOccurrence(w.schedule_cron, w.schedule_timezone, clock) : null;
     // Overdue: the schedule should have fired after the latest run, gave it a
     // 2-minute grace, and no newer run ever appeared — a silently dead scheduler.
     let overdue = false;
     if (w.enabled && w.schedule_cron && mine.length) {
-      const expected = nextCronOccurrence(w.schedule_cron, new Date(mine[0].created_at));
+      const expected = nextCronOccurrence(w.schedule_cron, w.schedule_timezone, new Date(mine[0].created_at));
       overdue = !!expected && expected.getTime() < clock.getTime() - 120_000
         && !mine.some(r => new Date(r.created_at) >= expected);
     }
@@ -2634,8 +2575,8 @@ function Wallboard() {
           <span className="wallboard-health-dot" />{verdict}
         </span>
         {nextUp && (
-          <span className="wallboard-next" title={nextUp.next!.toLocaleString()}>
-            <Clock size={13} /> Next: {nextUp.flow.name} in {formatEta(nextUp.next!.getTime() - clock.getTime())}
+          <span className="wallboard-next" title={`${nextUp.flow.name} · ${nextUp.next!.toLocaleString()}`}>
+            <Clock size={13} /> Next: <span className="wallboard-next-name">{nextUp.flow.name}</span> in {formatEta(nextUp.next!.getTime() - clock.getTime())}
           </span>
         )}
         <span className="wallboard-clock">
@@ -2653,15 +2594,18 @@ function Wallboard() {
             const over = expected != null && elapsed > expected * 1.15;
             // 0 at/under median → 1 at 135% of median (fully amber)
             const overRatio = expected ? Math.min(1, Math.max(0, (elapsed / expected - 1) / 0.35)) : 0;
+            const flowName = flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`;
             return (
               <div key={r.id} className={`wallboard-live-card ${r.status}`}>
                 <span className={`run-pulse ${r.status}`} />
                 <div className="wallboard-live-body">
-                  <b>{flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`}</b>
+                  <b title={flowName}>{flowName}</b>
                   <small>#{r.id} · {r.status} · {liveDuration(r, now)}</small>
                   {pct != null && (
                     <div className="wb-progress" style={{ '--over-ratio': overRatio.toFixed(3) } as CSSProperties}>
-                      <div className="wb-progress-fill" style={{ width: `${pct}%` }} />
+                      <div className="wb-progress-fill" style={{ width: `${pct}%` }}>
+                        <CometCanvas kind="fill" />
+                      </div>
                     </div>
                   )}
                 </div>
@@ -2684,7 +2628,7 @@ function Wallboard() {
                  if (e.animationName === 'tile-bloom') setBlooms(({ [w.id]: _, ...rest }) => rest);
                }}>
             <div className="wallboard-tile-top">
-              <div className="wallboard-tile-name">{w.name}</div>
+              <div className="wallboard-tile-name" title={w.name}>{w.name}</div>
               <ChevronRight className="wallboard-tile-arrow" size={20} />
             </div>
             <div className="wallboard-tile-status" key={status}>{status === 'never' ? 'no runs' : status}</div>
@@ -2696,7 +2640,7 @@ function Wallboard() {
             )}
             <div className="wallboard-tile-meta">
               {last ? `${timeAgo(last.finished_at || last.created_at)}` : '—'}
-              {w.schedule_cron ? ` · ${cronLabel(w.schedule_cron)}` : ' · manual'}
+              {w.schedule_cron ? ` · ${cronLabel(w.schedule_cron, w.schedule_timezone)}` : ' · manual'}
               {next ? ` · next in ${formatEta(next.getTime() - clock.getTime())}` : ''}
               {status !== 'failed' && rate7d != null ? ` · ${rate7d}% · 7d` : ''}
               {!w.enabled ? ' · paused' : ''}
@@ -2710,11 +2654,14 @@ function Wallboard() {
       {failures.length > 0 && (
         <div className="wallboard-failures">
           <span className="wallboard-failures-label"><AlertTriangle size={14} /> Failures · 24h</span>
-          {failures.map(r => (
-            <span key={r.id} className="wallboard-failure">
-              {flows.find(w => w.id === r.workflow_id)?.name ?? r.workflow_id} #{r.id} · {timeAgo(r.created_at)}
-            </span>
-          ))}
+          {failures.map(r => {
+            const name = flows.find(w => w.id === r.workflow_id)?.name ?? String(r.workflow_id);
+            return (
+              <span key={r.id} className="wallboard-failure" title={`${name} #${r.id} · ${timeAgo(r.created_at)}`}>
+                {name} #{r.id} · {timeAgo(r.created_at)}
+              </span>
+            );
+          })}
         </div>
       )}
     </div>

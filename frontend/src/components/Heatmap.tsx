@@ -123,9 +123,11 @@ export function RunHeatmap({ workflowId, weeks: defaultWeeks = 16, selectable = 
           <div className="run-heatmap-dows">
             {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => <span key={d}>{d}</span>)}
           </div>
-          <div className="run-heatmap-grid" style={{ gap: GAP }}>
-            {columns.map(col => (
-              <div key={col.key} className="run-heatmap-col" style={{ gap: GAP }}>
+          {/* Keyed on the range so switching replays the columnar wave-in. */}
+          <div key={weeks} className="run-heatmap-grid" style={{ gap: GAP }}>
+            {columns.map((col, colIndex) => (
+              <div key={col.key} className="run-heatmap-col"
+                   style={{ gap: GAP, animationDelay: `${colIndex * 10}ms` }}>
                 {col.days.map((stat, dow) => {
                   const date = new Date(col.key + dow * DAY_MS);
                   const tip = stat === undefined ? undefined

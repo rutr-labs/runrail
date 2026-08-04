@@ -5,7 +5,14 @@
 
 /* ─── Design Tokens (dark default) ───────────────────── */
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
+  /* Inter Variable + JetBrains Mono Variable ship in the bundle
+     (imported in main.tsx), so type renders identically on macOS,
+     Windows, and Linux — no Segoe UI drift, and never Courier New. */
+  --font-ui: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont,
+    "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace,
+    "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-ui);
   font-size: 14px;
   line-height: 1.5;
   font-synthesis: none;
@@ -24,14 +31,14 @@
   --bg-hover:     rgba(255,255,255,0.04);
 
   /* Borders */
-  --border:       rgba(255,255,255,0.07);
-  --border-strong:rgba(255,255,255,0.11);
+  --border:       rgba(255,255,255,0.095);
+  --border-strong:rgba(255,255,255,0.15);
   --border-focus: rgba(56,189,248,0.45);
 
   /* Text */
   --text-1:  #f1f5f9;
   --text-2:  #94a3b8;
-  --text-3:  #475569;
+  --text-3:  #64748b;   /* was #475569 — ~2.8:1 on this bg, too dim for labels */
 
   /* Brand accent — sky blue, used sparingly */
   --accent:        #38bdf8;
@@ -67,7 +74,8 @@
   --shadow-sm: 0 1px 1px rgba(0,0,0,0.22), 0 2px 6px rgba(0,0,0,0.25);
   --shadow-md: 0 1px 1px rgba(0,0,0,0.20), 0 6px 12px rgba(0,0,0,0.28), 0 20px 40px rgba(0,0,0,0.32);
   --shadow-lg: 0 1px 2px rgba(0,0,0,0.25), 0 8px 16px rgba(0,0,0,0.35), 0 24px 48px rgba(0,0,0,0.4), 0 48px 96px rgba(0,0,0,0.35);
-  --shadow-inner: inset 0 1px 0 rgba(255,255,255,0.08), inset 0 0 0 0.5px rgba(255,255,255,0.03);
+  /* whole pixels only — 0.5px insets render patchy on Windows at 100% DPI */
+  --shadow-inner: inset 0 1px 0 rgba(255,255,255,0.08), inset 0 0 0 1px rgba(255,255,255,0.025);
   --shadow-glow-accent: 0 0 40px rgba(56,189,248,0.10);
   --shadow-glow-cyan:   0 0 40px rgba(56,189,248,0.10);
 
@@ -106,7 +114,7 @@
   --border-strong:rgba(0,0,0,0.12);
   --text-1:  #0f172a;
   --text-2:  #475569;
-  --text-3:  #94a3b8;
+  --text-3:  #64748b;   /* was #94a3b8 — ~2.2:1 on this bg, unreadable metadata */
   --shadow-xs: 0 1px 2px rgba(0,0,0,0.05);
   --shadow-sm: 0 1px 1px rgba(15,23,42,0.05), 0 2px 6px rgba(15,23,42,0.06);
   --shadow-md: 0 1px 1px rgba(15,23,42,0.05), 0 6px 12px rgba(15,23,42,0.07), 0 20px 40px rgba(15,23,42,0.08);
@@ -127,6 +135,28 @@ body {
   transition: background-color .3s var(--ease-swift), color .3s var(--ease-swift);
 }
 button, input, select, textarea { font: inherit; color: inherit; }
+
+/* Themed selection — the OS-default blue looks foreign in both themes */
+::selection {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  color: var(--text-1);
+}
+
+/* ─── Native selects, de-natived ──
+   appearance:none + our own chevron: Windows otherwise draws its
+   dated system arrow and control chrome inside every dropdown. */
+:root { --select-chevron: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>'); }
+[data-theme="light"] { --select-chevron: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="%23475569" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>'); }
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px;
+  padding-right: 32px !important;
+  cursor: pointer;
+}
 button { cursor: pointer; }
 a { color: inherit; text-decoration: none; }
 a, button { transition: opacity .15s, background .15s, color .15s, box-shadow .15s, transform .15s; }
@@ -695,8 +725,9 @@ main {
 .field > span em { font-style: normal; font-weight: 400; color: var(--text-3); font-size: 11.5px; }
 .field input, .field select, .field textarea {
   height: 36px; padding: 0 12px;
+  text-overflow: ellipsis;
   border-radius: var(--r-sm); border: 1px solid var(--border-strong);
-  background: var(--bg-input); color: var(--text-1); outline: none;
+  background-color: var(--bg-input); color: var(--text-1); outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
 .field textarea { height: auto; padding: 10px 12px; min-height: 80px; resize: vertical; }
@@ -706,9 +737,12 @@ main {
 }
 .field input::placeholder, .field textarea::placeholder { color: var(--text-3); }
 .field > small { font-size: 11.5px; color: var(--text-3); }
-.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* minmax(0,1fr): a plain 1fr track honors a <select>'s min-content width
+   (its longest option), letting one long environment name widen the row
+   past the modal. A 0 minimum lets the field shrink and clip instead. */
+.field-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 .field.compact input { max-width: 100px; }
-.code-input { font-family: "SF Mono","Fira Code","Consolas",monospace !important; font-size: 12.5px !important; background: var(--bg-code) !important; }
+.code-input { font-family: var(--font-mono) !important; font-size: 12.5px !important; background: var(--bg-code) !important; }
 .callout {
   padding: 10px 14px; border-radius: var(--r-md);
   background: rgba(255,255,255,0.04); border: 1px solid var(--border-strong);
@@ -731,7 +765,8 @@ main {
 }
 .segmented button:hover:not(.active) { color: var(--text-1); }
 .checks { display: flex; flex-direction: column; gap: 6px; max-height: 150px; overflow-y: auto; }
-.checks label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); cursor: pointer; }
+.checks label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); cursor: pointer; min-width: 0; }
+.checks label span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .checks input[type="checkbox"] { accent-color: var(--accent); }
 .toggle-field { flex-direction: row !important; align-items: center; justify-content: space-between; }
 .toggle { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
@@ -793,7 +828,7 @@ main {
 }
 .selected-path {
   font-size: 12px; color: var(--text-2);
-  font-family: "SF Mono","Consolas",monospace;
+  font-family: var(--font-mono);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
 }
 .crumbs {
@@ -806,7 +841,7 @@ main {
   font-size: 12px; font-weight: 500; padding: 0; cursor: pointer;
 }
 .crumbs button:hover { color: var(--accent-hover); }
-.crumbs code { font-family: "SF Mono","Consolas",monospace; font-size: 11.5px; color: var(--text-2); word-break: break-all; }
+.crumbs code { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-2); word-break: break-all; }
 .file-list { max-height: 320px; overflow-y: auto; padding: 6px 10px; }
 .file-row {
   display: flex; align-items: center; gap: 10px; width: 100%;
@@ -839,11 +874,17 @@ tbody tr:last-child { border-bottom: none; }
 tbody tr:hover { background: var(--bg-hover); }
 tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical-align: middle; }
 .run-id {
-  font-family: "SF Mono","Consolas",monospace; font-size: 12px; font-weight: 600;
+  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
   color: var(--text-2); background: rgba(255,255,255,0.05);
   padding: 2px 7px; border-radius: var(--r-xs); border: 1px solid var(--border);
 }
 .run-id:hover { background: rgba(255,255,255,0.09); color: var(--text-1); }
+/* Workflow name cell in run tables — long names must not blow out the column */
+.run-flow-name {
+  display: inline-block; max-width: 240px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom;
+}
 .trigger-badge {
   font-size: 11.5px; font-weight: 500; padding: 2px 8px;
   border-radius: var(--r-xs); background: var(--bg-card-r);
@@ -868,8 +909,9 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .filterbar-search input::placeholder { color: var(--text-3); }
 .filterbar select {
   height: 34px; padding: 0 10px; border-radius: var(--r-sm);
-  border: 1px solid var(--border-strong); background: var(--bg-input);
+  border: 1px solid var(--border-strong); background-color: var(--bg-input);
   color: var(--text-1); outline: none; font-size: 13px; cursor: pointer;
+  max-width: 220px; text-overflow: ellipsis;
 }
 .filterbar-count { font-size: 12.5px; color: var(--text-3); margin-left: auto; }
 
@@ -886,7 +928,7 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
   height: 26px; padding: 0 10px; border-radius: var(--r-xs);
   border: 1px solid transparent; background: none;
   color: rgba(255,255,255,0.4); font-size: 12px; font-weight: 500;
-  font-family: "SF Mono","Consolas",monospace; cursor: pointer;
+  font-family: var(--font-mono); cursor: pointer;
 }
 .log-tab:hover { color: rgba(255,255,255,0.7); }
 .log-tab--active { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.12); color: rgba(255,255,255,0.9); }
@@ -902,7 +944,7 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
   padding: 10px 14px; background: var(--danger-soft);
   border-bottom: 1px solid var(--danger-border);
   font-size: 12.5px; color: var(--danger);
-  font-family: "SF Mono","Consolas",monospace; line-height: 1.5; word-break: break-word;
+  font-family: var(--font-mono); line-height: 1.5; word-break: break-word;
 }
 .log-error-label {
   font-weight: 700; font-size: 10px; text-transform: uppercase;
@@ -910,12 +952,12 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
   background: var(--danger-border); flex-shrink: 0; margin-top: 1px;
 }
 .log-content {
-  font-family: "SF Mono","Fira Code","Cascadia Code","Consolas",monospace;
+  font-family: var(--font-mono);
   font-size: 12.5px; line-height: 1.65; color: #c8c8d4;
   padding: 14px 16px; overflow-x: auto; white-space: pre;
   min-height: 120px; max-height: 420px; overflow-y: auto;
 }
-.log-loading { color: rgba(255,255,255,0.25); font-style: italic; }
+.log-loading { color: rgba(255,255,255,0.45); font-style: italic; }
 
 /* ─── Panel (generic) ─────────────────────────────────── */
 .panel {
@@ -1061,11 +1103,11 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
    Artifacts). */
 .resource-card .resource-icon { width: 42px; height: 42px; transition: box-shadow .25s var(--ease-swift); }
 .resource-card:hover .resource-icon { box-shadow: 0 0 26px -6px currentColor; }
-.resource-card h3 { font-size: 17px; font-weight: 700; color: var(--text-1); line-height: 1.3; letter-spacing: -0.2px; }
+.resource-card h3 { font-size: 17px; font-weight: 700; color: var(--text-1); line-height: 1.3; letter-spacing: -0.2px; overflow-wrap: anywhere; }
 .resource-card > p { font-size: 13px; color: var(--text-2); line-height: 1.5; }
 .path-chip {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 11.5px; font-family: "SF Mono","Consolas",monospace;
+  font-size: 11.5px; font-family: var(--font-mono);
   color: var(--text-3); background: var(--bg-code); padding: 3px 8px;
   border-radius: var(--r-xs); max-width: 100%; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
@@ -1095,7 +1137,7 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .list-item:last-child { border-bottom: none; }
 .list-item:hover { background: var(--bg-hover); }
 .list-copy { flex: 1; min-width: 0; }
-.list-copy h3 { font-size: 13.5px; font-weight: 600; color: var(--text-1); }
+.list-copy h3 { font-size: 13.5px; font-weight: 600; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list-copy p  { font-size: 12px; color: var(--text-2); margin-top: 2px; }
 .type-chip { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--r-xs); background: var(--bg-card-r); border: 1px solid var(--border); color: var(--text-2); text-transform: capitalize; white-space: nowrap; }
 
@@ -1118,7 +1160,7 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 }
 .workflow-card:hover .workflow-glyph { box-shadow: 0 0 26px -6px var(--accent); }
 .workflow-glyph.large { width: 48px; height: 48px; border-radius: var(--r-lg); font-size: 20px; }
-.workflow-card h3 { font-size: 17px; font-weight: 700; color: var(--text-1); line-height: 1.3; letter-spacing: -0.2px; }
+.workflow-card h3 { font-size: 17px; font-weight: 700; color: var(--text-1); line-height: 1.3; letter-spacing: -0.2px; overflow-wrap: anywhere; }
 .workflow-card > p { font-size: 13px; color: var(--text-2); line-height: 1.5; }
 .workflow-meta { display: flex; gap: 12px; flex-wrap: wrap; }
 .workflow-meta span { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-3); }
@@ -1140,9 +1182,10 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .detail-head > a { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text-3); margin-bottom: 16px; font-weight: 500; }
 .detail-head > a:hover { color: var(--text-1); }
 .detail-head-row { display: flex; align-items: center; gap: 16px; }
-.detail-head-text { flex: 1; }
+.detail-head-text { flex: 1; min-width: 0; }
 .detail-head-text .eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 4px; }
-.detail-head-text h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-1); line-height: 1.2; }
+/* wraps, never ellipsizes — a view-transition name lives on this h1 */
+.detail-head-text h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-1); line-height: 1.2; overflow-wrap: anywhere; }
 .detail-head-text p  { font-size: 14px; color: var(--text-2); margin-top: 4px; }
 .detail-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
 .summary-strip {
@@ -1150,9 +1193,12 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
   gap: 1px; background: var(--border); border: 1px solid var(--border);
   border-radius: var(--r-lg); overflow: hidden; margin-bottom: 20px; box-shadow: var(--shadow-xs);
 }
-.summary-strip > div { padding: 14px 18px; background: var(--bg-card); display: flex; flex-direction: column; gap: 5px; }
-.summary-strip > div > span  { font-size: 11.5px; font-weight: 500; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
-.summary-strip > div > strong{ font-size: 14px; font-weight: 600; color: var(--text-1); }
+.summary-strip > div { padding: 14px 18px; background: var(--bg-card); display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+/* :first-child guard — StatusBadge is also a <span>, and without it
+   this label rule clobbers the chip's ink with dim uppercase gray */
+.summary-strip > div > span:first-child { font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
+.summary-strip .status-badge { align-self: flex-start; }
+.summary-strip > div > strong{ font-size: 14px; font-weight: 600; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Task Rail */
 .task-flow { padding: 20px; display: flex; flex-direction: column; }
@@ -1165,23 +1211,31 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .type-python   { background: rgba(59,130,246,0.12);  color: #3b82f6; border: 1px solid rgba(59,130,246,0.25); }
 .type-notebook { background: rgba(168,85,247,0.12); color: #a855f7; border: 1px solid rgba(168,85,247,0.25); }
 .type-sql      { background: rgba(6,182,212,0.12);  color: #06b6d4; border: 1px solid rgba(6,182,212,0.25); }
-.task-card-name    { font-size: 14px; font-weight: 600; color: var(--text-1); }
+.task-card-name    { font-size: 14px; font-weight: 600; color: var(--text-1); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-card-actions { margin-left: auto; display: flex; gap: 6px; }
-.task-card-cmd { font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 11.5px; color: var(--text-3); background: var(--bg-code); padding: 5px 9px; border-radius: var(--r-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; margin-bottom: 8px; }
+.task-card-cmd { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); background: var(--bg-code); padding: 5px 9px; border-radius: var(--r-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; margin-bottom: 8px; }
 .task-card-meta { display: flex; gap: 12px; flex-wrap: wrap; }
-.task-card-meta span { font-size: 11.5px; color: var(--text-3); display: flex; align-items: center; gap: 4px; }
+.task-card-meta span { font-size: 11.5px; color: var(--text-3); display: flex; align-items: center; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
 
-/* Task Timeline (Run detail) */
-.task-timeline { padding: 10px 20px 16px; display: flex; flex-direction: column; gap: 8px; }
-.tl-row { display: flex; align-items: center; gap: 12px; }
-.tl-name { font-size: 12px; color: var(--text-2); width: 100px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: "SF Mono",monospace; }
+/* Task Timeline (Run detail) — grid + subgrid: every row shares one
+   name column, sized to the longest name up to 240px, never clipped
+   to an arbitrary fixed width. */
+.task-timeline {
+  padding: 10px 20px 16px;
+  display: grid;
+  grid-template-columns: fit-content(240px) 1fr max-content;
+  column-gap: 12px;
+  row-gap: 8px;
+}
+.tl-row { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; gap: 12px; }
+.tl-name { font-size: 12px; color: var(--text-2); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); }
 .tl-track { flex: 1; height: 20px; background: var(--bg-card-r); border-radius: var(--r-xs); position: relative; overflow: hidden; border: 1px solid var(--border); }
 .tl-bar { position: absolute; top: 0; height: 100%; border-radius: var(--r-xs); min-width: 3px; }
 .tl-bar.success { background: var(--success); }
 .tl-bar.failed  { background: var(--danger); }
 .tl-bar.running { background: var(--running); }
 .tl-bar.queued, .tl-bar.skipped { background: var(--queued); }
-.tl-dur { font-size: 11px; color: var(--text-3); width: 42px; flex-shrink: 0; text-align: right; }
+.tl-dur { font-size: 11px; color: var(--text-3); text-align: right; }
 
 /* Run Tasks (detail) */
 .run-tasks { padding: 4px 0; }
@@ -1190,9 +1244,9 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .run-task-head { display: flex; align-items: center; gap: 12px; padding: 14px 20px; width: 100%; background: none; border: none; text-align: left; cursor: pointer; }
 .run-task-head:hover { background: var(--bg-hover); }
 .task-order { width: 24px; height: 24px; border-radius: 50%; background: var(--bg-card-r); border: 1px solid var(--border); display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--text-2); flex-shrink: 0; }
-.run-task-head > div { flex: 1; text-align: left; }
+.run-task-head > div { flex: 1; text-align: left; min-width: 0; }
 .run-task-head h3 { font-size: 13.5px; font-weight: 600; color: var(--text-1); }
-.run-task-head p  { font-size: 12px; color: var(--text-2); margin-top: 2px; font-family: "SF Mono",monospace; }
+.run-task-head p  { font-size: 12px; color: var(--text-2); margin-top: 2px; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-task-head > b { color: var(--text-3); font-size: 12px; }
 .log-area { padding: 0 20px 20px; }
 
@@ -1229,7 +1283,7 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 }
 @media (max-width: 500px) {
   .metric-grid { grid-template-columns: 1fr; }
-  .field-row { grid-template-columns: 1fr; }
+  .field-row { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ─── Accessibility ───────────────────────────────────────
@@ -1321,7 +1375,7 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .settings-value {
   font-size: 12.5px; color: var(--text-1); font-weight: 500;
   background: var(--bg-code); padding: 2px 8px; border-radius: var(--r-xs);
-  font-family: "SF Mono","Consolas",monospace; max-width: 220px;
+  font-family: var(--font-mono); max-width: 220px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .settings-value.wide { max-width: 100%; width: 100%; display: block; margin-top: 4px; }
@@ -1399,7 +1453,7 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .wf-spark-row { display: flex; align-items: center; gap: 12px; padding: 7px 20px; }
 .wf-spark-name {
   font-size: 12.5px; font-weight: 600; color: var(--text-1);
-  width: 150px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  width: clamp(110px, 45%, 220px); flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   text-decoration: none; transition: color .12s;
 }
 .wf-spark-name:hover { color: var(--accent); }
@@ -1456,8 +1510,8 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .tl-dot-cancelled { background: var(--text-3); }
 .tl-dot-skipped   { background: var(--text-3); }
 .tl-run-wf   { font-size: 13px; font-weight: 600; color: var(--text-1); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tl-run-id   { font-size: 11px; color: var(--text-3); font-family: SF Mono, monospace; flex-shrink: 0; }
-.tl-run-time { font-size: 11.5px; color: var(--text-3); font-family: SF Mono, monospace; flex-shrink: 0; }
+.tl-run-id   { font-size: 11px; color: var(--text-3); font-family: var(--font-mono); flex-shrink: 0; }
+.tl-run-time { font-size: 11.5px; color: var(--text-3); font-family: var(--font-mono); flex-shrink: 0; }
 .tl-run-dur  { font-size: 11.5px; color: var(--text-3); flex-shrink: 0; }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -1557,6 +1611,24 @@ main { animation: page-enter .38s var(--ease-out) both; }
 .sidebar-nav-item.active::before { transform: translateY(-50%) scaleY(1); }
 .sidebar-nav-item .nav-icon { transition: transform .2s var(--ease-out), color .15s; }
 .sidebar-nav-item:hover .nav-icon { transform: translateY(-1px); }
+
+/* One notch travels between nav items instead of scaling in per item.
+   JS sets --nav-ind-y/--nav-ind-h on the nav from the active item;
+   h = 0 (route outside the nav, e.g. /settings) collapses it.
+   The per-item notch above is hidden here — it returns as the static
+   fallback in the reduced-motion block. Footer items keep their own. */
+.sidebar-nav { position: relative; }
+.sidebar-nav .sidebar-nav-item::before { content: none; }
+.nav-indicator {
+  position: absolute;
+  left: -1px;
+  width: 2.5px;
+  border-radius: 2px;
+  background: var(--accent);
+  top: calc(var(--nav-ind-y, 0px) + (var(--nav-ind-h, 0px) - 16px) / 2);
+  height: min(16px, var(--nav-ind-h, 0px));
+  transition: top .25s var(--ease-out), height .25s var(--ease-out);
+}
 
 /* Live status dot breathes gently */
 .live-dot { animation: breathe 3s var(--ease-swift) infinite; }
@@ -1713,6 +1785,24 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
   .sidebar-nav-item:hover .nav-icon { transform: none !important; }
   /* Essential status: the running spinner keeps turning. */
   .icon-spin { animation: spin 1.4s linear infinite !important; }
+  /* Arrival choreography (Polish Pass II, end of file) is decoration
+     on surfaces whose information is static — off wholesale. */
+  .sidebar-logo-inner span, .sidebar-nav-item, tbody tr,
+  .panel, .list-panel > .list-item,
+  .cmdk-list.cmdk-fresh .cmdk-item,
+  .run-heatmap-col, .mini-dot, .dag-enter, .dag-edge-enter,
+  .tl-bar, .status-badge, .bc-page,
+  .active-run-row, .wallboard-live-card,
+  .btn-primary::after { animation: none !important; }
+  /* The arrival glow is removed BY its fade — with animations off the
+     overlay would sit at full opacity forever, so drop it entirely. */
+  .active-run-row::before, .wallboard-live-card::before { content: none !important; }
+  .cmdk-item.selected { transform: none !important; }
+  /* Exits become plain fades. */
+  .modal-shade.closing, .modal-shade.closing .modal { animation: fade-out .16s var(--ease-swift) both !important; }
+  /* The sliding nav indicator rests; the static per-item notch returns. */
+  .nav-indicator { display: none !important; }
+  .sidebar-nav .sidebar-nav-item::before { content: '' !important; }
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1762,12 +1852,10 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
   font-size: 8.5px; font-weight: 700; color: rgba(0,0,0,0.65);
   padding: 0 4px; letter-spacing: 0.03em;
 }
-.tl-axis { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
-.tl-axis .tl-name { width: 100px; flex-shrink: 0; }
-.tl-axis .tl-dur { width: 42px; flex-shrink: 0; }
+.tl-axis { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; gap: 12px; margin-top: 2px; }
 .tl-axis-track {
   flex: 1; position: relative; display: flex;
-  font-size: 10px; color: var(--text-3); font-family: "SF Mono", monospace;
+  font-size: 10px; color: var(--text-3); font-family: var(--font-mono);
 }
 
 /* ─── Log search ──────────────────────────────────────── */
@@ -1781,9 +1869,9 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
 .log-search input {
   width: 110px; background: none; border: none; outline: none;
   color: rgba(255,255,255,0.9); font-size: 12px;
-  font-family: "SF Mono","Consolas",monospace;
+  font-family: var(--font-mono);
 }
-.log-search input::placeholder { color: rgba(255,255,255,0.3); }
+.log-search input::placeholder { color: rgba(255,255,255,0.45); }
 .log-search button {
   background: none; border: none; color: rgba(255,255,255,0.5);
   display: grid; place-items: center; padding: 2px; cursor: pointer;
@@ -1853,7 +1941,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
 .wallboard-clock {
   margin-left: auto; font-size: 26px; font-weight: 700;
   font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
-  font-family: "SF Mono","Consolas",monospace; color: #cbd5e1;
+  font-family: var(--font-mono); color: #cbd5e1;
 }
 .wallboard-exit {
   width: 36px; height: 36px; border-radius: var(--r-sm);
@@ -1869,7 +1957,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
   box-shadow: 0 0 60px -30px rgba(56,189,248,0.6);
 }
 .wallboard-live-card.queued { border-color: rgba(251,191,36,0.3); background: rgba(251,191,36,0.06); box-shadow: none; }
-.wallboard-live-card b { display: block; font-size: 16.5px; font-weight: 700; }
+.wallboard-live-card b { display: block; font-size: 16.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wallboard-live-card small { color: #94a3b8; font-size: 13px; }
 .wallboard-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
@@ -1889,9 +1977,13 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
   box-shadow: 0 24px 60px -24px rgba(0,0,0,0.7);
 }
 .wallboard-tile-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.wallboard-tile-arrow { color: #475569; flex-shrink: 0; transition: transform .2s var(--ease-out), color .2s; }
+.wallboard-tile-arrow { color: var(--text-3); flex-shrink: 0; transition: transform .2s var(--ease-out), color .2s; }
 .wallboard-tile:hover .wallboard-tile-arrow { color: #cbd5e1; transform: translateX(3px); }
-.wallboard-tile-name { font-size: 21px; font-weight: 700; letter-spacing: -0.2px; }
+.wallboard-tile-name {
+  font-size: 21px; font-weight: 700; letter-spacing: -0.2px;
+  min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere;
+}
 .wallboard-tile-status { font-size: 34px; font-weight: 800; text-transform: capitalize; letter-spacing: -0.6px; line-height: 1.1; }
 .wb-success .wallboard-tile-status { color: #34d399; }
 .wb-failed  { border-color: rgba(248,113,113,0.4); background: rgba(248,113,113,0.06); }
@@ -1909,7 +2001,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
   font-size: 13.5px;
 }
 .wallboard-failures-label { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; color: #f87171; }
-.wallboard-failure { color: #cbd5e1; }
+.wallboard-failure { color: #cbd5e1; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (prefers-reduced-motion: reduce) {
   .dag-node-running .dag-node-body, .dag-edge-active,
@@ -1930,6 +2022,16 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
   animation-timing-function: var(--ease-out);
 }
 html.vt-active main { animation: none; }
+/* During a view transition, snapshot the SETTLED page: zeroing duration
+   and delay (not animation:none) keeps the 'both' fill, so hidden-start
+   entrances render at their end state instead of half-empty. */
+html.vt-active main :is(tbody tr, .panel, .list-panel > .list-item,
+  .metric-grid > *, .card-grid > *, .workflow-grid > *, .summary-strip > *,
+  .status-badge, .tl-bar, .mini-dot, .dag-enter, .dag-edge-enter,
+  .run-heatmap-col, .bc-page) {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+}
 
 /* ─── Wallboard: ambient aurora health field ──────────── */
 .wallboard::before, .wallboard::after, .wallboard-aurora {
@@ -1962,6 +2064,12 @@ html.vt-active main { animation: none; }
   display: inline-flex; align-items: center; gap: 7px;
   font-size: 13.5px; font-weight: 500; color: #94a3b8;
   padding: 6px 14px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.09);
+  max-width: 360px; white-space: nowrap;
+}
+/* Only the name truncates — the 'in {eta}' suffix is the glanceable part. */
+.wallboard-next-name {
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis;
 }
 
 /* Tile under-glow by state (bloom overrides while it plays) */
@@ -1988,7 +2096,7 @@ html.vt-active main { animation: none; }
 .wb-bloom-overdue { --bloom: rgba(251,191,36,0.45);  --bloom-soft: rgba(251,191,36,0.14); }
 
 /* Live progress with ETA from historical medians */
-.wallboard-live-body { display: flex; flex-direction: column; gap: 6px; min-width: 300px; }
+.wallboard-live-body { display: flex; flex-direction: column; gap: 6px; min-width: 300px; max-width: 480px; }
 .wb-progress {
   height: 4px; border-radius: 2px; overflow: hidden;
   background: rgba(255,255,255,0.08); margin-top: 2px;
@@ -2010,55 +2118,30 @@ html.vt-active main { animation: none; }
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   COMET-FILL DOT-MATRIX — live/running fills
+   PARTICLE COMET — live/running fills
    (.wb-progress-fill wallboard, .tl-bar.running Gantt, .dot-loader)
 
-   MODEL — a comet bound to progress:
-   • The bar's WIDTH is the progress (elapsed/median on the wallboard,
-     elapsed on the Gantt), so the comet grows with the run: a young
-     bar is all head; the trail lengthens behind it as it advances.
-   • Three pinned lattice layers build a rightward lit-dot density ramp:
-       host      dim full-width lattice + faint head-ward wash + facet
-                 striae (alpha ∝ --over-ratio) — the TRAIL: clearly
-                 dimmer than the head but unmistakably lit. Static.
-       ::before  sparse glints (one near-white-hot layer) under a
-                 left→right alpha-ramp mask that never hits zero at
-                 the left — stray embers keep firing down the trail —
-                 twinkling on an irregular envelope + cell re-deal.
-       ::after   right-pinned 84px HEAD: full bright lattice + two
-                 near-white hot-glint tiles, melting leftward via
-                 mask, twinkling faster/hotter on co-prime periods.
-     Head = host+before+after (dense) · body = host+before · tail ≈ host.
-   • CRYSTALLIZING over-median colour, one knob: --over-ratio
-     (0 = at/under median → 1 = 135% of median, inline style from JS,
-     registered + transitioned so 1 Hz ticks GLIDE):
-       the TRAIL colour tracks the ratio directly (oklab mix toward
-       --warning: frosts through a pale mineral mid-state, never
-       green, never red); the HEAD holds hot sky until ratio .35 and
-       catches up by 1 — the bar crystallizes from the back forward
-       while the frontier stays hot. Facet striae fade in with the
-       ratio.
-   • Indeterminate .dot-loader: full-width twinkle field + a comet
-     head sweeping L→R, transform-only; the moving layer carries NO
-     fine lattice, so it cannot moiré against the pinned host lattice.
+   The animation itself is a shared canvas engine (comet.ts): fine
+   embers streaming into a bright layered core at the progress
+   frontier, sparks shedding off the head; indeterminate bars loop
+   the comet instead. Mounted per-bar via <CometCanvas>. CSS
+   provides the substrate:
+   • a translucent tint so a bar reads instantly, pre-canvas and
+     under reduced motion (where the engine draws ONE static frame),
+   • the two knobs the engine reads from computed style each frame:
+       --dot-color   base colour (LoadingBar tones override it)
+       --over-ratio  0→1 past-median overrun → amber; registered
+                     + transitioned so 1 Hz JS ticks GLIDE.
+   ═══════════════════════════════════════════════════════════════ */
 
-   Cost per bar: 2 compositor opacity twinkles + ~0.7 tiny whole-cell
-   re-deal repaints/s; masks static; lattices never move. Colour via
-   one knob (--dot-color) and one scalar (--over-ratio).
-═══════════════════════════════════════════════════════════════ */
-
-/* Registered so it interpolates: crystallization GLIDES between JS
-   ticks. Engines without @property fall back to var(--over-ratio, 0)
-   → colours step once per tick, nothing breaks. */
+/* Registered so it interpolates: the amber crystallization GLIDES
+   between JS ticks. Engines without @property fall back to
+   var(--over-ratio, 0) → colours step once per tick, nothing breaks. */
 @property --over-ratio {
   syntax: "<number>";
   inherits: true;
   initial-value: 0;
 }
-/* Glide where the ratio is actually set: the wallboard wrapper (JS
-   inline style) and any host handed it directly. NOT on the fill —
-   it inherits the wrapper's already-gliding value (double-smoothing
-   would lag ~1.8s). */
 .wb-progress,
 .tl-bar.running,
 .dot-loader {
@@ -2066,8 +2149,7 @@ html.vt-active main { animation: none; }
 }
 
 /* Geometry: wallboard track (4px base → 16px here, as before). Flat
-   track — an inset hairline only, no outer glow: the comet inside is
-   the signal, and glow outside the bar just haloed the tile. */
+   track — an inset hairline only: the comet inside is the signal. */
 .wb-progress {
   height: 16px; border-radius: 8px;
   background: rgba(255,255,255,0.06);
@@ -2081,246 +2163,291 @@ html.vt-active main { animation: none; }
   transition: width .9s linear;
 }
 
-/* ── Host: the TRAIL — dim, pinned, still reads as filled ── */
+/* ── Substrate: knobs + the tint the canvas layers over ── */
 .wb-progress-fill,
 .tl-bar.running,
 .dot-loader {
-  --dot-color: var(--running);  /* colour knob (as before) */
-  --dot-shift-y: 1px;           /* rows land on whole device pixels */
-  --dm-phase: 0s;               /* per-bar desync (set below) */
-  --trail-alpha: 48%;           /* trail lattice brightness knob */
-
-  /* Crystallizing ramp — trail amberizes first; head holds hot until
-     --over-ratio ≈ .35, catches up by 1. oklab = frosted mid-state. */
-  --dot-trail: color-mix(in oklab, var(--dot-color), var(--warning) calc(var(--over-ratio, 0) * 100%));
-  --dot-head:  color-mix(in oklab, var(--dot-color), var(--warning) calc(max(0, var(--over-ratio, 0) - 0.35) / 0.65 * 100%));
-  --glint: color-mix(in srgb, #fff 72%, var(--dot-head));
-
-  /* Parse-time solid fallback for engines without color-mix. MUST be
-     first so the longhands win where supported. */
-  background: var(--dot-color);
-  animation: none;              /* retire any legacy bar-shimmer */
-  background-color: color-mix(in srgb, var(--dot-trail) 12%, transparent);
-  background-image:
-    /* facet striae — invisible on time, "sets" as the run overruns */
-    repeating-linear-gradient(112deg,
-      color-mix(in srgb, var(--dot-trail) clamp(0%, var(--over-ratio, 0) * 14%, 14%), transparent) 0 1px,
-      transparent 1px 6px),
-    radial-gradient(circle,
-      color-mix(in srgb, var(--dot-trail) var(--trail-alpha), transparent) .6px, transparent 1.4px),
-    linear-gradient(90deg,
-      transparent 30%,
-      color-mix(in srgb, var(--dot-head) 6%, transparent) 70%,
-      color-mix(in srgb, var(--dot-head) 15%, transparent));
-  background-size: auto, 4px 4px, 100% 100%;
-  background-position: 0 0, 0 var(--dot-shift-y), 0 0;  /* lattice PINNED — never animated */
-  background-repeat: repeat, repeat, no-repeat;
+  --dot-color: var(--running);   /* colour knob (as before) */
+  --comet-tint: color-mix(in oklab,
+      var(--dot-color),
+      var(--warning) calc(var(--over-ratio, 0) * 100%));
+  animation: none;               /* retire any legacy bar treatment */
 }
+
+/* Determinate fills: translucent wash brightening toward the
+   frontier, so the comet head has somewhere to live. */
+.wb-progress-fill,
+.tl-bar.running {
+  background: linear-gradient(90deg,
+      color-mix(in srgb, var(--comet-tint) 10%, transparent),
+      color-mix(in srgb, var(--comet-tint) 24%, transparent) 78%,
+      color-mix(in srgb, var(--comet-tint) 48%, transparent));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--comet-tint) 28%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.07);
+}
+
+/* Indeterminate loader: faint tinted trough + hairline. */
+.dot-loader {
+  background: color-mix(in srgb, var(--comet-tint) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--comet-tint) 20%, transparent);
+}
+
 [data-theme="light"] .wb-progress-fill,
-[data-theme="light"] .tl-bar.running,
+[data-theme="light"] .tl-bar.running {
+  background: linear-gradient(90deg,
+      color-mix(in srgb, var(--comet-tint) 16%, transparent),
+      color-mix(in srgb, var(--comet-tint) 32%, transparent) 78%,
+      color-mix(in srgb, var(--comet-tint) 58%, transparent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--comet-tint) 36%, transparent);
+}
 [data-theme="light"] .dot-loader {
-  --trail-alpha: 68%;
-  --glint: color-mix(in srgb, var(--dot-head) 80%, #0f172a);  /* white glints vanish on light glass */
-  background-color: color-mix(in srgb, var(--dot-trail) 18%, transparent);
-  background-image:
-    repeating-linear-gradient(112deg,
-      color-mix(in srgb, var(--dot-trail) clamp(0%, var(--over-ratio, 0) * 18%, 18%), transparent) 0 1px,
-      transparent 1px 6px),
-    radial-gradient(circle,
-      color-mix(in srgb, var(--dot-trail) var(--trail-alpha), transparent) .6px, transparent 1.4px),
-    linear-gradient(90deg,
-      transparent 30%,
-      color-mix(in srgb, var(--dot-head) 9%, transparent) 70%,
-      color-mix(in srgb, var(--dot-head) 20%, transparent));
+  background: color-mix(in srgb, var(--comet-tint) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--comet-tint) 28%, transparent);
 }
 
-/* ── ::before — scattered glints, ramped toward the head ──
-   Three sparse layers (sparsest is near-white-hot), every centre on
-   the 4px lattice. Irregular envelope + whole-cell re-deal = glitter
-   with no beat. The STATIC mask shapes the comet: faint stray embers
-   far left (the trail is alive, not dead), full sparkle at the head. */
-.wb-progress-fill::before,
-.tl-bar.running::before,
-.dot-loader::before {
-  content: "";
+/* ── Finished Gantt bars: the LANDED comet ──
+   Same design language, no motion: the engine paints one settled
+   ember field (densest at the landing end) under a resting glow,
+   and the status colour is the knob — green landed clean, red
+   landed hard. Solid status fills at the top of the file remain
+   as the color-mix-less fallback. */
+.tl-bar.success { --dot-color: var(--success); }
+.tl-bar.failed  { --dot-color: var(--danger); }
+.tl-bar.success,
+.tl-bar.failed {
+  /* FLAT tint — a directional wash would imply motion; uniform = at rest */
+  background: color-mix(in srgb, var(--dot-color) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dot-color) 32%, transparent);
+}
+[data-theme="light"] .tl-bar.success,
+[data-theme="light"] .tl-bar.failed {
+  background: color-mix(in srgb, var(--dot-color) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dot-color) 42%, transparent);
+}
+
+/* The engine's canvas fills its bar and never eats clicks. */
+.comet-canvas {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
   border-radius: inherit;
   pointer-events: none;
-  will-change: opacity;
-  background-image:
-    radial-gradient(circle at 2px 2px,  var(--dot-trail) .8px, transparent 1.6px),
-    radial-gradient(circle at 14px 6px, var(--dot-trail) .8px, transparent 1.6px),
-    radial-gradient(circle at 26px 2px, var(--glint) .7px, transparent 1.5px);
-  background-size: 16px 8px, 24px 8px, 36px 8px;
-  background-position: 0 var(--dot-shift-y);
-  -webkit-mask: linear-gradient(90deg,
-      rgba(0,0,0,.42), rgba(0,0,0,.52) 40%, rgba(0,0,0,.72) 70%, #000 90%);
-          mask: linear-gradient(90deg,
-      rgba(0,0,0,.42), rgba(0,0,0,.52) 40%, rgba(0,0,0,.72) 70%, #000 90%);
-  animation:
-    dm-sparkle 2.1s ease-in-out infinite,
-    dm-shuffle 3.7s steps(1, end) infinite;
-  animation-delay: var(--dm-phase), var(--dm-phase);
-}
-/* The loader's head TRAVELS, so let the whole field twinkle evenly. */
-.dot-loader::before {
-  -webkit-mask: none;
-          mask: none;
 }
 
-/* ── ::after (determinate) — the comet HEAD at the frontier ──
-   Pinned to the right edge, which IS the progress frontier. A full
-   bright lattice + two near-white hot-glint tiles = visibly denser
-   lit dots than the body; the mask melts it back into the trail.
-   Twinkles faster and hotter than the body on co-prime periods. */
-.wb-progress-fill::after,
-.tl-bar.running::after {
-  content: "";
-  position: absolute;
-  top: 0; bottom: 0; right: 0;
-  width: 84px;
-  max-width: 100%;
-  border-radius: inherit;
-  pointer-events: none;
-  z-index: 0;
-  will-change: opacity;
-  background-image:
-    radial-gradient(circle, var(--dot-head) .9px, transparent 1.6px),
-    radial-gradient(circle at 3px 1px, var(--glint) .8px, transparent 1.6px),
-    radial-gradient(circle at 9px 5px, var(--glint) .8px, transparent 1.6px);
-  background-size: 4px 4px, 12px 8px, 20px 8px;
-  background-position: 0 var(--dot-shift-y);
-  -webkit-mask: linear-gradient(90deg,
-      transparent, rgba(0,0,0,.3) 40%, rgba(0,0,0,.72) 72%, #000);
-          mask: linear-gradient(90deg,
-      transparent, rgba(0,0,0,.3) 40%, rgba(0,0,0,.72) 72%, #000);
-  animation:
-    dm-head-twinkle 1.3s ease-in-out infinite,
-    dm-head-shuffle 2.3s steps(1, end) infinite;
-  animation-delay: calc(var(--dm-phase) - .4s), var(--dm-phase);
-}
-
-/* ── ::after (indeterminate loader) — comet head sweeping L→R ──
-   No % to bind to (env builds / queued runs). The moving layer holds
-   only a soft wash + SPARSE glints — deliberately no 4px lattice, so
-   translating it over the pinned host lattice cannot moiré.
-   Transform-only on the compositor. */
-.dot-loader::after {
-  content: "";
-  position: absolute;
-  top: 0; bottom: 0; left: 0;
-  width: 55%;
-  border-radius: inherit;
-  pointer-events: none;
-  background-image:
-    radial-gradient(circle at 3px 1px, var(--glint) .8px, transparent 1.6px),
-    radial-gradient(circle at 9px 5px, var(--dot-head) .8px, transparent 1.6px),
-    linear-gradient(90deg, transparent,
-      color-mix(in srgb, var(--dot-head) 30%, transparent));
-  background-size: 12px 8px, 20px 8px, 100% 100%;
-  background-position: 0 var(--dot-shift-y), 0 var(--dot-shift-y), 0 0;
-  background-repeat: repeat, repeat, no-repeat;
-  /* bright at the leading (right) edge, soft tip, trail melting off */
-  -webkit-mask: linear-gradient(90deg,
-      transparent, rgba(0,0,0,.35) 55%, #000 86%, rgba(0,0,0,.6) 96%, transparent);
-          mask: linear-gradient(90deg,
-      transparent, rgba(0,0,0,.35) 55%, #000 86%, rgba(0,0,0,.6) 96%, transparent);
-  will-change: transform;
-  animation: dm-comet-sweep 1.9s ease-in-out infinite;
-  animation-delay: var(--dm-phase);
-}
-
-/* Irregular envelopes: uneven stops + partial-amplitude peaks so
-   glints never pulse in unison. Head runs hotter and faster than the
-   body on co-prime periods (1.3/2.3 vs 2.1/3.7) → never in lockstep. */
-@keyframes dm-sparkle {
-  0%   { opacity: .30; }
-  22%  { opacity: .90; }
-  38%  { opacity: .42; }
-  60%  { opacity: .78; }
-  78%  { opacity: .22; }
-  100% { opacity: .55; }
-}
-@keyframes dm-head-twinkle {
-  0%   { opacity: .55; }
-  18%  { opacity: 1; }
-  41%  { opacity: .62; }
-  57%  { opacity: .95; }
-  83%  { opacity: .48; }
-  100% { opacity: .80; }
-}
-/* Whole-cell jumps (multiples of the 4px cell) keep every glint on
-   the lattice — membership teleports, nothing ever slides. (On the
-   head, 4px-multiple jumps leave the dense lattice layer invariant
-   while the 12/20px glint tiles re-deal — the lattice stays pinned.) */
-@keyframes dm-shuffle {
-  0%, 100% { background-position: 0    var(--dot-shift-y); }
-  33%      { background-position: 8px  var(--dot-shift-y); }
-  66%      { background-position: 4px  calc(var(--dot-shift-y) + 4px); }
-}
-@keyframes dm-head-shuffle {
-  0%, 100% { background-position: 0    var(--dot-shift-y); }
-  25%      { background-position: 4px  calc(var(--dot-shift-y) + 4px); }
-  50%      { background-position: 8px  var(--dot-shift-y); }
-  75%      { background-position: 12px calc(var(--dot-shift-y) + 4px); }
-}
-@keyframes dm-comet-sweep {
-  0%   { transform: translateX(-100%); }
-  100% { transform: translateX(250%); }
-}
-
-/* Desync siblings so a wall of live runs doesn't sparkle in lockstep. */
-.wallboard-tile:nth-child(2n) .wb-progress-fill,
-.tl-row:nth-child(2n) .tl-bar.running { --dm-phase: -0.7s; }
-.wallboard-tile:nth-child(3n) .wb-progress-fill,
-.tl-row:nth-child(3n) .tl-bar.running { --dm-phase: -1.3s; }
-.wallboard-tile:nth-child(5n) .wb-progress-fill,
-.tl-row:nth-child(5n) .tl-bar.running { --dm-phase: -2.0s; }
-
-/* ── Variants: one line each (trail/head/glint all derive from
-   --dot-color; over-median is continuous now — no --over class) ── */
+/* ── Variants: one line each (everything derives from --dot-color;
+   over-median stays continuous via --over-ratio) ── */
 .dot-loader.warning { --dot-color: var(--warning); }
 .dot-loader.success { --dot-color: var(--success); }
 
-/* ── Gantt attempt label sits above the dot layers ── */
-.tl-bar.running .tl-attempt {
+/* ── Gantt attempt label sits above the canvas ── */
+.tl-bar .tl-attempt {
   position: relative;
   z-index: 1;
   color: var(--text-1);
 }
 
-/* ── Reduced motion: a STILL comet — the static masks alone shape the
-   dim-trail→bright-head profile, and the crystallizing colour still
-   lands (colour is state feedback, not movement — same rationale as
-   the tile bloom; the .9s ratio glide is calmer than 1 Hz stepping,
-   so it stays). Only twinkle and sweep stop. ── */
-@media (prefers-reduced-motion: reduce) {
-  .wb-progress-fill::before, .tl-bar.running::before, .dot-loader::before,
-  .wb-progress-fill::after,  .tl-bar.running::after,  .dot-loader::after {
-    animation: none !important;
-    transform: none !important;
-  }
-  .wb-progress-fill::before, .tl-bar.running::before, .dot-loader::before { opacity: .45; }
-  .wb-progress-fill::after,  .tl-bar.running::after,  .dot-loader::after  { opacity: .8; }
-  /* Park the loader's swept head at the leading edge, solid to it */
-  .dot-loader::after {
-    left: auto; right: 0;
-    -webkit-mask: linear-gradient(90deg, transparent, rgba(0,0,0,.4) 55%, #000);
-            mask: linear-gradient(90deg, transparent, rgba(0,0,0,.4) 55%, #000);
-  }
-}
+/* Reduced motion is handled inside the engine: it renders a single
+   static comet frame (trail + glowing head) instead of animating.
+   The .9s --over-ratio glide stays — colour is state feedback, not
+   movement (same rationale as the tile bloom). */
 
-/* ── Reusable indeterminate loader shell ──
-   (--trail-alpha here overrides the shared 34% by source order —
-   keep this rule below the shared host rule. The light-theme 60%
-   still wins over it by specificity.) */
+/* ── Reusable indeterminate loader shell ── */
 .dot-loader {
   position: relative;
   overflow: hidden;
   width: 100%;
   height: 10px;
   border-radius: 5px;
-  --trail-alpha: 58%;   /* brighter trail: no static head to anchor it */
 }
 .dot-loader.sm { height: 6px; border-radius: 3px; }
+
+/* ═══════════════════════════════════════════════════════
+   POLISH PASS II — arrival choreography
+   Every keyframe here is a one-shot entrance with 'both' fill;
+   bar-reveal's clip-path is the only non-transform/opacity animation
+   and it plays exactly once. The reduced-motion switch-off lives in
+   the main accessibility block, not here.
+═══════════════════════════════════════════════════════ */
+
+/* ─── Keyframes ───────────────────────────────────────── */
+@keyframes wave-in    { from { opacity: 0; } }
+@keyframes bar-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes badge-land { from { opacity: .5; transform: scale(.9); } }
+/* Exit pair for the modal: same names as the open animations cannot
+   restart (CSS animations are keyed by name), so exits get their own. */
+@keyframes fade-out      { to { opacity: 0; } }
+@keyframes modal-pop-out { to { opacity: 0; transform: translateY(12px) scale(.965); } }
+@keyframes sheen-sweep { from { transform: translateX(-160%); } to { transform: translateX(260%); } }
+/* from-only: the implicit end keyframe tracks live computed style, so a
+   finished entrance never pins transform/opacity against later states
+   (e.g. .cmdk-item.selected's nudge). */
+@keyframes crumb-in   { from { opacity: 0; transform: translateY(4px); } }
+/* No 'to' opacity: each rail settles at its own resting opacity
+   (.9 / .65), and nothing persists past the animation. */
+@keyframes logo-rail-in { from { opacity: .35; } }
+/* Arrival: the host rises; a pre-painted glow overlay fades on the
+   compositor. (Animating box-shadow itself repaints the card per frame.) */
+@keyframes arrive-rise { from { transform: translateY(4px); } }
+@keyframes arrive-fade { to { opacity: 0; } }
+
+/* ─── Boot: Shell mount only ──────────────────────────────
+   Logo rails light up top-down, then the nav follows. Sections are
+   wrapper divs (label = child 1, items from child 2), so item delays
+   compose a per-section base with an in-section step. */
+.sidebar-logo-inner span { animation: logo-rail-in .28s var(--ease-out) both; }
+.sidebar-logo-inner span:nth-child(2) { animation-delay: .08s; }
+.sidebar-logo-inner span:nth-child(3) { animation-delay: .16s; }
+.sidebar-nav-item {
+  animation: rise-in .3s var(--ease-out) both;
+  animation-delay: calc(var(--boot-sec, 0s) + var(--boot-row, 0s));
+}
+.sidebar-nav > div:nth-of-type(2) { --boot-sec: .075s; }
+.sidebar-nav > div:nth-of-type(3) { --boot-sec: .15s; }
+.sidebar-footer .sidebar-nav-item { --boot-sec: .225s; }
+.sidebar-nav-item:nth-child(3) { --boot-row: .025s; }
+.sidebar-nav-item:nth-child(4) { --boot-row: .05s; }
+.sidebar-nav-item:nth-child(5) { --boot-row: .075s; }
+.sidebar-nav-item:nth-child(6) { --boot-row: .1s; }
+.sidebar-nav-item:nth-child(n+7) { --boot-row: .125s; }
+
+/* ─── Table rows ──────────────────────────────────────── */
+tbody tr { animation: rise-in .35s var(--ease-out) both; }
+tbody tr:nth-child(2) { animation-delay: .025s; }
+tbody tr:nth-child(3) { animation-delay: .05s; }
+tbody tr:nth-child(4) { animation-delay: .075s; }
+tbody tr:nth-child(5) { animation-delay: .1s; }
+tbody tr:nth-child(6) { animation-delay: .125s; }
+tbody tr:nth-child(7) { animation-delay: .15s; }
+tbody tr:nth-child(8) { animation-delay: .175s; }
+tbody tr:nth-child(n+9) { animation-delay: .2s; }
+
+/* ─── Panels + list rows (same idiom as the grid stagger) ── */
+.panel, .list-panel > .list-item { animation: rise-in .45s var(--ease-out) both; }
+.panel:nth-child(1), .list-panel > .list-item:nth-child(1) { animation-delay: .03s; }
+.panel:nth-child(2), .list-panel > .list-item:nth-child(2) { animation-delay: .06s; }
+.panel:nth-child(3), .list-panel > .list-item:nth-child(3) { animation-delay: .09s; }
+.panel:nth-child(4), .list-panel > .list-item:nth-child(4) { animation-delay: .12s; }
+.panel:nth-child(5), .list-panel > .list-item:nth-child(5) { animation-delay: .15s; }
+.panel:nth-child(6), .list-panel > .list-item:nth-child(6) { animation-delay: .18s; }
+.panel:nth-child(7), .list-panel > .list-item:nth-child(7) { animation-delay: .21s; }
+.panel:nth-child(n+8), .list-panel > .list-item:nth-child(n+8) { animation-delay: .24s; }
+
+/* ─── Command palette ─────────────────────────────────────
+   Fresh open (empty query) only — items sit in per-item wrapper divs,
+   so the stagger keys off the wrapper's position. Typing removes
+   .cmdk-fresh: filtered results swap with zero theatrics. */
+.cmdk-list.cmdk-fresh .cmdk-item { animation: crumb-in .2s var(--ease-out) both; }
+.cmdk-fresh > div:nth-child(2) .cmdk-item { animation-delay: .018s; }
+.cmdk-fresh > div:nth-child(3) .cmdk-item { animation-delay: .036s; }
+.cmdk-fresh > div:nth-child(4) .cmdk-item { animation-delay: .054s; }
+.cmdk-fresh > div:nth-child(5) .cmdk-item { animation-delay: .072s; }
+.cmdk-fresh > div:nth-child(6) .cmdk-item { animation-delay: .09s; }
+.cmdk-fresh > div:nth-child(7) .cmdk-item { animation-delay: .108s; }
+.cmdk-fresh > div:nth-child(n+8) .cmdk-item { animation-delay: .126s; }
+.cmdk-item { transition: background-color .12s var(--ease-swift), transform .12s var(--ease-out); }
+.cmdk-item.selected { transform: translateX(2px); }
+
+/* ─── Modal exit (ui.tsx holds .closing for 160ms) ────── */
+.modal-shade.closing { animation: fade-out .16s var(--ease-swift) both; }
+.modal-shade.closing .modal { animation: modal-pop-out .16s var(--ease-swift) both; }
+
+/* ─── Status chips land; breadcrumb follows the page ────
+   Both are keyed in TSX, so state/page changes replay them.
+   Running chips keep their pulse stacked behind the landing. */
+.status-badge { animation: badge-land .3s var(--ease-out) both; }
+.status-badge.status-pulsing { animation: badge-land .3s var(--ease-out) both, badge-pulse 2s ease infinite; }
+.bc-page { animation: crumb-in .22s var(--ease-out) both; }
+
+/* ─── Primary button sheen — hover, once, primary only ── */
+.btn-primary { position: relative; overflow: hidden; }
+.btn-primary::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 40%;
+  /* Dark theme's primary button is near-white: a white streak vanishes on
+     it, so the default sweep is a dark gloss; light theme's dark button
+     gets the white streak. */
+  background: linear-gradient(105deg, transparent, rgba(15,23,42,0.10), transparent);
+  transform: translateX(-160%); /* parked off-edge until hover */
+  pointer-events: none;
+}
+.btn-primary:hover:not(:disabled)::after { animation: sheen-sweep .55s var(--ease-out) 1; }
+[data-theme="light"] .btn-primary::after { background: linear-gradient(105deg, transparent, rgba(255,255,255,0.28), transparent); }
+
+/* ─── Gantt bars sweep open (TSX staggers lanes inline) ──
+   .tl-bar.running re-asserts over the comet substrate's
+   'animation: none' (which retired the old twinkle loop, not this). */
+.tl-bar, .tl-bar.running { animation: bar-reveal .3s var(--ease-out) both; }
+
+/* ─── Wave-ins: TSX supplies per-index delays inline ──── */
+.run-heatmap-col { animation: wave-in .24s var(--ease-swift) both; }
+.mini-dot { animation: wave-in .2s var(--ease-swift) both; }
+/* SVG <g>/path opacity only — no transforms on DAG geometry */
+.dag-enter, .dag-edge-enter { animation: wave-in .3s var(--ease-swift) both; }
+/* Active edges keep their marching-ants flow — the single-class entrance
+   rule above would otherwise win the cascade and silence dag-flow. */
+.dag-edge-enter.dag-edge-active { animation: wave-in .3s var(--ease-swift) both, dag-flow .8s linear infinite; }
+
+/* ─── Live arrivals (keyed by run id in TSX) ──────────── */
+.active-run-row, .wallboard-live-card {
+  position: relative;
+  animation: arrive-rise .35s var(--ease-out) both;
+}
+.active-run-row::before, .wallboard-live-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 3px 0 0 var(--running), inset 32px 0 28px -18px rgba(56,189,248,0.28);
+  animation: arrive-fade .9s var(--ease-out) both;
+}
+
+.modal--wide { max-width: 640px; }
+
+/* ─── Schedule builder (workflow modals) ─────────────────
+   Dropdown-first authoring; raw cron survives as the Advanced mode.
+   The preview line restates the schedule exactly as the list pages
+   will label it, so what you save is what you'll read. Framed as a
+   grouped panel so the schedule reads as one designed control, not
+   loose fields fighting the modal grid. */
+.sched-builder {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-card);
+}
+/* Mode picker + timezone: the zone names are the long ones. */
+.sched-row-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 12px; }
+.sched-builder .field-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
+.sched-days { display: flex; gap: 6px; flex-wrap: wrap; }
+.day-chip {
+  font: inherit; font-size: 12px; font-weight: 600;
+  padding: 6px 0; width: 44px; text-align: center;
+  border-radius: var(--r-sm); cursor: pointer;
+  color: var(--text-2);
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  transition: background-color .12s var(--ease-swift), color .12s var(--ease-swift),
+              border-color .12s var(--ease-swift), transform .15s var(--ease-out);
+}
+.day-chip:hover { border-color: var(--accent-border); }
+.day-chip:active { transform: scale(.94); }
+.day-chip.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+[data-theme="light"] .day-chip.on { color: var(--accent-active); }
+.sched-preview {
+  font-size: 12px; color: var(--text-2); line-height: 1.5;
+  margin-top: 2px; padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.sched-preview b { color: var(--text-1); font-weight: 600; }
+.sched-warn { color: var(--warning); font-size: 11.5px; }
