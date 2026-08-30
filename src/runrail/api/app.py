@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from runrail import __version__
 from runrail.api.routes_activity import router as activity_router
 from runrail.api.routes_insights import router as insights_router
 from runrail.api.routes_reports import router as reports_router
@@ -27,7 +28,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="RunRail", version="0.3.1", lifespan=lifespan)
+    app = FastAPI(title="RunRail", version=__version__, lifespan=lifespan)
     app.include_router(ws_router)
     app.include_router(resources_router); app.include_router(workflows_router); app.include_router(runs_router)
     # Every /api router must be registered before the SPA catch-all below, which
