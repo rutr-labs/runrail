@@ -14,10 +14,18 @@ from sqlalchemy.orm import Session, selectinload
 from runrail.models import Environment, Project, Task, Workflow
 from runrail.schemas import TaskIn
 
+# Configuration only. Operator state (snooze, notification markers, breach
+# markers) is deliberately absent: a file applied on another machine must not
+# carry one operator's "quiet until Monday".
 _WORKFLOW_FIELDS = ("description", "schedule_cron", "schedule_timezone", "enabled",
-                    "max_concurrent_runs", "notify_webhook_url", "auto_pause_failures")
+                    "max_concurrent_runs", "notify_webhook_url", "auto_pause_failures",
+                    "missed_run_grace_minutes", "sla_minutes")
 _TASK_FIELDS = ("task_type", "command", "script_path", "notebook_path", "sql_path", "cwd",
-                "retries", "retry_delay_seconds", "timeout_seconds")
+                "retries", "retry_delay_seconds", "timeout_seconds",
+                "requires_approval", "approval_prompt")
+#: Values for task fields a file omits. NOT NULL columns must appear here, or
+#: the apply loop writes None into them.
+_TASK_DEFAULTS = {"retries": 0, "retry_delay_seconds": 60, "requires_approval": False}
 
 
 def _compact(mapping: dict[str, Any]) -> dict[str, Any]:
@@ -118,6 +126,8 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
                 "retries": task_entry.get("retries", 0),
                 "retry_delay_seconds": task_entry.get("retry_delay_seconds", 60),
                 "timeout_seconds": task_entry.get("timeout_seconds"),
+                "requires_approval": bool(task_entry.get("requires_approval", False)),
+                "approval_prompt": task_entry.get("approval_prompt"),
             })
 
         workflow = db.scalar(select(Workflow).where(Workflow.name == wf_name))
@@ -132,6 +142,8 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
         workflow.max_concurrent_runs = int(entry.get("max_concurrent_runs", 1))
         workflow.notify_webhook_url = entry.get("notify_webhook_url")
         workflow.auto_pause_failures = entry.get("auto_pause_failures")
+        workflow.missed_run_grace_minutes = entry.get("missed_run_grace_minutes")
+        workflow.sla_minutes = entry.get("sla_minutes")
         workflow.project_id = _resolve(db, Project, entry.get("project"), "project")
         workflow.default_environment_id = _resolve(
             db, Environment, entry.get("default_environment"), "environment")
@@ -147,9 +159,7 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
             task.task_type = task_entry["task_type"]
             for field in _TASK_FIELDS:
                 if field != "task_type":
-                    setattr(task, field, task_entry.get(
-                        field, 0 if field == "retries"
-                        else 60 if field == "retry_delay_seconds" else None))
+                    setattr(task, field, task_entry.get(field, _TASK_DEFAULTS.get(field)))
             task.depends_on_json = list(task_entry.get("depends_on") or [])
             task.parameters_json = task_entry.get("parameters")
             task.project_id = _resolve(db, Project, task_entry.get("project"), "project")

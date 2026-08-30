@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
@@ -103,6 +103,12 @@ class WorkflowIn(BaseModel):
     default_environment_id: int | None = None
     notify_webhook_url: str | None = None
     auto_pause_failures: int | None = Field(default=None, ge=1)
+    # Configuration only. Operator state (snooze_until, snooze_pauses_runs,
+    # missed_notified_at, sla_breached_at) must never appear here: apply_update
+    # writes every key of WorkflowIn.model_dump(), so an edit-modal save would
+    # silently clear a snooze. Those live on dedicated endpoints instead.
+    missed_run_grace_minutes: int | None = Field(default=None, ge=1)
+    sla_minutes: int | None = Field(default=None, ge=1)
 
     @field_validator("schedule_timezone")
     @classmethod
@@ -120,6 +126,25 @@ class WorkflowOut(WorkflowIn, ORMModel):
     id: int
     created_at: UTCDateTime
     updated_at: UTCDateTime
+    snooze_until: UTCDateTime | None = None
+    snooze_pauses_runs: bool = False
+    snoozed: bool = False  # from the model property, via from_attributes
+
+
+class SnoozeIn(BaseModel):
+    until: UTCDateTime
+    pause_runs: bool = False
+
+    @field_validator("until")
+    @classmethod
+    def _bounded_window(cls, value: datetime) -> datetime:
+        # A fat-fingered year must not permanently mute a pipeline.
+        current = datetime.now(timezone.utc)
+        if value <= current:
+            raise ValueError("Snooze must end in the future")
+        if value > current + timedelta(days=30):
+            raise ValueError("Snooze cannot exceed 30 days")
+        return value
 
 
 class TaskIn(BaseModel):
@@ -137,6 +162,8 @@ class TaskIn(BaseModel):
     retries: int = Field(default=0, ge=0)
     retry_delay_seconds: int = Field(default=60, ge=0)
     timeout_seconds: int | None = Field(default=None, ge=1)
+    requires_approval: bool = False
+    approval_prompt: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
     def check_required_source(self) -> "TaskIn":
@@ -186,6 +213,10 @@ class TaskRunOut(ORMModel):
     error_message: str | None
     rendered_command: str | None
     created_at: UTCDateTime
+    resume_index: int = 0
+    approved_by: str | None = None
+    approval_note: str | None = None
+    approved_at: UTCDateTime | None = None
 
 
 class WorkflowRunOut(ORMModel):
@@ -199,7 +230,52 @@ class WorkflowRunOut(ORMModel):
     finished_at: UTCDateTime | None
     duration_seconds: float | None
     created_at: UTCDateTime
+    resume_count: int = 0
+    sla_breached_at: UTCDateTime | None = None
+
+
+class ResumeIn(BaseModel):
+    """Task names to force out of the reuse set; everything else is decided by
+    the plan."""
+
+    rerun: list[str] = Field(default_factory=list)
+
+
+class ApprovalDecision(BaseModel):
+    # Attribution only — RunRail has no accounts, so this is free text.
+    approved_by: str = Field(min_length=1, max_length=120)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class RunNoteIn(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+    author: str | None = Field(default=None, max_length=80)
+
+    @field_validator("body")
+    @classmethod
+    def _body_has_content(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("A note needs a body")
+        return value
+
+    @field_validator("author")
+    @classmethod
+    def _blank_author_is_unsigned(cls, value: str | None) -> str | None:
+        return (value.strip() or None) if value else None
+
+
+class RunNoteOut(ORMModel):
+    id: int
+    workflow_run_id: int
+    body: str
+    author: str | None
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
 
 
 class WorkflowRunDetail(WorkflowRunOut):
     task_runs: list[TaskRunOut] = Field(default_factory=list)
+    # Lazy-loaded from the relationship while the request session is open; the
+    # run page reads them here instead of making a second round trip.
+    notes: list[RunNoteOut] = Field(default_factory=list)

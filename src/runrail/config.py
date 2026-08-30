@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     # Default webhook for run notifications (Slack/Teams incoming webhooks work);
     # a workflow's own notify_webhook_url overrides this.
     notify_webhook_url: str | None = None
+    # Absolute base URL for links that leave the machine — the footer of an
+    # exported run file, a report permalink. Set it when RunRail sits behind a
+    # proxy; the fallback only resolves inside the same network.
+    public_url: str | None = None
+
+    @property
+    def base_url(self) -> str:
+        return (self.public_url or f"http://{self.host}:{self.port}").rstrip("/")
 
     @property
     def database_url(self) -> str:

@@ -3,16 +3,22 @@ from sqlalchemy.orm import Session, aliased
 
 from runrail.models import RunStatus, Workflow, WorkflowRun, now
 
+#: A run parked on an approval gate still occupies its workflow's concurrency
+#: budget — it holds partial state and will resume into the same tasks. Counting
+#: only `running` would let the next scheduled iteration start underneath it and
+#: race the approved one over the same outputs.
+_OCCUPIES_SLOT = (RunStatus.running, RunStatus.waiting_approval)
+
 
 def _running_runs_for_same_workflow():
-    """Correlated count of currently running runs for the candidate's workflow."""
+    """Correlated count of runs holding a concurrency slot for the candidate's workflow."""
     other = aliased(WorkflowRun)
     return (
         select(func.count())
         .select_from(other)
         .where(
             other.workflow_id == WorkflowRun.workflow_id,
-            other.status == RunStatus.running,
+            other.status.in_(_OCCUPIES_SLOT),
         )
         .correlate(WorkflowRun)
         .scalar_subquery()
@@ -50,7 +56,13 @@ def claim_next_run(db: Session) -> WorkflowRun | None:
         WorkflowRun.id == candidate,
         WorkflowRun.status == RunStatus.queued,
         _running_runs_for_same_workflow() < workflow_limit,
-    ).values(status=RunStatus.running, started_at=now()))
+    # coalesce, not now(): a run can be claimed more than once — an approval
+    # gate releases it back to `queued` while a human decides, and re-entry
+    # must not rewrite the run's start time and walk the timeline origin
+    # forward. A resume deliberately nulls started_at first to open a fresh
+    # segment, so it still gets a new one.
+    ).values(status=RunStatus.running,
+             started_at=func.coalesce(WorkflowRun.started_at, now())))
     if result.rowcount != 1:
         db.rollback()
         return None

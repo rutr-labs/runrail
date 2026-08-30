@@ -7,7 +7,7 @@ def seed_workflow(client):
     workflow = client.post("/api/workflows", json={
         "name": "etl", "enabled": True, "max_concurrent_runs": 2,
         "schedule_cron": "*/5 * * * *", "notify_webhook_url": "https://hooks.example/x",
-        "auto_pause_failures": 3,
+        "auto_pause_failures": 3, "missed_run_grace_minutes": 15, "sla_minutes": 90,
     }).json()
     client.post(f"/api/workflows/{workflow['id']}/tasks", json={
         "name": "extract", "task_type": "shell", "command": "printf extract",
@@ -17,6 +17,7 @@ def seed_workflow(client):
     client.post(f"/api/workflows/{workflow['id']}/tasks", json={
         "name": "load", "task_type": "shell", "command": "printf load",
         "depends_on_json": ["extract"], "retries": 0, "retry_delay_seconds": 0,
+        "requires_approval": True, "approval_prompt": "Confirm the QA row counts",
     })
     return workflow
 
@@ -41,6 +42,33 @@ def test_export_apply_round_trip_is_idempotent(client):
     assert summary == {"created": [], "updated": ["etl"]}
     tasks = client.get(f"/api/workflows/{client.get('/api/workflows').json()[0]['id']}/tasks").json()
     assert [t["name"] for t in tasks] == ["extract", "load"]  # no duplicates
+
+
+def test_configuration_round_trips_but_operator_state_does_not(client):
+    from runrail.db import SessionLocal
+    from runrail.models import Workflow
+    from runrail.workflow_io import apply_workflows, export_workflows
+
+    workflow = seed_workflow(client)
+    with SessionLocal() as db:
+        db.get(Workflow, workflow["id"]).snooze_until = None
+        db.commit()
+        data = export_workflows(db)
+    exported = data["workflows"][0]
+    assert exported["missed_run_grace_minutes"] == 15 and exported["sla_minutes"] == 90
+    gate = next(t for t in exported["tasks"] if t["name"] == "load")
+    assert gate["requires_approval"] is True
+    assert gate["approval_prompt"] == "Confirm the QA row counts"
+    # A file applied on another machine must not carry one operator's snooze.
+    assert not {"snooze_until", "snooze_pauses_runs", "missed_notified_at"} & exported.keys()
+
+    # Omitting the gate fields clears them without writing NULL into a NOT NULL column.
+    exported["tasks"] = [{"name": "load", "task_type": "shell", "command": "printf load"}]
+    with SessionLocal() as db:
+        apply_workflows(db, data)
+    reapplied = client.get(f"/api/workflows/{workflow['id']}/tasks").json()
+    assert reapplied[0]["requires_approval"] is False
+    assert reapplied[0]["retries"] == 0 and reapplied[0]["retry_delay_seconds"] == 60
 
 
 def test_apply_updates_removes_and_creates_declaratively(client):

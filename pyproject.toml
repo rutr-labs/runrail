@@ -41,7 +41,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-notebook = ["papermill>=2.6", "nbconvert>=7.16"]
+# nbconvert renders executed notebooks to HTML reports inside RunRail's own
+# process; reports degrade to a "not installed" message without it. Optional on
+# purpose — it drags in the Jupyter stack, which RunRail otherwise keeps in task
+# environments (papermill and ipykernel are installed there by environments.py,
+# never here).
+notebook = ["nbconvert>=7.16,<8"]
 dev = ["build>=1.2", "httpx>=0.27", "pytest>=8", "ruff>=0.6"]
 
 [project.urls]

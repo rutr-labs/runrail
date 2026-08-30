@@ -5,8 +5,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from runrail.api.routes_insights import router as insights_router
+from runrail.api.routes_reports import router as reports_router
 from runrail.api.routes_resources import router as resources_router
+from runrail.api.routes_runcontrol import router as runcontrol_router
 from runrail.api.routes_runs import router as runs_router
+from runrail.api.routes_watchdog import router as watchdog_router
 from runrail.api.routes_workflows import router as workflows_router
 from runrail.api.routes_ws import router as ws_router
 from runrail.api.ws import manager as ws_manager
@@ -25,6 +29,10 @@ def create_app() -> FastAPI:
     app = FastAPI(title="RunRail", version="0.3.1", lifespan=lifespan)
     app.include_router(ws_router)
     app.include_router(resources_router); app.include_router(workflows_router); app.include_router(runs_router)
+    # Every /api router must be registered before the SPA catch-all below, which
+    # matches "/{path:path}" and would otherwise swallow their paths.
+    app.include_router(runcontrol_router); app.include_router(watchdog_router)
+    app.include_router(reports_router); app.include_router(insights_router)
 
     @app.get("/api/health")
     def health(): return {"status": "ok", "service": "runrail"}
