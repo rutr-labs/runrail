@@ -20,8 +20,8 @@ def make_run(client, workflow_id):
         return run.id
 
 
-def add_note(client, run_id, body, author=None):
-    response = client.post(f"/api/runs/{run_id}/notes", json={"body": body, "author": author})
+def add_note(client, run_id, body):
+    response = client.post(f"/api/runs/{run_id}/notes", json={"body": body})
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -30,13 +30,12 @@ def test_notes_read_oldest_first_as_a_timeline(client):
     workflow = make_workflow(client, "annotated")
     run_id = make_run(client, workflow["id"])
 
-    add_note(client, run_id, "bad upstream file, ignore", author="shivam")
+    add_note(client, run_id, "bad upstream file, ignore")
     add_note(client, run_id, "vendor re-sent it, re-ran as #520")
 
     notes = client.get(f"/api/runs/{run_id}/notes").json()
     assert [n["body"] for n in notes] == ["bad upstream file, ignore",
                                           "vendor re-sent it, re-ran as #520"]
-    assert [n["author"] for n in notes] == ["shivam", None]  # unsigned round-trips as null
 
 
 def test_notes_on_an_unknown_run_are_404(client):
@@ -47,8 +46,7 @@ def test_notes_on_an_unknown_run_are_404(client):
 def test_note_bodies_are_bounded(client):
     workflow = make_workflow(client, "bounds")
     run_id = make_run(client, workflow["id"])
-    for payload in ({"body": ""}, {"body": "   "}, {"body": "x" * 4001},
-                    {"body": "ok", "author": "a" * 81}):
+    for payload in ({"body": ""}, {"body": "   "}, {"body": "x" * 4001}):
         assert client.post(f"/api/runs/{run_id}/notes", json=payload).status_code == 422
 
 
@@ -58,10 +56,10 @@ def test_editing_a_note_bumps_updated_at_and_keeps_created_at(client):
     note = add_note(client, run_id, "watching this one")
 
     updated = client.put(f"/api/run-notes/{note['id']}",
-                         json={"body": "resolved: vendor re-sent", "author": "shivam"})
+                         json={"body": "resolved: vendor re-sent"})
     assert updated.status_code == 200
     body = updated.json()
-    assert body["body"] == "resolved: vendor re-sent" and body["author"] == "shivam"
+    assert body["body"] == "resolved: vendor re-sent"
     assert body["created_at"] == note["created_at"]
     assert body["updated_at"] > note["updated_at"]  # drives the "edited" marker
 

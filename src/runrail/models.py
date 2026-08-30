@@ -250,8 +250,6 @@ class TaskRun(Base):
     # Which resume segment of the run this row belongs to; rows from earlier
     # segments are what "reused" means.
     resume_index: Mapped[int] = mapped_column(Integer, default=0)
-    # Free text: RunRail has no accounts, so this is attribution, not identity.
-    approved_by: Mapped[str | None] = mapped_column(String(120))
     approval_note: Mapped[str | None] = mapped_column(Text)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     workflow_run: Mapped[WorkflowRun] = relationship(back_populates="task_runs")
@@ -277,8 +275,6 @@ class RunNote(TimestampMixin, Base):
     workflow_run_id: Mapped[int] = mapped_column(
         ForeignKey("workflow_runs.id", ondelete="CASCADE"), index=True)
     body: Mapped[str] = mapped_column(Text)
-    # Optional, never validated, never an identity claim — there is no auth.
-    author: Mapped[str | None] = mapped_column(String(80))
     workflow_run: Mapped[WorkflowRun] = relationship(back_populates="notes")
 
 

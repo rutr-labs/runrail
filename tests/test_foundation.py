@@ -69,8 +69,10 @@ def test_migration_creates_every_v05_column(client):
             "missed_notified_at", "sla_minutes"} <= columns["workflows"]
     assert {"resume_count", "sla_breached_at"} <= columns["workflow_runs"]
     assert {"requires_approval", "approval_prompt"} <= columns["tasks"]
-    assert {"resume_index", "approved_by", "approval_note", "approved_at"} <= columns["task_runs"]
-    assert {"workflow_run_id", "body", "author", "created_at", "updated_at"} <= columns["run_notes"]
+    assert {"resume_index", "approval_note", "approved_at"} <= columns["task_runs"]
+    assert {"workflow_run_id", "body", "created_at", "updated_at"} <= columns["run_notes"]
+    # Single user, no accounts: content and timing are kept, the name is not.
+    assert "approved_by" not in columns["task_runs"] and "author" not in columns["run_notes"]
     # The notebook report and /latest lookups both filter artifacts by run.
     assert "ix_artifacts_workflow_run_id" in {i["name"] for i in
                                               inspector.get_indexes("artifacts")}
@@ -167,17 +169,15 @@ def test_snooze_window_is_bounded():
 def test_run_note_and_approval_schema_bounds():
     from runrail.schemas import ApprovalDecision, RunNoteIn
 
-    note = RunNoteIn(body="  bad upstream file, ignore  ", author="  shivam ")
-    assert note.body == "bad upstream file, ignore" and note.author == "shivam"
-    assert RunNoteIn(body="x", author="   ").author is None  # unsigned
-    for payload in ({"body": "   "}, {"body": ""}, {"body": "x" * 4001},
-                    {"body": "x", "author": "a" * 81}):
+    assert RunNoteIn(body="  bad upstream file, ignore  ").body == "bad upstream file, ignore"
+    for payload in ({"body": "   "}, {"body": ""}, {"body": "x" * 4001}):
         with pytest.raises(ValidationError):
             RunNoteIn(**payload)
 
-    assert ApprovalDecision(approved_by="shivam").note is None
+    assert ApprovalDecision().note is None  # the decision alone is a valid body
+    assert ApprovalDecision(note="counts check out").note == "counts check out"
     with pytest.raises(ValidationError):
-        ApprovalDecision(approved_by="")
+        ApprovalDecision(note="x" * 2001)
 
 
 def test_run_detail_carries_notes_and_new_run_fields(client):
@@ -194,7 +194,6 @@ def test_run_detail_carries_notes_and_new_run_fields(client):
         db.commit()
     detail = client.get(f"/api/runs/{run['id']}").json()
     assert [n["body"] for n in detail["notes"]] == ["vendor re-sent the file"]
-    assert detail["notes"][0]["author"] is None
 
     # Retention and workflow deletion both lean on the cascade rather than code.
     client.delete(f"/api/workflows/{workflow['id']}")

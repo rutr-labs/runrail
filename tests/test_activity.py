@@ -180,8 +180,7 @@ def test_an_open_gate_is_an_event_pointing_at_its_run(client):
 
     # Deciding the gate is what closes the ask, so the event goes with it.
     gate = client.get("/api/approvals").json()[0]
-    approved = client.post(f"/api/task-runs/{gate['task_run_id']}/approve",
-                           json={"approved_by": "me"})
+    approved = client.post(f"/api/task-runs/{gate['task_run_id']}/approve")
     assert approved.status_code == 200, approved.text
     assert feed(client)["events"] == []
 

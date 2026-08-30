@@ -2658,34 +2658,24 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 .approval-chip--downstream { color: var(--text-2); background: var(--queued-soft); border-color: var(--queued-border); border-style: dashed; }
 .approval-chip--more { color: var(--text-3); background: transparent; border-style: dashed; }
 
-/* Attribution — deliberately plain. This is not a sign-in. */
-.approval-gate-attribution {
-  display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
-  gap: 12px; align-items: start;
-}
-.approval-gate-name, .approval-gate-note { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-/* Wraps: the "attribution only" note is long and the name column is narrow,
-   so the em drops to its own line rather than breaking the label in two. */
-.approval-gate-name > span, .approval-gate-note > span {
+.approval-gate-note { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.approval-gate-note > span {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   font-size: 12.5px; font-weight: 600; color: var(--text-2);
 }
-.approval-gate-name > span em, .approval-gate-note > span em {
+.approval-gate-note > span em {
   font-style: normal; font-weight: 400; font-size: 11.5px; color: var(--text-3);
 }
-.approval-gate-name input, .approval-gate-note textarea {
-  height: 36px; padding: 0 12px;
+.approval-gate-note textarea {
+  padding: 10px 12px; min-height: 62px; resize: vertical;
   border-radius: var(--r-sm); border: 1px solid var(--border-strong);
   background-color: var(--bg-input); color: var(--text-1); outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
-.approval-gate-note textarea { height: auto; padding: 10px 12px; min-height: 62px; resize: vertical; }
-.approval-gate-name input:focus, .approval-gate-note textarea:focus {
+.approval-gate-note textarea:focus {
   border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.approval-gate-name input::placeholder, .approval-gate-note textarea::placeholder { color: var(--text-3); }
-.approval-gate-note small { font-size: 11px; color: var(--text-3); }
-.approval-gate-note small b { color: var(--text-2); }
+.approval-gate-note textarea::placeholder { color: var(--text-3); }
 .approval-gate-note-toggle {
   align-self: start; background: none; border: 0; padding: 4px 0;
   font-size: 12px; color: var(--text-3);
@@ -2768,7 +2758,6 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 }
 @media (max-width: 560px) {
   .approval-gate-task-sep { display: none; }
-  .approval-gate-attribution { grid-template-columns: minmax(0, 1fr); }
   .approval-gate-actions-hint { display: none; }
 }
 
@@ -3374,12 +3363,6 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
    failed, and nothing here ever looks saved when it is
    not. */
 .run-notes-count { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* Quiet, but always present: the only thing stopping "author" reading as identity. */
-.run-notes-disclaimer {
-  margin: 12px 20px 4px; padding: 8px 12px;
-  border-radius: var(--r-sm); background: var(--bg-hover); border: 1px solid var(--border);
-  font-size: 11.5px; color: var(--text-3); line-height: 1.55;
-}
 .run-notes-thread { display: flex; flex-direction: column; padding: 8px 0; }
 .run-note {
   padding: 10px 20px; border-bottom: 1px solid var(--border);
@@ -3391,8 +3374,6 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 /* Overrides --draft: a failed write must never look pending or saved. */
 .run-note--failed { background: var(--danger-soft); box-shadow: inset 2px 0 0 var(--danger); }
 .run-note-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.run-note-author { font-size: 12.5px; font-weight: 600; color: var(--text-1); cursor: help; }
-.run-note-author--unsigned { font-weight: 500; font-style: italic; color: var(--text-3); }
 .run-note-time { font-size: 11.5px; color: var(--text-3); }
 .run-note-edited {
   font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-3);
@@ -3408,14 +3389,13 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .run-note-edit { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 2px; }
-.run-note-edit textarea, .run-note-edit input {
+.run-note-edit textarea {
   padding: 10px 12px; border-radius: var(--r-sm); border: 1px solid var(--border-strong);
   background-color: var(--bg-input); color: var(--text-1); outline: none;
   font-size: 13px; resize: vertical;
   transition: border-color .15s, box-shadow .15s;
 }
-.run-note-edit input { height: 34px; padding: 0 12px; resize: none; }
-.run-note-edit textarea:focus, .run-note-edit input:focus {
+.run-note-edit textarea:focus {
   border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .run-note-edit-actions { display: flex; gap: 8px; }
@@ -3432,7 +3412,6 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   display: flex; flex-direction: column; gap: 10px;
 }
 .run-notes-form-foot { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
-.run-notes-author-field { flex: 1; min-width: 200px; max-width: 320px; }
 .run-notes-counter {
   margin-left: auto; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums;
 }

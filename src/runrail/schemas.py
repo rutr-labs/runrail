@@ -228,7 +228,6 @@ class TaskRunOut(ORMModel):
     rendered_command: str | None
     created_at: UTCDateTime
     resume_index: int = 0
-    approved_by: str | None = None
     approval_note: str | None = None
     approved_at: UTCDateTime | None = None
 
@@ -256,14 +255,13 @@ class ResumeIn(BaseModel):
 
 
 class ApprovalDecision(BaseModel):
-    # Attribution only — RunRail has no accounts, so this is free text.
-    approved_by: str = Field(min_length=1, max_length=120)
+    """Why the gate was decided. Optional: the decision itself is the payload."""
+
     note: str | None = Field(default=None, max_length=2000)
 
 
 class RunNoteIn(BaseModel):
     body: str = Field(min_length=1, max_length=4000)
-    author: str | None = Field(default=None, max_length=80)
 
     @field_validator("body")
     @classmethod
@@ -273,17 +271,11 @@ class RunNoteIn(BaseModel):
             raise ValueError("A note needs a body")
         return value
 
-    @field_validator("author")
-    @classmethod
-    def _blank_author_is_unsigned(cls, value: str | None) -> str | None:
-        return (value.strip() or None) if value else None
-
 
 class RunNoteOut(ORMModel):
     id: int
     workflow_run_id: int
     body: str
-    author: str | None
     created_at: UTCDateTime
     updated_at: UTCDateTime
 

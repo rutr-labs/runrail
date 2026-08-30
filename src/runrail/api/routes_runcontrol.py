@@ -120,7 +120,6 @@ def _decide(db: Session, object_id: int, approved: bool,
                         .where(TaskRun.id == gate.id,
                                TaskRun.status == TaskRunStatus.awaiting_approval)
                         .values(status=TaskRunStatus.approved if approved else TaskRunStatus.rejected,
-                                approved_by=data.approved_by if data else None,
                                 approval_note=data.note if data else None,
                                 approved_at=decided, finished_at=decided))
     if result.rowcount != 1:
@@ -150,8 +149,7 @@ def _decide(db: Session, object_id: int, approved: bool,
 @router.post("/task-runs/{object_id}/approve", response_model=TaskRunOut)
 def approve_gate(object_id: int, data: ApprovalDecision | None = None,
                  db: Session = Depends(get_db)):
-    """Let the gated task run. The name is attribution, not identity — RunRail
-    has no accounts, so the body is optional free text."""
+    """Let the gated task run; the optional body records why."""
     return _decide(db, object_id, True, data)
 
 

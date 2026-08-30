@@ -556,6 +556,10 @@ def recover_interrupted_runs(db: Session) -> int:
     Without this, a force-quit leaves phantom running runs that permanently
     occupy their workflow's max_concurrent_runs slot — the workflow silently
     never runs again. Called on worker startup, before claiming anything.
+
+    CONSTRAINT: a lock_resource is held by the same statuses, so this is also
+    what releases a resource lock stranded by the kill. Narrowing the query
+    would strand every workflow sharing that resource, not just the crashed one.
     """
     stale = db.scalars(select(WorkflowRun).where(WorkflowRun.status == RunStatus.running)).all()
     if not stale:

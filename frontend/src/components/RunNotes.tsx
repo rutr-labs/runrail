@@ -17,15 +17,9 @@ import { useToast } from './toast';
    unsaved, with the server's message and a retry — it is never quietly
    dropped, and it never sits there looking saved. Same for edits (rolled back
    on failure) and removals (dimmed while in flight, restored if the delete
-   fails).
-
-   There is no auth anywhere in RunRail, so `author` is voluntary attribution
-   and is labelled as such everywhere it appears. Nothing here may read as a
-   verified identity. */
+   fails). */
 
 const MAX_BODY = 4000;    // mirrors RunNoteIn.body max_length
-const MAX_AUTHOR = 80;    // mirrors RunNoteIn.author max_length
-const AUTHOR_KEY = 'runrail.notes.author';
 /** Slop for "was this edited?": created_at and updated_at are written in the
  *  same transaction and can differ by microseconds. */
 const EDIT_SLOP_MS = 1500;
@@ -35,7 +29,6 @@ export interface RunNote {
   id: number;
   workflow_run_id: number;
   body: string;
-  author: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -66,15 +59,12 @@ function timeAgo(value?: string | null): string {
 const reason = (error: unknown) =>
   error instanceof Error && error.message ? error.message : 'the request failed';
 
-const UNVERIFIED = 'Typed by whoever wrote the note. RunRail has no accounts, so this name is not verified.';
-
 /** A creation that has not landed yet — or has failed and is waiting for the
  *  person to retry or discard it. Keyed separately from server notes so a
  *  failure can never masquerade as a saved row. */
 interface Draft {
   key: string;
   body: string;
-  author: string | null;
   sending: boolean;
   error?: string;
 }
@@ -95,8 +85,7 @@ export function RunNotes({ runId, initialNotes, onChanged, className }: RunNotes
   const [loadError, setLoadError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [body, setBody] = useState('');
-  const [author, setAuthor] = useState(rememberedAuthor);
-  const [editing, setEditing] = useState<{ id: number; body: string; author: string } | null>(null);
+  const [editing, setEditing] = useState<{ id: number; body: string } | null>(null);
   const [busy, setBusy] = useState<Record<number, 'saving' | 'deleting'>>({});
   const [rowError, setRowError] = useState<Record<number, string>>({});
 
@@ -140,7 +129,7 @@ export function RunNotes({ runId, initialNotes, onChanged, className }: RunNotes
     setDrafts(list => list.map(d => (d.key === draft.key ? { ...d, sending: true, error: undefined } : d)));
     mutating.current++;
     try {
-      const created = await post<RunNote>(`/runs/${runId}/notes`, { body: draft.body, author: draft.author });
+      const created = await post<RunNote>(`/runs/${runId}/notes`, { body: draft.body });
       setNotes(current => [...(current ?? []), created]);
       setDrafts(list => list.filter(d => d.key !== draft.key));
       onChanged?.();
@@ -160,12 +149,10 @@ export function RunNotes({ runId, initialNotes, onChanged, className }: RunNotes
     const draft: Draft = {
       key: `draft-${++draftSeq.current}`,
       body: text,
-      author: author.trim() || null,
       sending: true,
     };
     setDrafts(list => [...list, draft]);
     setBody('');
-    rememberAuthor(draft.author);
     void send(draft);
   };
 
@@ -175,17 +162,15 @@ export function RunNotes({ runId, initialNotes, onChanged, className }: RunNotes
     const original = (notes ?? []).find(n => n.id === editing.id);
     const text = editing.body.trim();
     if (!original || !text) return;
-    const optimistic: RunNote = { ...original, body: text, author: editing.author.trim() || null };
+    const optimistic: RunNote = { ...original, body: text };
     setNotes(current => (current ?? []).map(n => (n.id === original.id ? optimistic : n)));
     setEditing(null);
     setBusy(state => ({ ...state, [original.id]: 'saving' }));
     setRowError(state => without(state, original.id));
     mutating.current++;
     try {
-      const saved = await put<RunNote>(`/run-notes/${original.id}`,
-        { body: optimistic.body, author: optimistic.author });
+      const saved = await put<RunNote>(`/run-notes/${original.id}`, { body: optimistic.body });
       setNotes(current => (current ?? []).map(n => (n.id === saved.id ? saved : n)));
-      rememberAuthor(optimistic.author);
       onChanged?.();
     } catch (error) {
       const message = reason(error);
@@ -232,11 +217,6 @@ export function RunNotes({ runId, initialNotes, onChanged, className }: RunNotes
         {total > 0 && <span className="run-notes-count">{total} {total === 1 ? 'note' : 'notes'}</span>}
       </div>
 
-      <p className="run-notes-disclaimer">
-        Notes are visible to anyone who can reach this RunRail, and anyone can edit or remove them.
-        There are no accounts, so a name on a note is self-reported.
-      </p>
-
       {loadError && (
         <p className="run-notes-error run-notes-error--panel">
           <AlertTriangle size={12} /> {loadError}
@@ -261,10 +241,6 @@ export function RunNotes({ runId, initialNotes, onChanged, className }: RunNotes
                        className={clsx('run-note', state === 'deleting' && 'run-note--leaving',
                                        rowError[note.id] && 'run-note--failed')}>
                 <div className="run-note-head">
-                  <span className={clsx('run-note-author', !note.author && 'run-note-author--unsigned')}
-                        title={note.author ? UNVERIFIED : 'Nobody put a name on this note.'}>
-                    {note.author || 'Unsigned'}
-                  </span>
                   <span className="run-note-time" title={formatDate(note.created_at)}>
                     {timeAgo(note.created_at)}
                   </span>
@@ -274,8 +250,7 @@ export function RunNotes({ runId, initialNotes, onChanged, className }: RunNotes
                   {state && <span className="run-note-state">{state === 'saving' ? 'Saving…' : 'Removing…'}</span>}
                   {!state && !isEditing && (
                     <div className="run-note-actions">
-                      <button className="edit-link"
-                              onClick={() => setEditing({ id: note.id, body: note.body, author: note.author ?? '' })}>
+                      <button className="edit-link" onClick={() => setEditing({ id: note.id, body: note.body })}>
                         Edit
                       </button>
                       <button className="delete-link" onClick={() => void remove(note)}>Remove</button>
@@ -291,9 +266,6 @@ export function RunNotes({ runId, initialNotes, onChanged, className }: RunNotes
                                 if (e.key === 'Escape') { e.preventDefault(); setEditing(null); }
                                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void saveEdit(); }
                               }} />
-                    <input value={editing.author} maxLength={MAX_AUTHOR} placeholder="Attribution (optional)"
-                           aria-label="Attribution — free text, not a verified identity"
-                           onChange={e => setEditing({ ...editing, author: e.target.value })} />
                     <div className="run-note-edit-actions">
                       <Button size="sm" onClick={() => void saveEdit()} disabled={!editing.body.trim()}>Save</Button>
                       <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -314,9 +286,6 @@ export function RunNotes({ runId, initialNotes, onChanged, className }: RunNotes
             <article key={draft.key}
                      className={clsx('run-note', 'run-note--draft', draft.error && 'run-note--failed')}>
               <div className="run-note-head">
-                <span className={clsx('run-note-author', !draft.author && 'run-note-author--unsigned')}>
-                  {draft.author || 'Unsigned'}
-                </span>
                 <span className="run-note-state">{draft.sending ? 'Saving…' : 'Not saved'}</span>
                 {!draft.sending && (
                   <div className="run-note-actions">
@@ -350,11 +319,6 @@ export function RunNotes({ runId, initialNotes, onChanged, className }: RunNotes
                     }} />
         </label>
         <div className="run-notes-form-foot">
-          <label className="field run-notes-author-field">
-            <span>Attribution <em>Optional — free text, not a verified identity</em></span>
-            <input value={author} maxLength={MAX_AUTHOR} placeholder="e.g. Priya"
-                   onChange={e => setAuthor(e.target.value)} />
-          </label>
           <span className="run-notes-counter">{body.length}/{MAX_BODY}</span>
           <Button type="submit" size="sm" disabled={!body.trim()}>Add note</Button>
         </div>
@@ -425,19 +389,4 @@ function without<T>(state: Record<number, T>, key: number): Record<number, T> {
   const next = { ...state };
   delete next[key];
   return next;
-}
-
-function rememberedAuthor(): string {
-  try {
-    return localStorage.getItem(AUTHOR_KEY) ?? '';
-  } catch {
-    return ''; // localStorage unavailable (private mode, etc.)
-  }
-}
-
-function rememberAuthor(value: string | null) {
-  try {
-    if (value) localStorage.setItem(AUTHOR_KEY, value);
-    else localStorage.removeItem(AUTHOR_KEY);
-  } catch { /* non-fatal */ }
 }

@@ -74,7 +74,6 @@ type TaskRun = {
   // gate opened, which is what the card counts up from.
   created_at?: string;
   resume_index?: number;
-  approved_by?: string | null;
   approval_note?: string | null;
   approved_at?: string | null;
 };
@@ -1652,9 +1651,9 @@ function TaskRunCard({ task, index, trend, openByDefault }: {
   const [open, setOpen] = useState(
     collapsible && (openByDefault || index === 1 || task.status === 'failed' || task.status === 'running'));
   const name = task.task_name ?? `Task #${task.task_id}`;
-  const decided = task.approved_by || task.approval_note;
+  const decided = task.approved_at || task.approval_note;
   const meta = decided
-    ? [task.approved_by ? `Decided by ${task.approved_by}` : 'Decided',
+    ? ['Decided',
        task.approved_at ? formatDate(task.approved_at) : null,
        task.approval_note].filter(Boolean).join(' · ')
     : `Attempt ${task.attempt}`

@@ -107,10 +107,10 @@ def notify_approval_rejected(db: Session, task_run: TaskRun) -> None:
     url = webhook_url(workflow)
     if not url:
         return
-    _post(url, f"🚫 RunRail: '{workflow.name}' run #{run.id} was rejected by "
-               f"{task_run.approved_by or 'someone'} at task '{task_run.task_name}'.",
+    _post(url, f"🚫 RunRail: '{workflow.name}' run #{run.id} was rejected at "
+               f"task '{task_run.task_name}'.",
           event="approval_rejected", workflow=workflow.name, run_id=run.id,
-          task=task_run.task_name, approved_by=task_run.approved_by or "")
+          task=task_run.task_name)
 
 
 def notify_missed_run(workflow: Workflow, expected: datetime, last_run_at: str) -> None:

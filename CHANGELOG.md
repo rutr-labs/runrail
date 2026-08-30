@@ -4,10 +4,14 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 
 ## [Unreleased]
 
+### Changed
+- Notes and approval decisions no longer ask who you are. RunRail is a single-user tool on your own machine, so a name field — and the disclaimer explaining that the name is unverified — added ceremony without adding meaning. The content stays: a note still has a body, and an approval still records why it was made and when.
+
 ### Added
 - **Missed runs are visible history, not just an alert.** A schedule that came due while RunRail was stopped, restarting, or the machine was asleep now shows up on the workflow page and in the activity heatmap alongside successes and failures. Gaps are computed from the cron on read rather than written as placeholder rows, so they can never corrupt success rates or averages and they recalculate themselves when a schedule changes. Fires the scheduler deliberately skipped (a run was already queued) and fires during a pause or snooze are shown as their own states — calling those failures would be a lie, and would paint most of a frequent workflow's history red.
 - **A notification centre.** A bell in the topbar with an unread count, opening a panel of recent events — failed, recovered, waiting for approval, auto-paused, SLA breached, schedule missed — each clicking through to the run it concerns. Until now the app only had transient toasts: miss one and it was gone. The feed is derived from existing data (no event table to grow or prune) and unread state lives in the browser, since there is exactly one user.
 - **Resource locks between workflows.** A workflow can name a resource — a database, a licence, a mounted share — and declare whether it needs it *alone* or can *share* it. A heavy monthly validation marked exclusive runs by itself while everything else on that resource queues and waits; shared workflows overlap each other freely. A queued exclusive run also bars new shared runs from starting, or a steady drip of hourly jobs would mean the monthly job never got its turn. Enforced in the same atomic claim that already enforces per-workflow concurrency, so two workers racing cannot both acquire.
+- Resource locks are released automatically after a crash: a run left mid-flight by a killed server or a machine restart is recovered as failed on the next start, which frees both its concurrency slot and its lock. A run parked on an approval gate deliberately survives a restart instead — nobody has decided yet — and keeps its lock until it is approved, rejected or cancelled. Both behaviours are now covered by tests, so the interaction cannot regress silently.
 - A queued run now explains **why** it is waiting — at its workflow's concurrency limit, behind a resource lock, or behind the exclusive barrier — naming and linking the run that is blocking it.
 
 ### Added

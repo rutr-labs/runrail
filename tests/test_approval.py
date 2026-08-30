@@ -93,10 +93,11 @@ def test_approving_continues_the_run_to_success(client, tmp_path: Path):
     gate_id = gates(client, run_id)[0]["id"]
 
     decided = client.post(f"/api/task-runs/{gate_id}/approve",
-                          json={"approved_by": "shivam", "note": "counts check out"})
+                          json={"note": "counts check out"})
     assert decided.status_code == 200, decided.text
     assert decided.json()["status"] == "approved"
-    assert decided.json()["approved_by"] == "shivam"
+    assert decided.json()["approval_note"] == "counts check out"
+    assert decided.json()["approved_at"] is not None
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "queued"
 
     assert execute_next_run(client) == run_id
@@ -128,7 +129,7 @@ def test_rejecting_skips_downstream_and_cancels_the_run(client, tmp_path: Path, 
     run_id = execute_next_run(client)
     gate_id = gates(client, run_id)[0]["id"]
 
-    rejected = client.post(f"/api/task-runs/{gate_id}/reject", json={"approved_by": "shivam"})
+    rejected = client.post(f"/api/task-runs/{gate_id}/reject")
     assert rejected.status_code == 200 and rejected.json()["status"] == "rejected"
     assert execute_next_run(client) == run_id
 
@@ -166,11 +167,11 @@ def test_two_parallel_gates_re_enter_only_once_both_are_decided(client, tmp_path
     open_gates = {gate["task_name"]: gate["id"] for gate in gates(client, run_id)}
     assert set(open_gates) == {"left", "right"}
 
-    client.post(f"/api/task-runs/{open_gates['left']}/approve", json={"approved_by": "a"})
+    client.post(f"/api/task-runs/{open_gates['left']}/approve")
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "waiting_approval"
     assert execute_next_run(client) is None  # nothing claimable: the run still waits
 
-    client.post(f"/api/task-runs/{open_gates['right']}/reject", json={"approved_by": "a"})
+    client.post(f"/api/task-runs/{open_gates['right']}/reject")
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "queued"
     assert execute_next_run(client) == run_id
     detail = client.get(f"/api/runs/{run_id}").json()
@@ -191,7 +192,7 @@ def test_a_waiting_run_holds_its_workflows_concurrency_slot(client):
     assert client.get(f"/api/runs/{second['id']}").json()["status"] == "queued"
 
     gate_id = gates(client, first["id"])[0]["id"]
-    client.post(f"/api/task-runs/{gate_id}/approve", json={"approved_by": "shivam"})
+    client.post(f"/api/task-runs/{gate_id}/approve")
     assert execute_next_run(client) == first["id"]
     assert client.get(f"/api/runs/{first['id']}").json()["status"] == "success"
     assert execute_next_run(client) == second["id"]  # the slot is free again
@@ -222,7 +223,7 @@ def test_resuming_a_rejected_run_asks_again(client, tmp_path: Path):
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_next_run(client)
     client.post(f"/api/task-runs/{gates(client, run_id)[0]['id']}/reject",
-                json={"approved_by": "shivam", "note": "wrong week"})
+                json={"note": "wrong week"})
     execute_next_run(client)
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "cancelled"
 
@@ -233,7 +234,7 @@ def test_resuming_a_rejected_run_asks_again(client, tmp_path: Path):
 
     reopened = gates(client, run_id)
     assert len(reopened) == 1 and reopened[0]["resume_index"] == 1
-    client.post(f"/api/task-runs/{reopened[0]['id']}/approve", json={"approved_by": "shivam"})
+    client.post(f"/api/task-runs/{reopened[0]['id']}/approve")
     assert execute_next_run(client) == run_id
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "success"
     assert ran.read_text() == "p"
@@ -251,8 +252,7 @@ def test_an_approved_task_that_succeeded_is_reused_by_a_later_resume(client, tmp
                     depends_on=["publish"])
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_next_run(client)
-    client.post(f"/api/task-runs/{gates(client, run_id)[0]['id']}/approve",
-                json={"approved_by": "shivam"})
+    client.post(f"/api/task-runs/{gates(client, run_id)[0]['id']}/approve")
     execute_next_run(client)
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "failed"
 

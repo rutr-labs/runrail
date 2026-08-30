@@ -152,6 +152,52 @@ def test_the_lock_is_released_at_a_terminal_status(terminal):
         assert claim_next_run(db).workflow_id == hourly.id
 
 
+def test_a_killed_worker_releases_the_lock_on_the_next_start():
+    """Nothing in the lock code is crash-aware: the resource comes back only
+    because startup recovery ends the run that was holding it."""
+    from runrail.worker.service import recover_interrupted_runs
+
+    with open_db() as db:
+        heavy = add_workflow(db, "monthly-maintenance", "warehouse", LockMode.exclusive)
+        hourly = add_workflow(db, "hourly-load", "warehouse", LockMode.shared)
+        enqueue(db, heavy, age_seconds=60)
+        enqueue(db, hourly)
+
+        # A claimed run is exactly the row a kill leaves behind: still 'running'.
+        killed = claim_next_run(db)
+        assert killed.workflow_id == heavy.id
+        assert claim_next_run(db) is None      # the warehouse is locked, and stays locked
+
+        assert recover_interrupted_runs(db) == 1
+        assert db.get(WorkflowRun, killed.id).status == RunStatus.failed
+        assert claim_next_run(db).workflow_id == hourly.id
+
+
+def test_a_lock_held_at_an_approval_gate_survives_the_restart():
+    """The complement, and deliberate: recovery leaves 'waiting_approval' alone
+    because nobody has decided yet and the run resumes into the same tasks. So
+    the resource stays held across a restart, and cancelling is what frees it."""
+    from runrail.worker.service import recover_interrupted_runs
+
+    with open_db() as db:
+        heavy = add_workflow(db, "monthly-maintenance", "warehouse", LockMode.exclusive)
+        hourly = add_workflow(db, "hourly-load", "warehouse", LockMode.shared)
+        enqueue(db, heavy, age_seconds=60)
+        enqueue(db, hourly)
+
+        parked = claim_next_run(db)
+        parked.status = RunStatus.waiting_approval
+        db.commit()
+
+        assert recover_interrupted_runs(db) == 0
+        assert db.get(WorkflowRun, parked.id).status == RunStatus.waiting_approval
+        assert claim_next_run(db) is None
+
+        parked.status = RunStatus.cancelled
+        db.commit()
+        assert claim_next_run(db).workflow_id == hourly.id
+
+
 def test_a_queued_exclusive_run_bars_new_shared_runs():
     """Without the barrier a drip of hourly jobs starves the monthly maintenance."""
     with open_db() as db:

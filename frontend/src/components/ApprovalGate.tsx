@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import {
   ShieldAlert, ShieldCheck, Check, X, Terminal, CheckCircle2, ChevronRight,
-  CornerDownRight, UserCheck, MessageSquare, CircleSlash, Hourglass, FolderOpen,
+  CornerDownRight, MessageSquare, CircleSlash, Hourglass, FolderOpen,
 } from 'lucide-react';
 import { api, post } from '../api';
 import { Button, TaskTypeBadge } from './ui';
@@ -17,12 +17,9 @@ import { useToast } from './toast';
    succeeded upstream, what the approval releases downstream, and how long the
    run has been standing still.
 
-   RunRail has no accounts. The name field is voluntary attribution and is
-   labelled that way; it is never presented as identity or authentication.
-
-   The gate is a shared surface — two tabs, two people — so a decision that
-   lost the race comes back 409 and lands in an "already decided by X" state
-   rather than an error toast. */
+   The gate can be open in two tabs at once, so a decision that lost the race
+   comes back 409 and lands in an "already decided" state rather than an error
+   toast. */
 
 /* ─── Shapes ───────────────────────────────────────────────
    Deliberately structural and loose (every optional field is optional) so the
@@ -41,7 +38,6 @@ export interface GateTaskRun {
   duration_seconds?: number | null;
   rendered_command?: string | null;
   error_message?: string | null;
-  approved_by?: string | null;
   approval_note?: string | null;
   approved_at?: string | null;
 }
@@ -175,9 +171,8 @@ export function ApprovalGate({ run, tasks, onDecided, className }: ApprovalGateP
     [run.task_runs]
   );
   // A decided gate leaves run.task_runs on the host's very next refetch, which
-  // would rip the outcome — including "already approved by X" — off the screen
-  // before it was read. Settled cards therefore live here and stay until the
-  // person dismisses them.
+  // would rip the outcome off the screen before it was read. Settled cards
+  // therefore live here and stay until the person dismisses them.
   const [settled, setSettled] = useState<Record<number, SettledGate>>({});
   const gates = open.filter(gate => !settled[gate.id]);
   const settledCards = Object.values(settled);
@@ -279,10 +274,7 @@ function SettledDecision({ entry, runId, onDismiss }: {
           {approved ? <ShieldCheck size={17} /> : <CircleSlash size={17} />}
         </span>
         <div className="approval-gate-settled-body">
-          <b>
-            {entry.stale ? 'Already ' : ''}{approved ? 'approved' : 'rejected'}
-            {entry.row.approved_by ? <> by <em>{entry.row.approved_by}</em></> : null}
-          </b>
+          <b>{entry.stale ? 'Already ' : ''}{approved ? 'approved' : 'rejected'}</b>
           <p>
             {entry.stale
               ? 'This gate was decided elsewhere before your click landed — nothing you did changed it.'
@@ -310,7 +302,6 @@ function GateDecision({ gate, run, tasks, prompt, now, onSettled, onDecided }: {
   onDecided?: () => void;
 }) {
   const { toast } = useToast();
-  const [name, setName] = useState('');
   const [note, setNote] = useState('');
   const [noteOpen, setNoteOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -337,12 +328,8 @@ function GateDecision({ gate, run, tasks, prompt, now, onSettled, onDecided }: {
 
   const decide = async (approved: boolean) => {
     setBusy(approved ? 'approve' : 'reject');
-    // approved_by is required once a body is sent, so a bare decision posts no
-    // body at all; a note without a name is recorded honestly as Anonymous.
-    const attribution = name.trim();
-    const body = attribution || note.trim()
-      ? { approved_by: attribution || 'Anonymous', note: note.trim() || null }
-      : null;
+    const written = note.trim();
+    const body = written ? { note: written } : null;
     try {
       const row = await post<GateTaskRun>(
         `/task-runs/${gate.id}/${approved ? 'approve' : 'reject'}`, body
@@ -353,10 +340,10 @@ function GateDecision({ gate, run, tasks, prompt, now, onSettled, onDecided }: {
         approved ? 'success' : 'info'
       );
     } catch (error) {
-      // 409: someone else decided first. api() surfaces only FastAPI's `detail`,
-      // and the backend phrases the conflict as "This gate is already <status>".
-      // Re-read the row so the card can name who decided it instead of shouting
-      // an error at a tab that simply lost the race.
+      // 409: the gate was decided first elsewhere. api() surfaces only
+      // FastAPI's `detail`, and the backend phrases the conflict as "This gate
+      // is already <status>". Re-read the row so the card can show the decision
+      // that won instead of shouting an error at a tab that lost the race.
       const message = error instanceof Error ? error.message : '';
       if (/already/i.test(message)) {
         const row = await api<GateTaskRun>(`/task-runs/${gate.id}`).catch(() => null);
@@ -444,37 +431,22 @@ function GateDecision({ gate, run, tasks, prompt, now, onSettled, onDecided }: {
         </div>
       </div>
 
-      <div className="approval-gate-attribution">
-        <label className="approval-gate-name">
-          <span><UserCheck size={11} /> Your name <em>optional — attribution only, not a sign-in</em></span>
-          <input
-            value={name}
-            onChange={e => setName(e.target.value)}
-            maxLength={120}
-            placeholder="e.g. Priya"
-            autoComplete="off"
+      {noteOpen ? (
+        <label className="approval-gate-note">
+          <span><MessageSquare size={11} /> Note <em>optional — stored with the decision</em></span>
+          <textarea
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            maxLength={2000}
+            rows={2}
+            placeholder="Why you approved or rejected this"
           />
         </label>
-        {noteOpen ? (
-          <label className="approval-gate-note">
-            <span><MessageSquare size={11} /> Note <em>optional — stored with the decision</em></span>
-            <textarea
-              value={note}
-              onChange={e => setNote(e.target.value)}
-              maxLength={2000}
-              rows={2}
-              placeholder="Why you approved or rejected this"
-            />
-            {!name.trim() && note.trim() && (
-              <small>Without a name this note is recorded as <b>Anonymous</b>.</small>
-            )}
-          </label>
-        ) : (
-          <button type="button" className="approval-gate-note-toggle" onClick={() => setNoteOpen(true)}>
-            <MessageSquare size={11} /> Add a note
-          </button>
-        )}
-      </div>
+      ) : (
+        <button type="button" className="approval-gate-note-toggle" onClick={() => setNoteOpen(true)}>
+          <MessageSquare size={11} /> Add a note
+        </button>
+      )}
 
       {confirming ? (
         <div className="approval-gate-confirm" role="alertdialog" aria-label="Confirm rejection">
