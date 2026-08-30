@@ -1,0 +1,142 @@
+{# One self-contained document. Rendered with autoescape=True (see
+   reports._export_template) because every value below is attacker-influenced:
+   task names, rendered commands, error messages, and log text full of
+   </script>. Nothing here may reference the network — no stylesheet, script,
+   font or image — except the single link back to the live run in the footer. #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{# The sandbox, frame-ancestors and report-uri directives are IGNORED in a meta
+   CSP by spec — only a real header carries them. So the iframe's sandbox
+   ATTRIBUTE below is the actual isolation for the embedded report; this meta
+   only contributes connect-src, img-src and form-action. #}
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<title>{{ workflow.name if workflow else 'RunRail' }} · run {{ run.id }}</title>
+<style>
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 32px 24px 64px; background: #f6f7f9; color: #16191d;
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+main { max-width: 1040px; margin: 0 auto; }
+h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #5d6570; margin: 32px 0 10px; }
+.card { background: #fff; border: 1px solid #e2e5ea; border-radius: 10px; padding: 18px 20px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 28px; margin-top: 12px; color: #5d6570; }
+.meta b { display: block; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.06em; font-weight: 600; }
+.meta span { color: #16191d; font-variant-numeric: tabular-nums; }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px;
+  font-weight: 600; border: 1px solid currentColor; }
+.note { margin-top: 14px; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+  background: #fff8e6; border: 1px solid #f0dca8; color: #6b5312; }
+.task { margin-bottom: 10px; }
+.task-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.task-head strong { font-size: 15px; }
+.task-head small { color: #5d6570; font-variant-numeric: tabular-nums; }
+code, pre { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+code { background: #f0f2f5; border-radius: 4px; padding: 1px 5px; font-size: 12.5px;
+  word-break: break-all; }
+pre { background: #14171c; color: #dfe4ea; border-radius: 8px; padding: 12px 14px;
+  overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+  word-break: break-word; max-height: 520px; overflow-y: auto; }
+details { margin-top: 10px; }
+summary { cursor: pointer; font-size: 12px; font-weight: 600; color: #5d6570; }
+.error { margin-top: 8px; color: #a3231f; font-size: 13px; }
+iframe { width: 100%; height: 760px; border: 1px solid #e2e5ea; border-radius: 8px;
+  background: #fff; }
+footer { margin-top: 40px; color: #5d6570; font-size: 12px; }
+footer a { color: #2b5bd7; }
+svg { width: 100%; height: auto; }
+.rail-label { fill: #5d6570; font-size: 12px; }
+.rail-track { fill: #eceff3; }
+.rail-bar { opacity: 0.16; }
+.s-success { fill: #1f9254; color: #1f9254; }
+.s-failed { fill: #c0342f; color: #c0342f; }
+.s-skipped, .s-cancelled, .s-queued { fill: #8b93a0; color: #8b93a0; }
+.s-running, .s-awaiting_approval, .s-rejected { fill: #b7791f; color: #b7791f; }
+.s-approved { fill: #1f9254; color: #1f9254; }
+@media print { body { background: #fff; } .card { break-inside: avoid; } pre { max-height: none; } }
+</style>
+</head>
+<body>
+<main>
+
+<div class="card">
+  <h1>{{ workflow.name if workflow else 'Deleted workflow' }}</h1>
+  <div>Run #{{ run.id }} <span class="pill s-{{ run.status.value }}">{{ run.status.value }}</span></div>
+  <div class="meta">
+    <div><b>Trigger</b><span>{{ run.trigger_type.value }}</span></div>
+    <div><b>Started</b><span>{{ started }}</span></div>
+    <div><b>Finished</b><span>{{ finished }}</span></div>
+    <div><b>Duration</b><span>{{ duration }}</span></div>
+    <div><b>Tasks</b><span>{{ task_runs | length }}</span></div>
+  </div>
+  <div class="note">Exported {{ exported_at }} — this is a snapshot, not a live view.</div>
+</div>
+
+{% if timeline.rows %}
+<h2>Timeline</h2>
+<div class="card">
+  <svg viewBox="0 0 1000 {{ timeline.height }}" role="img" aria-label="Task timeline">
+    {% for row in timeline.rows %}
+    <text class="rail-label" x="0" y="{{ row.y + 4 }}">{{ row.label }}</text>
+    <rect class="rail-track" x="260" y="{{ row.y - 5 }}" width="720" height="10" rx="5"></rect>
+    <rect class="rail-bar s-{{ row.status }}" x="{{ row.x }}" y="{{ row.y - 5 }}"
+          width="{{ row.width }}" height="10" rx="5"></rect>
+    {% for dot in row.dots %}
+    <circle class="s-{{ row.status }}" cx="{{ dot }}" cy="{{ row.y }}" r="2"></circle>
+    {% endfor %}
+    {% endfor %}
+  </svg>
+</div>
+{% endif %}
+
+<h2>Tasks</h2>
+{% for task_run in task_runs %}
+<div class="card task">
+  <div class="task-head">
+    <strong>{{ task_run.task_name or 'task ' ~ task_run.task_id }}</strong>
+    <span class="pill s-{{ task_run.status.value }}">{{ task_run.status.value }}</span>
+    <small>{{ task_run.task_type or '—' }} · attempt {{ task_run.attempt }} ·
+      exit {{ task_run.exit_code if task_run.exit_code is not none else '—' }} ·
+      {{ fmt_duration(task_run.duration_seconds) }} · {{ stamp(task_run.started_at) }}</small>
+  </div>
+  {% if task_run.rendered_command %}
+  <div style="margin-top:8px"><code>{{ task_run.rendered_command }}</code></div>
+  {% endif %}
+  {% if task_run.error_message %}
+  <div class="error">{{ task_run.error_message }}</div>
+  {% endif %}
+  {% for stream, text in (sections.get(task_run.id) or {}).items() %}
+  <details{{ ' open' if task_run.status.value == 'failed' and stream == 'stderr' else '' }}>
+    <summary>{{ stream }}</summary>
+    <pre>{{ text }}</pre>
+  </details>
+  {% endfor %}
+</div>
+{% endfor %}
+
+{% if report_html %}
+<h2>Report</h2>
+{# sandbox WITHOUT allow-same-origin: this file opens as file:// on someone
+   else's machine, and an opaque origin is what stops the notebook's scripts
+   reading their local files. Adding allow-same-origin here disables the
+   sandbox entirely. #}
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Notebook report"
+        srcdoc="{{ report_html }}"></iframe>
+{% elif report_note %}
+<h2>Report</h2>
+<div class="card"><div class="note">{{ report_note }}</div></div>
+{% endif %}
+
+<footer>
+  Exported from RunRail {{ version }}. The original run is at
+  <a href="{{ run_url }}">{{ run_url }}</a>, which only resolves from inside that network.
+</footer>
+
+</main>
+</body>
+</html>
