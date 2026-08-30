@@ -2,6 +2,11 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Notebook kernels no longer warn "running over TCP without encryption": the worker launches papermill through a small shim that puts the Jupyter kernel on IPC transport (Unix domain sockets, protected by file permissions) instead of loopback TCP. Besides silencing ipykernel's warning, this closes the kernel's TCP ports entirely on shared machines. Windows keeps TCP-on-loopback (ZeroMQ has no ipc:// there).
+
 ## [0.4.0] — 2026-08-04
 
 ### Changed

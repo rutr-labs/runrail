@@ -82,7 +82,10 @@ def build_command(task: Task, context: dict[str, Any], python_command: list[str]
         output = Path(context["artifacts_dir"]) / (
             f"{safe_filename(task.name, 'notebook')}_{stamp}{suffix}.ipynb"
         )
-        command = [*(python_command or [sys.executable]), "-m", "papermill",
+        # nbexec (from RunRail's own install) wraps papermill so the kernel
+        # runs on IPC transport instead of unencrypted loopback TCP.
+        command = [*(python_command or [sys.executable]),
+                   str(Path(__file__).with_name("nbexec.py")),
                    render(task.notebook_path, context), str(output), "--kernel", "python3"]
         for key, value in context.get("parameters", {}).items(): command += ["-p", key, str(value)]
         return CommandSpec(command, False, output)

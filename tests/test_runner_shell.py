@@ -40,7 +40,9 @@ def test_notebook_command_forces_selected_kernel(tmp_path: Path):
         {"artifacts_dir": str(tmp_path), "ds": "2026-07-01", "parameters": {}},
         ["/managed/python"],
     )
-    assert spec.command[:3] == ["/managed/python", "-m", "papermill"]
+    assert spec.command[0] == "/managed/python"
+    # The nbexec shim (not `-m papermill`) launches the kernel on IPC transport.
+    assert spec.command[1].endswith("nbexec.py")
     assert spec.command[-2:] == ["--kernel", "python3"]
 
 
