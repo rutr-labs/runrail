@@ -43,16 +43,24 @@ def get_run(object_id: int, db: Session = Depends(get_db)):
 
 @router.post("/runs/{object_id}/cancel", response_model=WorkflowRunOut)
 def cancel_run(object_id: int, db: Session = Depends(get_db)):
-    """Cancel a queued run immediately; a running run stops before its next task."""
+    """Cancel a queued run immediately; a running run stops before its next task.
+
+    A run parked on an approval gate is cancellable too, and must be: approve
+    and reject are its only other exits, so without this a gate nobody decides
+    holds a concurrency slot forever.
+    """
     run = get_or_404(db, WorkflowRun, object_id)
-    if run.status not in (RunStatus.queued, RunStatus.running):
+    if run.status not in (RunStatus.queued, RunStatus.running, RunStatus.waiting_approval):
         raise HTTPException(409, f"Run is already {run.status.value}")
-    was_queued = run.status == RunStatus.queued
+    # A running run finalizes itself once its current task returns; the other two
+    # have no worker attached, so this request is what ends them.
+    settles_now = run.status in (RunStatus.queued, RunStatus.waiting_approval)
     run.status = RunStatus.cancelled
-    if was_queued:
+    if settles_now:
         run.finished_at = now()
         for task_run in db.scalars(select(TaskRun).where(
-                TaskRun.workflow_run_id == run.id, TaskRun.status == TaskRunStatus.queued)):
+                TaskRun.workflow_run_id == run.id,
+                TaskRun.status.in_((TaskRunStatus.queued, TaskRunStatus.awaiting_approval)))):
             task_run.status = TaskRunStatus.cancelled
     db.commit()
     db.refresh(run)

@@ -6,7 +6,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from runrail.api.ws import manager as _ws_manager
@@ -34,7 +34,7 @@ from runrail.models import (
     WorkflowRun,
     now,
 )
-from runrail.notify import notify_run_outcome
+from runrail.notify import notify_approval_requested, notify_run_outcome
 from runrail.worker.queue import claim_next_run
 from runrail.worker.runners import (
     CommandSpec,
@@ -59,6 +59,92 @@ def topological_tasks(tasks: list[Task]) -> list[Task]:
         for name in sorted(ready, key=lambda n: by_name[n].id):
             ordered.append(by_name[name]); remaining.remove(name)
     return ordered
+
+
+#: A gate is a TaskRun of its own. It never lands success: satisfied_outcomes
+#: would then read the gate as the task itself and the approved work would be
+#: skipped as "already done".
+_GATE_STATUSES = (TaskRunStatus.awaiting_approval, TaskRunStatus.approved, TaskRunStatus.rejected)
+
+
+def _latest_task_runs(db: Session, run: WorkflowRun, tasks: list[Task]) -> dict[str, TaskRun]:
+    """Newest TaskRun per task name — the key depends_on_json and the executor's
+    outcomes dict both use. Ordered by segment, then attempt, then id, so a
+    gate (attempt 0) never outranks the execution it authorised."""
+    names = {task.id: task.name for task in tasks}
+    rows = db.scalars(select(TaskRun).where(TaskRun.workflow_run_id == run.id)
+                      .order_by(TaskRun.resume_index, TaskRun.attempt, TaskRun.id)).all()
+    return {names[row.task_id]: row for row in rows if row.task_id in names}
+
+
+def _walk(tasks: list[Task], latest: dict[str, TaskRun],
+          force_rerun) -> tuple[dict[str, bool], dict[str, str]]:
+    """One pass producing both the reuse set and its reasons, so the plan the
+    operator approves and the set the worker recomputes cannot disagree."""
+    satisfied: dict[str, bool] = {}
+    reasons: dict[str, str] = {}
+    for task in topological_tasks(tasks):
+        row = latest.get(task.name)
+        # Ordered so the reason a human would give comes first: a task that
+        # broke on its own says so, and only then does the graph explain it.
+        if task.name in force_rerun:
+            reasons[task.name] = "you chose to"
+        elif row is not None and row.status == TaskRunStatus.failed:
+            reasons[task.name] = "failed"
+        # Downward closure: a success that predates a re-running upstream — or a
+        # dependency added since — is not evidence about the current graph.
+        elif any(dep not in satisfied for dep in task.depends_on_json or []):
+            reasons[task.name] = "upstream re-running"
+        elif row is None or row.status != TaskRunStatus.success:
+            reasons[task.name] = "did not run"  # skipped, cancelled, or gated
+        else:
+            satisfied[task.name] = True
+    return satisfied, reasons
+
+
+def satisfied_outcomes(db: Session, run: WorkflowRun, tasks: list[Task],
+                       force_rerun=()) -> dict[str, bool]:
+    """Task names whose success earlier in THIS run carries into the next
+    execution segment; seeded into `outcomes`, they are never re-run."""
+    return _walk(tasks, _latest_task_runs(db, run, tasks), force_rerun)[0]
+
+
+def resume_plan(db: Session, run: WorkflowRun, tasks: list[Task], force_rerun=()) -> dict:
+    """What a resume would reuse and re-run. Advisory: the worker recomputes at
+    claim time, so a workflow edited in between executes the newer plan."""
+    latest = _latest_task_runs(db, run, tasks)
+    satisfied, reasons = _walk(tasks, latest, force_rerun)
+    reuse = [{"task": name, "task_run_id": latest[name].id,
+              "duration_seconds": latest[name].duration_seconds} for name in satisfied]
+    return {
+        "resumable": run.status in (RunStatus.failed, RunStatus.cancelled),
+        "reuse": reuse,
+        "rerun": [{"task": name, "reason": reason} for name, reason in reasons.items()],
+        "seconds_reused": sum(item["duration_seconds"] or 0 for item in reuse),
+    }
+
+
+def _gate_decision(db: Session, run: WorkflowRun, task: Task) -> TaskRunStatus | None:
+    """The gate's state in the run's CURRENT segment, or None when none is open.
+
+    Scoped to the segment deliberately: resuming a rejected run must ask again
+    rather than inherit the answer that cancelled it.
+    """
+    return db.scalar(select(TaskRun.status)
+                     .where(TaskRun.workflow_run_id == run.id, TaskRun.task_id == task.id,
+                            TaskRun.resume_index == run.resume_count,
+                            TaskRun.status.in_(_GATE_STATUSES))
+                     .order_by(TaskRun.id.desc()).limit(1))
+
+
+def open_gate(db: Session, run: WorkflowRun, task: Task) -> TaskRun:
+    """Park the task on a human decision, recorded as its own TaskRun."""
+    gate = TaskRun(workflow_run_id=run.id, task_id=task.id, attempt=0,
+                   status=TaskRunStatus.awaiting_approval, resume_index=run.resume_count)
+    db.add(gate); db.commit(); db.refresh(gate)
+    _ws_manager.notify({"type": "task_run_updated", "id": gate.id, "run_id": run.id})
+    notify_approval_requested(db, gate)
+    return gate
 
 
 def _duration(start: datetime) -> float:
@@ -161,7 +247,7 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
         if attempt > 1 and _run_cancelled(db, run.id):
             return False  # don't start retry attempts for a cancelled run
         task_run = TaskRun(workflow_run_id=run.id, task_id=task.id, status=TaskRunStatus.running,
-                           attempt=attempt, started_at=now())
+                           attempt=attempt, started_at=now(), resume_index=run.resume_count)
         db.add(task_run); db.commit(); db.refresh(task_run)
         stdout = log_dir / f"task_run_{task_run.id}.stdout.log"
         stderr = log_dir / f"task_run_{task_run.id}.stderr.log"
@@ -275,15 +361,20 @@ def _task_job(run_id: int, workflow_id: int, task_id: int) -> bool:
 
 
 def _execute_task_graph(db: Session, run: WorkflowRun, workflow: Workflow,
-                        tasks: list[Task]) -> dict[str, bool]:
+                        tasks: list[Task]) -> tuple[dict[str, bool], set[str]]:
     """Run the task DAG with real parallelism: a task starts the moment every
     task it depends on has succeeded, so independent tasks run concurrently.
     Tasks whose dependency failed are skipped; a cancelled run stops starting
-    new tasks but lets in-flight ones finish."""
-    outcomes: dict[str, bool] = {}
-    remaining = {task.name: task for task in tasks}
+    new tasks but lets in-flight ones finish.
+
+    Tasks that already succeeded earlier in this run are seeded as satisfied and
+    never re-run. A task waiting on an approval gate is returned in `pending`
+    rather than submitted, so the caller can release the run."""
+    outcomes: dict[str, bool] = satisfied_outcomes(db, run, tasks)
+    remaining = {task.name: task for task in tasks if task.name not in outcomes}
     task_ids = {task.name: task.id for task in tasks}
     running: dict[Future, str] = {}
+    pending: set[str] = set()
     cancelled = False
     parallelism = max(1, get_settings().task_parallelism)
     with ThreadPoolExecutor(max_workers=parallelism,
@@ -306,12 +397,22 @@ def _execute_task_graph(db: Session, run: WorkflowRun, workflow: Workflow,
                     db.add(TaskRun(workflow_run_id=run.id, task_id=task.id,
                                    status=TaskRunStatus.skipped, error_message="A dependency did not succeed"))
                     outcomes[task.name] = False; db.commit()
+                elif (task.requires_approval
+                      and (gate := _gate_decision(db, run, task)) != TaskRunStatus.approved):
+                    if gate is None:
+                        # No outcome is recorded, so downstream tasks stay in
+                        # `remaining` and are picked up on re-entry.
+                        open_gate(db, run, task); pending.add(task.name)
+                    else:  # rejected — the existing skip cascade does the rest
+                        outcomes[task.name] = False
                 else:
                     running[pool.submit(_task_job, run.id, workflow.id, task.id)] = task.name
             if ready:
                 continue  # a skip/cancel may have unlocked more tasks; re-evaluate first
             if not running:
-                if remaining:  # unreachable for a validated DAG; avoid spinning forever
+                # An open gate legitimately leaves its downstream in `remaining`;
+                # only a graph stuck with no gate is a cycle.
+                if remaining and not pending:  # unreachable for a validated DAG
                     raise ValueError("Task dependency graph contains a cycle")
                 break
             done, _ = wait(running, return_when=FIRST_COMPLETED)
@@ -325,7 +426,21 @@ def _execute_task_graph(db: Session, run: WorkflowRun, workflow: Workflow,
                     outcomes[name] = False
                 else:
                     outcomes[name] = bool(future.result())
-    return outcomes
+    return outcomes, pending
+
+
+def _final_status(db: Session, run: WorkflowRun, outcomes: dict[str, bool]) -> RunStatus:
+    """An empty workflow must not report success: all() of an empty dict is True."""
+    if outcomes and all(outcomes.values()):
+        return RunStatus.success
+    statuses = set(db.scalars(select(TaskRun.status).where(
+        TaskRun.workflow_run_id == run.id, TaskRun.resume_index == run.resume_count)))
+    # A rejection is a decision, not a failure: landing cancelled keeps it out of
+    # the failure streak and out of the alert path. A run carrying both a
+    # rejection and a real failure is a failure.
+    if TaskRunStatus.rejected in statuses and TaskRunStatus.failed not in statuses:
+        return RunStatus.cancelled
+    return RunStatus.failed
 
 
 def execute_workflow_run(db: Session, run: WorkflowRun) -> None:
@@ -334,15 +449,30 @@ def execute_workflow_run(db: Session, run: WorkflowRun) -> None:
         run.status = RunStatus.failed; run.finished_at = now(); db.commit(); return
     db.commit()  # release the read snapshot; task jobs write on their own sessions
     final = RunStatus.failed
+    pending: set[str] = set()
     try:
         tasks = topological_tasks(workflow.tasks)
-        outcomes = _execute_task_graph(db, run, workflow, tasks)
-        # An empty workflow must not report success: all() of an empty dict is True.
-        final = RunStatus.success if outcomes and all(outcomes.values()) else RunStatus.failed
+        outcomes, pending = _execute_task_graph(db, run, workflow, tasks)
+        final = _final_status(db, run, outcomes)
     except Exception as exc:
         final = RunStatus.failed
         db.add(TaskRun(workflow_run_id=run.id, task_id=workflow.tasks[0].id,
                        status=TaskRunStatus.failed, error_message=str(exc))) if workflow.tasks else None
+    if pending:
+        # Release the run AND the worker slot: the pool is bounded, so a gate
+        # that held a slot would deadlock the whole instance, not just this
+        # workflow. Neither guarded update below may run on this path — the
+        # second is guarded only on finished_at and would stamp a finish time on
+        # a run that has not finished. A cancellation that raced in wins the
+        # guard, and that run falls through to be finalized normally.
+        parked = db.execute(update(WorkflowRun)
+                            .where(WorkflowRun.id == run.id,
+                                   WorkflowRun.status == RunStatus.running)
+                            .values(status=RunStatus.waiting_approval)).rowcount
+        db.commit()
+        if parked:
+            _ws_manager.notify({"type": "run_updated", "id": run.id})
+            return
     # Guarded update: never overwrite a cancellation that raced in from the API.
     finished = now(); duration = _duration(run.started_at or run.created_at)
     db.execute(update(WorkflowRun)
@@ -380,6 +510,43 @@ def _building_environment(db: Session, run: WorkflowRun) -> Environment | None:
             EnvironmentStatus.creating, EnvironmentStatus.building
         ):
             return environment
+    return None
+
+
+def _over_gate_budget(db: Session, run: WorkflowRun) -> bool:
+    """True when this workflow's concurrency budget is already spent once runs
+    parked on an approval gate are counted.
+
+    CONSTRAINT: claim_next_run counts only `running` runs, so a waiting run does
+    not hold its workflow's slot there. Without this re-check, a
+    max_concurrent_runs=1 workflow on a schedule sends its next run straight
+    past the same gate — N pending approvals and out-of-order side effects.
+    """
+    limit = db.scalar(select(Workflow.max_concurrent_runs)
+                      .where(Workflow.id == run.workflow_id)) or 1
+    active = db.scalar(select(func.count()).select_from(WorkflowRun).where(
+        WorkflowRun.workflow_id == run.workflow_id,
+        WorkflowRun.status.in_((RunStatus.running, RunStatus.waiting_approval)))) or 0
+    return active > limit  # the run just claimed already counts as running
+
+
+def claim_runnable_run(db: Session) -> WorkflowRun | None:
+    """Claim the next run the worker can actually start, requeueing one it
+    cannot: a needed environment is mid-build, or a sibling holds the gate."""
+    run = claim_next_run(db)
+    if run is None or not (_building_environment(db, run) or _over_gate_budget(db, run)):
+        return run
+    values: dict = {"status": RunStatus.queued}
+    # Keep the timeline origin of a run that already executed part of this
+    # segment (a gate re-entry); a run that never started must not keep the
+    # timestamp this aborted claim just stamped on it.
+    if not db.scalar(select(func.count()).select_from(TaskRun).where(
+            TaskRun.workflow_run_id == run.id, TaskRun.resume_index == run.resume_count)):
+        values["started_at"] = None
+    db.execute(update(WorkflowRun)
+               .where(WorkflowRun.id == run.id, WorkflowRun.status == RunStatus.running)
+               .values(**values))
+    db.commit()
     return None
 
 
@@ -473,16 +640,7 @@ class WorkerService:
                     # Claim in a short-lived session; the job threads open their own.
                     with SessionLocal() as db:
                         environment = claim_next_environment(db)
-                        run = claim_next_run(db) if environment is None else None
-                        if run is not None and _building_environment(db, run) is not None:
-                            # A needed environment is mid-build: requeue and let the
-                            # run start cleanly once the build completes.
-                            db.execute(update(WorkflowRun)
-                                       .where(WorkflowRun.id == run.id,
-                                              WorkflowRun.status == RunStatus.running)
-                                       .values(status=RunStatus.queued, started_at=None))
-                            db.commit()
-                            run = None
+                        run = claim_runnable_run(db) if environment is None else None
                         environment_id = environment.id if environment else None
                         run_id = run.id if run else None
                     if environment_id is not None:
