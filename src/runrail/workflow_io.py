@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from runrail.models import Environment, Project, Task, Workflow
+from runrail.models import Environment, LockMode, Project, Task, Workflow
 from runrail.schemas import TaskIn
 
 # Configuration only. Operator state (snooze, notification markers, breach
@@ -48,6 +48,11 @@ def export_workflows(db: Session, name: str | None = None) -> dict[str, Any]:
         item: dict[str, Any] = {"name": workflow.name}
         item.update(_compact({field: getattr(workflow, field) for field in _WORKFLOW_FIELDS}))
         item["enabled"] = workflow.enabled  # always explicit, even when False
+        # Exported as a pair, and only as a pair: the mode alone is meaningless,
+        # and yaml.safe_dump refuses an enum member, so write its value.
+        if workflow.lock_resource:
+            item["lock_resource"] = workflow.lock_resource
+            item["lock_mode"] = workflow.lock_mode.value
         if workflow.project_id:
             item["project"] = projects.get(workflow.project_id)
         if workflow.default_environment_id:
@@ -144,6 +149,9 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
         workflow.auto_pause_failures = entry.get("auto_pause_failures")
         workflow.missed_run_grace_minutes = entry.get("missed_run_grace_minutes")
         workflow.sla_minutes = entry.get("sla_minutes")
+        workflow.lock_resource = entry.get("lock_resource")
+        # ValueError on an unknown label, like _resolve — never a flush-time LookupError.
+        workflow.lock_mode = LockMode(entry.get("lock_mode") or LockMode.shared)
         workflow.project_id = _resolve(db, Project, entry.get("project"), "project")
         workflow.default_environment_id = _resolve(
             db, Environment, entry.get("default_environment"), "environment")

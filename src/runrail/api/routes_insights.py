@@ -1,4 +1,5 @@
-"""Insights: log search across runs, run notes, and task duration trends."""
+"""Insights: log search across runs, run notes, task duration trends, and the
+scheduled runs that never happened."""
 
 from datetime import datetime
 from statistics import median
@@ -21,6 +22,13 @@ from runrail.models import (
     Workflow,
     WorkflowRun,
     _aware,
+)
+from runrail.schedule_gaps import (
+    DEFAULT_DAYS,
+    DEFAULT_FIRES,
+    DEFAULT_MISSED,
+    MAX_FIRES,
+    find_gaps,
 )
 from runrail.schemas import RunNoteIn, RunNoteOut
 
@@ -196,3 +204,18 @@ def task_durations(workflow_id: int, window: int = Query(20, ge=5, le=100),
     return [{"task_id": task_id, "task_name": names.get(task_id), "samples": samples,
              **_task_stats([s["duration_seconds"] for s in samples])}
             for task_id, samples in history.items()]
+
+
+@router.get("/workflows/{workflow_id}/schedule-gaps")
+def schedule_gaps(workflow_id: int, days: int = Query(DEFAULT_DAYS, ge=1, le=365),
+                  max_fires: int = Query(DEFAULT_FIRES, ge=10, le=MAX_FIRES),
+                  limit: int = Query(DEFAULT_MISSED, ge=1, le=MAX_FIRES),
+                  db: Session = Depends(get_db)):
+    """The fires this workflow's schedule owed and what became of each one:
+    `missed` for the run list, `daily` for the heatmap, `totals` for the header.
+
+    Computed on read and never written — see schedule_gaps for why a placeholder
+    run row would be a lie, and for the bound `stopped_by` reports.
+    """
+    return find_gaps(db, get_or_404(db, Workflow, workflow_id),
+                     days=days, max_fires=max_fires, limit=limit)

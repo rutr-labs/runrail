@@ -53,6 +53,12 @@ class TaskType(enum.StrEnum):
     sql = "sql"
 
 
+class LockMode(enum.StrEnum):
+    # Only meaningful alongside a Workflow.lock_resource; inert without one.
+    shared = "shared"
+    exclusive = "exclusive"
+
+
 class RunStatus(enum.StrEnum):
     queued = "queued"
     running = "running"
@@ -160,6 +166,13 @@ class Workflow(TimestampMixin, Base):
     missed_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Configuration: minutes from run creation to the promised finish.
     sla_minutes: Mapped[int | None] = mapped_column(Integer)
+    # Mutual exclusion across workflows on a named resource (a database, a
+    # licence, a mount). NULL is no locking — the behaviour every existing
+    # workflow keeps. Exactly ONE resource per workflow: a run acquires all it
+    # needs in the single UPDATE that claims it, so there is no partial hold to
+    # wait on and deadlock is structurally impossible.
+    lock_resource: Mapped[str | None] = mapped_column(String(255))
+    lock_mode: Mapped[LockMode] = mapped_column(Enum(LockMode), default=LockMode.shared)
     tasks: Mapped[list["Task"]] = relationship(cascade="all, delete-orphan", back_populates="workflow")
 
     @property

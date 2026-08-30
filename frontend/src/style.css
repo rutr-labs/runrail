@@ -3535,3 +3535,690 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
      global `animation: none` above would leave it invisible. */
   .report-frame { opacity: 1 !important; }
 }
+
+/* ═══════════════════════════════════════════════════════
+   V0.5 · II — NOTIFICATION CENTRE · MISSED RUNS ·
+   RESOURCE LOCKS
+
+   Three surfaces that all answer "what happened while I
+   wasn't looking, and why is nothing happening now":
+   the topbar bell and its history panel, the missed-run
+   scan on a workflow, and the named resource two
+   workflows take turns on — plus the queue explainer
+   that names whichever of those is holding a run back.
+
+   House rules, unchanged: tokens only, both themes
+   correct by construction, and every animation added
+   here answered in the reduced-motion block that closes
+   the section. Motion is never the sole carrier of a
+   state — strip it and the badge, the tint, the unread
+   rail, the amber hatch and the selected card all
+   remain.
+═══════════════════════════════════════════════════════ */
+
+/* ─── Keyframes for this pass ─────────────────────────── */
+/* Swung from the mounting point, transform only — composited, never a relayout. */
+@keyframes notif-ring       { 0%,100% { transform: rotate(0); }
+                              20%     { transform: rotate(-11deg); }
+                              45%     { transform: rotate(8deg); }
+                              70%     { transform: rotate(-4deg); } }
+@keyframes notif-badge-land { from { opacity: 0; transform: scale(.5); } }
+@keyframes notif-panel-in   { from { opacity: 0; transform: translateY(-6px) scale(.98); } }
+@keyframes notif-row-in     { from { opacity: 0; transform: translateY(5px); } }
+
+/* ═══ Notification centre ═══════════════════════════════
+   Until now the only notification surface was the
+   toaster: miss one and it was gone. This gives that
+   history a home. */
+
+/* ─── Severity triplet ─────────────────────────────────
+   One colour decision per severity. The disc, the unread
+   rail, the eyebrow and the pip all read --sev off the
+   row, so they can never drift apart. */
+.notif-sev-error   { --sev: var(--danger);  --sev-soft: var(--danger-soft);  --sev-border: var(--danger-border);  }
+.notif-sev-warning { --sev: var(--warning); --sev-soft: var(--warning-soft); --sev-border: var(--warning-border); }
+.notif-sev-info    { --sev: var(--running); --sev-soft: var(--running-soft); --sev-border: var(--running-border); }
+.notif-sev-success { --sev: var(--success); --sev-soft: var(--success-soft); --sev-border: var(--success-border); }
+
+/* ─── The bell ─────────────────────────────────────────
+   Geometry and hover are .cmd-k-btn's, so the pair reads
+   as one control group rather than two visitors. */
+.notif-bell {
+  position: relative;
+  width: 30px; height: 30px; flex-shrink: 0;
+  display: grid; place-items: center;
+  border-radius: var(--r-sm);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  transition: background .15s var(--ease-swift), border-color .15s var(--ease-swift),
+              color .15s var(--ease-swift);
+}
+.notif-bell:hover { background: var(--bg-hover); border-color: var(--border-strong); color: var(--text-2); }
+.notif-bell:focus-visible {
+  border-color: var(--border-focus); outline: none;
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+/* Colour, not motion, is what carries "you have unread". */
+.notif-bell.has-unread { color: var(--text-1); border-color: var(--accent-border); }
+.notif-bell.is-open    { background: var(--bg-card-r); border-color: var(--border-strong); color: var(--text-1); }
+/* The endpoint is failing and there is no data. Deliberately quiet — the
+   topbar must not shout about its own plumbing. */
+.notif-bell.is-degraded { opacity: .45; }
+.notif-bell-icon { transform-origin: 50% 15%; }
+.notif-bell.is-ringing .notif-bell-icon { animation: notif-ring .6s var(--ease-out); }
+.notif-bell-badge {
+  position: absolute; top: -5px; right: -5px;
+  min-width: 15px; height: 15px; padding: 0 4px;
+  border-radius: 999px; display: grid; place-items: center;
+  font-size: 9.5px; font-weight: 700; line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--bg-base); background: var(--danger);
+  /* padding-box, so the translucent ring shows the topbar behind the chip
+     rather than a pink halo of its own fill. */
+  background-clip: padding-box;
+  border: 1.5px solid var(--bg-topbar);
+  animation: notif-badge-land .28s var(--ease-out) both;
+}
+/* Never display:none — a live region that disappears stops announcing. */
+.notif-sr {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+/* ─── The panel ───────────────────────────────────────
+   Portaled to <body>; position / z-index / --notif-max-h
+   are measured and set inline, so they are absent here
+   on purpose. */
+.notif-panel {
+  width: 400px; max-width: calc(100vw - 24px);
+  display: flex; flex-direction: column;
+  max-height: min(var(--notif-max-h, 70vh), 560px);
+  overflow: hidden;
+  background: var(--bg-modal);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  outline: none;
+  transform-origin: top right;
+  animation: notif-panel-in .18s var(--ease-out) both;
+}
+.notif-panel-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  padding: 13px 14px 11px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.notif-panel-head > .btn { flex-shrink: 0; }
+.notif-panel-heading h3 { font-size: 13.5px; font-weight: 650; color: var(--text-1); }
+.notif-panel-heading p  { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
+.notif-scroll {
+  flex: 1; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 6px;
+}
+.notif-panel-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0; font-size: 11px;
+}
+.notif-foot-count { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.notif-foot-link {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: var(--text-2);
+  transition: color .15s var(--ease-swift);
+}
+.notif-foot-link:hover { color: var(--accent); }
+
+/* ─── Rows ─────────────────────────────────────────────
+   Read and unread differ by tint and rail only. Every
+   dimension is shared, so nothing shifts when one flips. */
+.notif-group { display: flex; flex-direction: column; }
+.notif-group-label {
+  position: sticky; top: 0; z-index: 1;
+  padding: 8px 8px 5px;
+  font-size: 10px; font-weight: 650;
+  letter-spacing: .07em; text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--bg-modal);   /* opaque: rows scroll UNDER the heading */
+}
+.notif-item {
+  position: relative;
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 10px 9px 11px;
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  text-decoration: none;
+  transition: background .15s var(--ease-swift), border-color .15s var(--ease-swift);
+  /* --i is the index across the whole flattened list, set inline, so the
+     stagger keeps running across a day heading instead of restarting. */
+  animation: notif-row-in .26s var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 18ms);
+}
+.notif-item:hover { background: var(--bg-hover); border-color: var(--border); }
+.notif-item:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+/* Inset rail rather than a real border: the box model stays identical. */
+.notif-item.is-unread { background: var(--sev-soft); box-shadow: inset 2px 0 0 var(--sev); }
+.notif-item-disc {
+  flex-shrink: 0; width: 24px; height: 24px; margin-top: 1px;
+  border-radius: 50%; display: grid; place-items: center;
+  color: var(--sev); background: var(--sev-soft); border: 1px solid var(--sev-border);
+}
+.notif-item:not(.is-unread) .notif-item-disc { opacity: .62; }
+.notif-item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.notif-item-top  { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.notif-item-kind {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; font-weight: 650;
+  letter-spacing: .04em; text-transform: uppercase;
+  color: var(--sev);
+}
+/* The unread state survives for a reader who cannot see the tint. */
+.notif-item-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--sev); flex-shrink: 0; }
+.notif-item-when {
+  font-size: 10.5px; color: var(--text-3);
+  white-space: nowrap; font-variant-numeric: tabular-nums; flex-shrink: 0;
+}
+.notif-item-title {
+  font-size: 12.5px; line-height: 1.45; color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.notif-item.is-unread .notif-item-title { color: var(--text-1); font-weight: 550; }
+.notif-item-go {
+  font-size: 10.5px; color: var(--text-3); margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.notif-item:hover .notif-item-go { color: var(--text-2); }
+.notif-item-chevron {
+  flex-shrink: 0; align-self: center; color: var(--text-3);
+  opacity: 0; transform: translateX(-3px);
+  transition: opacity .15s var(--ease-swift), transform .15s var(--ease-out);
+}
+.notif-item:hover .notif-item-chevron,
+.notif-item:focus-visible .notif-item-chevron { opacity: .75; transform: translateX(0); }
+
+/* ─── Panel states ───────────────────────────────────── */
+.notif-skeletons { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+.notif-skel { display: flex; gap: 10px; align-items: flex-start; }
+.notif-skel-disc  { width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0; }
+.notif-skel-lines { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.notif-skel-a { height: 10px; width: 38%; }
+.notif-skel-b { height: 12px; width: 82%; }
+.notif-state {
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  text-align: center; padding: 34px 22px;
+}
+.notif-state strong { font-size: 13px; color: var(--text-1); }
+/* A raw server error string — it has to be allowed to break. */
+.notif-state span { font-size: 11.5px; color: var(--text-3); line-height: 1.5; max-width: 30ch; word-break: break-word; }
+.notif-state--error svg { color: var(--danger); opacity: .8; }
+/* Tames the shared EmptyState inside a 400px panel. */
+.notif-empty { padding: 8px 6px 20px; }
+.notif-empty .empty-state { padding: 24px 16px; }
+.notif-empty .empty-text  { max-width: 32ch; }
+/* A poll failed but the previous snapshot survived — say so, keep showing it. */
+.notif-stale {
+  display: flex; align-items: center; gap: 7px;
+  margin: 4px 4px 8px; padding: 7px 9px;
+  border-radius: var(--r-sm);
+  background: var(--warning-soft); border: 1px solid var(--warning-border);
+  color: var(--warning); font-size: 11px;
+}
+.notif-stale span { flex: 1; }
+.notif-stale-retry {
+  background: none; border: none; color: inherit;
+  font-size: 11px; font-weight: 650;
+  text-decoration: underline; text-underline-offset: 2px;
+  cursor: pointer; flex-shrink: 0;
+}
+
+/* ═══ Missed scheduled runs ═════════════════════════════
+   A run that never happened has no row, so the whole of
+   this history is derived on read. Four states and the
+   distinction is the entire feature:
+
+     ran     success green
+     missed  warning amber   — the ONLY one allowed to alarm
+     blocked running blue    — coalesced on purpose
+     paused  queued slate    — nothing was owed
+
+   --queued and --text-3 are the same value, so blocked
+   must stay blue or blocked and paused become one
+   colour. */
+.schedule-gaps {
+  position: relative; overflow: hidden;
+  margin-bottom: 20px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  animation: gate-arrive .5s var(--ease-out) both;
+}
+.schedule-gaps--missed {
+  border-color: var(--warning-border);
+  box-shadow: var(--shadow-md), 0 0 60px -30px var(--warning), inset 3px 0 0 var(--warning);
+}
+/* "Nothing was missed" must feel finished, not empty — hence the rail and no glow. */
+.schedule-gaps--calm   { border-color: var(--success-border); box-shadow: var(--shadow-sm), inset 3px 0 0 var(--success); }
+.schedule-gaps--muted  { box-shadow: var(--shadow-sm), inset 3px 0 0 var(--queued); }
+.schedule-gaps--broken { border-color: var(--danger-border);  box-shadow: var(--shadow-sm), inset 3px 0 0 var(--danger); }
+.schedule-gaps--muted .schedule-gaps-headtext p { color: var(--text-3); }
+.schedule-gaps--loading { padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+.schedule-gaps-skel {
+  height: 12px; border-radius: var(--r-xs);
+  background: linear-gradient(90deg, var(--bg-card) 25%, var(--bg-card-r) 50%, var(--bg-card) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease infinite;
+}
+.schedule-gaps-skel--title { height: 16px; width: 45%; }
+
+.schedule-gaps-head { display: flex; align-items: flex-start; gap: 14px; padding: 18px 20px 14px; }
+.schedule-gaps-head > .btn { margin-left: auto; flex-shrink: 0; }
+.schedule-gaps-glyph {
+  width: 40px; height: 40px; flex-shrink: 0;
+  border-radius: var(--r-md); display: grid; place-items: center;
+  color: var(--queued); background: var(--queued-soft); border: 1px solid var(--queued-border);
+}
+.schedule-gaps--missed .schedule-gaps-glyph {
+  color: var(--warning); background: var(--warning-soft); border-color: var(--warning-border);
+  animation: gate-glyph-pulse 2.6s var(--ease-swift) infinite;
+}
+.schedule-gaps--calm .schedule-gaps-glyph {
+  color: var(--success); background: var(--success-soft); border-color: var(--success-border);
+  animation: none;
+}
+.schedule-gaps--broken .schedule-gaps-glyph {
+  color: var(--danger); background: var(--danger-soft); border-color: var(--danger-border);
+}
+.schedule-gaps-eyebrow {
+  display: block;
+  font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  margin-bottom: 3px; color: var(--text-3);
+}
+.schedule-gaps--missed .schedule-gaps-eyebrow { color: var(--warning); }
+.schedule-gaps--calm   .schedule-gaps-eyebrow { color: var(--success); }
+.schedule-gaps--broken .schedule-gaps-eyebrow { color: var(--danger);  }
+.schedule-gaps-headtext { flex: 1; min-width: 0; }
+.schedule-gaps-headtext h2 { font-size: 16.5px; font-weight: 700; color: var(--text-1); letter-spacing: -0.2px; }
+.schedule-gaps-headtext p  { font-size: 12.5px; color: var(--text-2); line-height: 1.55; margin-top: 4px; }
+
+/* Hairline grid, same trick as .summary-strip. */
+.schedule-gaps-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 1px; background: var(--border);
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.gap-stat { padding: 10px 16px; background: var(--bg-card); display: flex; flex-direction: column; gap: 3px; }
+.gap-stat > span {
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-3);
+}
+.gap-stat > strong { font-size: 18px; font-weight: 700; color: var(--text-1); font-variant-numeric: tabular-nums; }
+.gap-stat--ran     strong { color: var(--success); }
+.gap-stat--missed  strong { color: var(--warning); }
+.gap-stat--blocked strong { color: var(--running); }
+.gap-stat--paused  strong { color: var(--queued);  }
+/* A green card with an amber zero is a mixed signal. */
+.schedule-gaps--calm .gap-stat--missed strong { color: var(--text-3); }
+
+/* The honesty rail: everything that qualifies the numbers above it. */
+.schedule-gaps-note {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px 20px;
+  font-size: 12px; line-height: 1.55; color: var(--text-2);
+  border-top: 1px solid var(--border);
+}
+.schedule-gaps-note > svg { flex-shrink: 0; margin-top: 2px; color: var(--text-3); }
+.schedule-gaps-note strong { color: var(--text-1); font-weight: 600; }
+/* "Your history is not whole" — this one must not be quiet. */
+.schedule-gaps-note--warn { background: var(--warning-soft); color: var(--text-1); }
+.schedule-gaps-note--warn > svg { color: var(--warning); }
+.schedule-gaps-note--muted { color: var(--text-3); font-size: 11.5px; }
+
+.schedule-gaps-list {
+  padding: 4px 20px 16px;
+  border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.schedule-gaps-list .schedule-gaps-note { border-top: 0; padding: 2px 0; }
+.schedule-gaps-explainer { font-size: 12px; color: var(--text-2); line-height: 1.55; padding: 12px 0 4px; }
+.gap-row {
+  display: flex; gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg-card-r);
+  transition: border-color .15s var(--ease-out), background .15s var(--ease-out);
+  /* The component supplies a staggered animationDelay inline. */
+  animation: pop-in .28s var(--ease-out) both;
+}
+.gap-row:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+/* An outage rather than a single fire. */
+.gap-row--streak { border-color: var(--warning-border); box-shadow: inset 3px 0 0 var(--warning); }
+.gap-row-glyph {
+  width: 22px; height: 22px; flex-shrink: 0;
+  border-radius: var(--r-sm); display: grid; place-items: center;
+  color: var(--warning); background: var(--warning-soft); border: 1px solid var(--warning-border);
+}
+.gap-row-body { flex: 1; min-width: 0; }
+.gap-row-top  { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.gap-row-when { font-size: 13px; font-weight: 600; color: var(--text-1); font-variant-numeric: tabular-nums; }
+.gap-row-count {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: var(--r-xs);
+  color: var(--warning); background: var(--warning-soft); border: 1px solid var(--warning-border);
+}
+.gap-row-ago { margin-left: auto; font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.gap-row-why { margin-top: 3px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+.gap-row-toggle, .schedule-gaps-more {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 6px; padding: 0;
+  background: none; border: 0;
+  font-size: 11.5px; font-weight: 600; color: var(--text-3);
+  cursor: pointer;
+  transition: color .15s var(--ease-out);
+}
+.gap-row-toggle:hover, .schedule-gaps-more:hover { color: var(--accent); }
+.gap-row-toggle:focus-visible, .schedule-gaps-more:focus-visible {
+  outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: var(--r-xs);
+}
+.schedule-gaps-more { align-self: flex-start; margin-top: 2px; }
+.gap-chev { transition: transform .18s var(--ease-swift); }
+.gap-chev--open { transform: rotate(180deg); }
+.gap-row-times {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px;
+  animation: reveal-down .2s var(--ease-out) both;
+}
+.gap-time-chip {
+  font-family: var(--font-mono); font-size: 10.5px;
+  padding: 2px 6px; border-radius: var(--r-xs);
+  color: var(--text-2); background: var(--bg-code); border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.schedule-gaps-foot { padding: 0 20px 14px; font-size: 11px; color: var(--text-3); }
+
+/* ─── Gap marks on the activity heatmap ───────────────
+   Painted OVER the run fill, never instead of it: a red
+   failing day that also missed fires has to show both. */
+.run-heatmap-cell--missed { position: relative; box-shadow: inset 0 0 0 1px var(--warning-border); }
+.run-heatmap-cell--missed::after {
+  content: ''; position: absolute; inset: 0;
+  border-radius: inherit; pointer-events: none;
+  background: repeating-linear-gradient(45deg, var(--warning) 0 1.5px, transparent 1.5px 4px);
+}
+/* Nothing was owed of this day — a hollow ring, so it cannot read as "quiet". */
+.run-heatmap-cell--paused { box-shadow: inset 0 0 0 1.5px var(--queued); }
+.run-heatmap-gap-note {
+  margin-top: 6px; font-size: 10.5px; line-height: 1.5;
+  color: var(--text-3); max-width: 52ch;
+}
+
+/* ═══ Resource locks (workflow modals) ══════════════════
+   Two words carry the feature and neither means anything
+   alone, so "shared"/"exclusive" never appear without
+   the sentence that says what happens. Built on the
+   .watchdogs shell so the two sit in one modal without a
+   seam. */
+.locks {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px; border: 1px solid var(--border);
+  border-radius: var(--r-md); background: var(--bg-card);
+}
+.locks-label { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.lock-field {
+  display: flex; flex-direction: column;
+  border-radius: var(--r-sm);
+  transition: background .18s var(--ease-swift);
+}
+.lock-field.is-on { background: var(--bg-hover); }
+/* Flex, for the same blockify reason as .watchdog-head. */
+.lock-head { display: flex; align-items: center; gap: 10px; padding: 8px; cursor: pointer; }
+.lock-glyph {
+  width: 26px; height: 26px; flex-shrink: 0;
+  display: grid; place-items: center; border-radius: var(--r-sm);
+  background: var(--accent-soft); border: 1px solid var(--accent-border); color: var(--accent);
+}
+.lock-field:not(.is-on) .lock-glyph {
+  background: var(--bg-card-r); border-color: var(--border); color: var(--text-3);
+}
+.lock-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lock-text strong { font-size: 12.5px; font-weight: 650; color: var(--text-1); }
+.lock-text small  { font-size: 11.5px; color: var(--text-2); line-height: 1.45; }
+.lock-body {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 0 8px 10px 44px;   /* 44px lines the body up under the glyph */
+  animation: reveal-down .18s var(--ease-out) both;
+}
+/* The two examples in that caption ARE the caption — they must read as
+   literal strings, not as prose. */
+.lock-body .field > small code {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-2); background: var(--bg-code);
+  padding: 1px 4px; border-radius: 3px;
+}
+
+/* ─── Suggestions: the typo defence ───────────────────── */
+.lock-suggest { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lock-suggest-label { font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.lock-suggest-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3.5px 9px; border-radius: 20px;
+  border: 1px solid var(--border); background: var(--bg-card-r);
+  color: var(--text-2);
+  font-family: var(--font-mono); font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color .15s var(--ease-swift), background .15s var(--ease-swift),
+              color .15s var(--ease-swift), transform .15s var(--ease-out);
+}
+.lock-suggest-chip:hover { border-color: var(--accent-border); }
+.lock-suggest-chip:active { transform: scale(.94); }
+.lock-suggest-chip.on { color: var(--accent); border-color: var(--accent-border); background: var(--accent-soft); }
+[data-theme="light"] .lock-suggest-chip.on { color: var(--accent-active); }
+/* Unstyled this renders as `warehouse-db3`; it is a counter, so make it one. */
+.lock-suggest-chip em {
+  font-style: normal; font-size: 10px;
+  min-width: 15px; padding: 0 4px;
+  border-radius: 20px; background: var(--bg-hover); color: var(--text-3);
+  line-height: 1.5; text-align: center;
+}
+
+/* ─── Warnings: a near miss, and self-serialisation ───── */
+.lock-warn {
+  display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--warning); line-height: 1.5;
+}
+.lock-warn svg { flex-shrink: 0; margin-top: 2px; }
+.lock-warn > span { flex: 1; min-width: 200px; }
+/* The two strings being compared have to be visually comparable. */
+.lock-warn b { font-family: var(--font-mono); font-weight: 650; color: var(--text-1); }
+.lock-warn-fix {
+  font-size: 11px; padding: 2px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--warning-border);
+  background: var(--warning-soft); color: var(--warning);
+  cursor: pointer;
+  transition: background .15s var(--ease-swift), transform .15s var(--ease-out);
+}
+.lock-warn-fix:hover  { background: color-mix(in srgb, var(--warning) 16%, transparent); }
+.lock-warn-fix:active { transform: scale(.96); }
+
+/* ─── The mode choice ─────────────────────────────────── */
+.lock-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.lock-mode {
+  position: relative;
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card-r);
+  cursor: pointer;
+  transition: border-color .15s var(--ease-swift), background .15s var(--ease-swift);
+}
+.lock-mode:hover { border-color: var(--border-strong); }
+/* The card is the control; the radio stays real for arrow keys and SRs. */
+.lock-mode input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
+.lock-mode:has(input:focus-visible) { border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* Toned by mode, because the two are not equally consequential. */
+.lock-mode--exclusive.on { border-color: var(--warning-border); background: var(--warning-soft); }
+.lock-mode--exclusive.on .lock-mode-glyph { color: var(--warning); }
+.lock-mode--shared.on { border-color: var(--accent-border); background: var(--accent-soft); }
+.lock-mode--shared.on .lock-mode-glyph { color: var(--accent); }
+.lock-mode-glyph { flex-shrink: 0; margin-top: 1px; color: var(--text-3); }
+.lock-mode-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.lock-mode-text strong { font-size: 12.5px; font-weight: 650; color: var(--text-1); }
+/* Carries the sentence that makes the mode mean something — never clamp it. */
+.lock-mode-text small { font-size: 11.5px; color: var(--text-2); line-height: 1.45; }
+
+/* ─── Outcome + the workflows on the other side ───────── */
+.lock-outcome {
+  font-size: 11.5px; color: var(--text-2); line-height: 1.6;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border-strong);
+  background: var(--bg-card-r);
+  border-radius: var(--r-sm);
+}
+.lock-resource-name {
+  font-family: var(--font-mono); font-size: .92em;
+  color: var(--text-1); background: var(--bg-code);
+  padding: 1px 4px; border-radius: 3px; white-space: nowrap;
+}
+.lock-peers { display: flex; flex-direction: column; gap: 6px; }
+.lock-peers-label { font-size: 11.5px; font-weight: 600; color: var(--text-2); }
+/* A sentence, not a heading. */
+.lock-peers-label--alone { font-weight: 400; color: var(--text-3); line-height: 1.55; }
+.lock-peers ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.lock-peers li {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 11.5px; padding: 4px 8px;
+  border-radius: var(--r-sm); background: var(--bg-card-r);
+}
+.lock-peers li b { font-weight: 650; color: var(--text-1); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lock-peers li em { font-style: normal; margin-left: auto; color: var(--text-3); white-space: nowrap; }
+.lock-note { font-size: 11.5px; color: var(--text-3); line-height: 1.55; }
+
+/* ─── The indicator ───────────────────────────────────
+   A lock is a standing fact, not an alert — geometry from
+   .snooze-chip, deliberately without its breathing. */
+.lock-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 650;
+  padding: 3.5px 9px; border-radius: 20px; line-height: 1;
+  white-space: nowrap; max-width: 100%;
+}
+.lock-badge--exclusive { color: var(--warning); border: 1px solid var(--warning-border); background: var(--warning-soft); }
+.lock-badge--shared    { color: var(--accent);  border: 1px solid var(--accent-border);  background: var(--accent-soft);  }
+[data-theme="light"] .lock-badge--shared { color: var(--accent-active); }
+.lock-badge svg { flex-shrink: 0; }
+/* A long resource name must not blow out a workflow card. */
+.lock-badge-name {
+  font-family: var(--font-mono); font-size: 10.5px;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 14ch;
+}
+.lock-badge em {
+  font-style: normal; font-size: 10px; opacity: .85;
+  padding-left: 6px; border-left: 1px solid var(--border);
+}
+/* Nothing precedes the mode word on a compact badge, so the rule would orphan. */
+.lock-badge--compact em { padding-left: 0; border-left: 0; }
+
+/* ═══ Why a queued run is waiting ═══════════════════════
+   The worker's claim predicate, restated in words. A run
+   that sits at `queued` with nothing visible happening is
+   the one place this app could leave someone guessing, so
+   the block names the run that holds the thing it wants
+   and links straight to it. */
+.queue-why {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 22px 24px;
+}
+.queue-why-glyph {
+  width: 38px; height: 38px; flex-shrink: 0;
+  border-radius: var(--r-md); display: grid; place-items: center;
+  color: var(--queued); background: var(--queued-soft); border: 1px solid var(--queued-border);
+}
+.queue-why--blocked .queue-why-glyph {
+  color: var(--warning); background: var(--warning-soft); border-color: var(--warning-border);
+}
+.queue-why-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.queue-why-eyebrow {
+  font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3);
+}
+.queue-why--blocked .queue-why-eyebrow { color: var(--warning); }
+.queue-why-text h3 { font-size: 15px; font-weight: 650; color: var(--text-1); letter-spacing: -0.15px; }
+.queue-why-text p  { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+/* The resource name is a literal string in both the headline and the body. */
+.queue-why-text code {
+  font-family: var(--font-mono); font-size: .92em;
+  color: var(--text-1); background: var(--bg-code);
+  padding: 1px 4px; border-radius: 3px;
+}
+.queue-why-holders { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+.queue-why-holder {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 20px;
+  border: 1px solid var(--border); background: var(--bg-card-r);
+  font-size: 11.5px; color: var(--text-2);
+  transition: border-color .15s var(--ease-swift), color .15s var(--ease-swift),
+              background .15s var(--ease-swift);
+}
+.queue-why-holder:hover { border-color: var(--accent-border); color: var(--text-1); background: var(--bg-hover); }
+.queue-why-holder b { font-weight: 650; color: var(--text-1); max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-why-holder em {
+  font-style: normal; color: var(--text-3);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.queue-why-bar { width: 200px; margin-top: 4px; }
+
+/* ═══ Host surfaces this pass touches ═══════════════════ */
+/* Bell, health chip and theme toggle are one control group; the row must not
+   wrap or overflow on a phone, so the search button drops to its icon and the
+   ALL-CLEAR health chip — the one piece of non-news up there — steps out. */
+.cmd-k-label { display: inline; }
+@media (max-width: 720px) {
+  .topbar { padding: 0 16px; gap: 8px; }
+  .cmd-k-btn { width: 30px; padding: 0; justify-content: center; }
+  .cmd-k-label, .cmd-k-btn kbd { display: none; }
+}
+@media (max-width: 560px) {
+  .topbar-actions .health-chip.health-online { display: none; }
+}
+/* A lock badge in a .summary-strip cell behaves like a .status-badge there. */
+.summary-strip .lock-badge { align-self: flex-start; }
+/* The 14ch cap exists so a long name cannot blow out a workflow CARD. A strip
+   cell is a labelled slot for exactly this value, so let the name take the
+   whole cell and clip at its edge instead of at an arbitrary character count. */
+.summary-strip .lock-badge-name { max-width: none; }
+
+/* ─── Reduced motion for this pass ─────────────────────
+   Every STATE survives the strip: the badge, the severity
+   tint, the unread rail and pip, the bolder unread title,
+   the sticky day headings, the amber hatch, the selected
+   mode card. Only movement goes. */
+@media (prefers-reduced-motion: reduce) {
+  .notif-panel, .notif-item, .notif-bell-badge,
+  .schedule-gaps, .gap-row, .gap-row-times, .lock-body { animation: none !important; }
+  .notif-bell.is-ringing .notif-bell-icon { animation: none; }
+  .schedule-gaps--missed .schedule-gaps-glyph { animation: none; }
+  .schedule-gaps-skel { animation: none; background: var(--bg-hover); }
+  /* Its transition was the only thing that revealed it, so pin it visible. */
+  .notif-item-chevron { transition: none; opacity: .55; transform: none; }
+  .notif-item, .notif-bell, .notif-foot-link,
+  .lock-field, .lock-mode, .lock-suggest-chip, .lock-warn-fix,
+  .gap-row, .queue-why-holder { transition: none; }
+  /* The rotation is state, so it must still apply — only the tween goes. */
+  .gap-chev { transition: none !important; }
+  .lock-suggest-chip:active, .lock-warn-fix:active { transform: none !important; }
+  /* The grid's own hover pop — .hm-cell's twin was already covered, this one
+     was not, and the gap marks make the cells worth hovering. */
+  .run-heatmap-cell:hover { transform: none !important; }
+}

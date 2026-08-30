@@ -1,9 +1,27 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { api } from '../api';
+import type { GapDay } from './ScheduleGaps';
 
 /** Activity grid: one cell per day, weeks as columns running Monday → Sunday.
  *  Green intensity tracks run volume; any failures tint the day amber/red.
- *  Optional 4w/8w/16w/6m range selector; the choice persists in localStorage. */
+ *  Optional 4w/8w/16w/6m range selector; the choice persists in localStorage.
+ *
+ *  With `gaps` supplied (per-workflow only — a gap belongs to one crontab) the
+ *  grid also carries the runs that NEVER HAPPENED. Those are a different fact
+ *  from a quiet day and from a failing day, so they are painted as a marking
+ *  ON TOP of the run fill rather than as another fill colour:
+ *
+ *    missed  amber hatch    the schedule came due and no run exists
+ *    paused  slate ring     disabled or snooze-paused, nothing was owed
+ *
+ *  `blocked` fires get no mark at all: the scheduler dropped them because a run
+ *  was already queued, which means the day already has that run's colour and a
+ *  second glyph would imply a fault where there is none. It stays in the tip.
+ *
+ *  Cells older than `gapsSince` are left unmarked AND say so in their tooltip —
+ *  the scan never reached them, and an unmarked cell must not be readable as
+ *  "checked and clean". */
 
 type DayStat = { date: string; success: number; failed: number; other: number };
 
@@ -30,26 +48,46 @@ function storedWeeks(fallback: number): number {
   }
 }
 
-function cellColor(stat: DayStat | undefined): { background: string; opacity?: number } {
+/** `X at 40%` rather than `background: X; opacity: .4`. Identical compositing
+ *  for a solid box, but element opacity would also fade the ::after gap marks,
+ *  and a hatched miss has to stay legible on a pale cell. */
+const fade = (color: string, alpha: number) =>
+  `color-mix(in srgb, ${color} ${Math.round(alpha * 100)}%, transparent)`;
+
+function cellColor(stat: DayStat | undefined): string {
   if (!stat || stat.success + stat.failed + stat.other === 0) {
-    return { background: 'var(--hm-empty, rgba(127,127,127,0.10))' };
+    return 'var(--hm-empty, rgba(127,127,127,0.10))';
   }
   const total = stat.success + stat.failed;
   if (stat.failed > 0) {
-    return stat.failed >= Math.max(1, total / 2)
-      ? { background: 'var(--danger)', opacity: 0.85 }
-      : { background: 'var(--warning)', opacity: 0.85 };
+    return stat.failed >= Math.max(1, total / 2) ? fade('var(--danger)', 0.85) : fade('var(--warning)', 0.85);
   }
   const intensity = stat.success >= 100 ? 1 : stat.success >= 25 ? 0.75 : stat.success >= 5 ? 0.5 : 0.3;
-  return { background: 'var(--success)', opacity: intensity };
+  return fade('var(--success)', intensity);
 }
 
-export function RunHeatmap({ workflowId, weeks: defaultWeeks = 16, selectable = false }: {
+export function RunHeatmap({
+  workflowId, weeks: defaultWeeks = 16, selectable = false,
+  gaps, gapsSince, gapsComplete = true, onWeeksChange,
+}: {
   workflowId?: number;
   /** Fixed range when not selectable; initial fallback when selectable. */
   weeks?: number;
   /** Show the 4w/8w/16w/6m range control; the choice persists across sessions. */
   selectable?: boolean;
+  /** Per-day expected/ran/missed/blocked/paused counts from
+   *  GET /workflows/{id}/schedule-gaps — `daily`, keyed by the same UTC day
+   *  string /stats/daily uses. Omit for the all-workflow heatmap. */
+  gaps?: GapDay[];
+  /** `window.since` from the same response: the oldest instant the scan
+   *  actually reached. Days before it carry no gap treatment. */
+  gapsSince?: string | null;
+  /** `complete` from the same response. False means the scan stopped early and
+   *  the grid says so instead of implying the history is whole. */
+  gapsComplete?: boolean;
+  /** Fires with the selected day-count whenever the range changes (and once on
+   *  mount), so a host owning the gap scan can widen it to match. */
+  onWeeksChange?: (days: number) => void;
 }) {
   const [stats, setStats] = useState<Record<string, DayStat>>({});
   const [weeks, setWeeks] = useState(() => (selectable ? storedWeeks(defaultWeeks) : defaultWeeks));
@@ -58,6 +96,12 @@ export function RunHeatmap({ workflowId, weeks: defaultWeeks = 16, selectable = 
     setWeeks(w);
     try { localStorage.setItem(WEEKS_STORAGE_KEY, String(w)); } catch { /* non-fatal */ }
   };
+
+  // Through a ref so a host that passes an inline arrow does not re-fire this
+  // on every render of its own.
+  const notifyWeeks = useRef(onWeeksChange);
+  useEffect(() => { notifyWeeks.current = onWeeksChange; });
+  useEffect(() => { notifyWeeks.current?.(weeks * 7); }, [weeks]);
 
   useEffect(() => {
     let stale = false; // ignore out-of-order responses when switching ranges quickly
@@ -68,6 +112,12 @@ export function RunHeatmap({ workflowId, weeks: defaultWeeks = 16, selectable = 
       .catch(() => {});
     return () => { stale = true; };
   }, [workflowId, weeks]);
+
+  const gapByDate = useMemo(
+    () => Object.fromEntries((gaps ?? []).map(g => [g.date, g])) as Record<string, GapDay>,
+    [gaps]);
+  // A day is inside the scan when any part of it is: the floor can land mid-day.
+  const gapFloor = gapsSince ? new Date(gapsSince).getTime() : null;
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -94,6 +144,9 @@ export function RunHeatmap({ workflowId, weeks: defaultWeeks = 16, selectable = 
     }
     columns.push({ key: weekStart, days });
   }
+
+  // Only worth a footnote when the grid actually reaches past the scan.
+  const showGapFloor = Boolean(gaps) && gapFloor !== null && gapFloor > start;
 
   return (
     <div className="run-heatmap-wrap">
@@ -129,17 +182,45 @@ export function RunHeatmap({ workflowId, weeks: defaultWeeks = 16, selectable = 
               <div key={col.key} className="run-heatmap-col"
                    style={{ gap: GAP, animationDelay: `${colIndex * 10}ms` }}>
                 {col.days.map((stat, dow) => {
-                  const date = new Date(col.key + dow * DAY_MS);
+                  const t = col.key + dow * DAY_MS;
+                  const date = new Date(t);
+                  const key = date.toISOString().slice(0, 10);
+                  const runs = stat ? stat.success + stat.failed + stat.other : 0;
+
+                  // Gap state, only where the scan actually looked.
+                  const inScan = Boolean(gaps) && (gapFloor === null || t + DAY_MS > gapFloor);
+                  const gap = inScan ? gapByDate[key] : undefined;
+                  const missed = (gap?.missed ?? 0) > 0;
+                  // The ring is for a day that would otherwise read as quiet
+                  // when in truth nothing was owed of it.
+                  const pausedOnly = !missed && runs === 0 && (gap?.paused ?? 0) > 0;
+
+                  let gapTip = '';
+                  if (gap) {
+                    const bits: string[] = [];
+                    if (gap.missed) bits.push(`${gap.missed} missed`);
+                    if (gap.blocked) bits.push(`${gap.blocked} skipped (run already queued)`);
+                    if (gap.paused) bits.push(`${gap.paused} not owed (paused)`);
+                    if (!bits.length && gap.expected) bits.push(`all ${gap.expected} scheduled runs on time`);
+                    gapTip = bits.length ? ` · ${bits.join(' · ')}` : '';
+                  } else if (gaps && !inScan) {
+                    gapTip = ' · not scanned for missed runs';
+                  }
+
                   const tip = stat === undefined ? undefined
                     : `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` +
-                      (stat.success + stat.failed + stat.other
+                      (runs
                         ? ` · ${stat.success} ok${stat.failed ? ` · ${stat.failed} failed` : ''}${stat.other ? ` · ${stat.other} other` : ''}`
-                        : ' · no runs');
+                        : ' · no runs') + gapTip;
                   return (
-                    <span key={dow} className="run-heatmap-cell" title={tip}
+                    <span key={dow}
+                          className={clsx('run-heatmap-cell',
+                                          missed && 'run-heatmap-cell--missed',
+                                          pausedOnly && 'run-heatmap-cell--paused')}
+                          title={tip}
                           style={{ width: CELL, height: CELL,
                                    visibility: stat === undefined ? 'hidden' : 'visible',
-                                   ...cellColor(stat) }} />
+                                   background: cellColor(stat) }} />
                   );
                 })}
               </div>
@@ -149,14 +230,32 @@ export function RunHeatmap({ workflowId, weeks: defaultWeeks = 16, selectable = 
         <div className="run-heatmap-legend">
           <span>Fewer</span>
           {[0.3, 0.5, 0.75, 1].map(o => (
-            <span key={o} className="run-heatmap-cell" style={{ width: CELL, height: CELL, background: 'var(--success)', opacity: o }} />
+            <span key={o} className="run-heatmap-cell" style={{ width: CELL, height: CELL, background: fade('var(--success)', o) }} />
           ))}
           <span>More</span>
-          <span className="run-heatmap-cell" style={{ width: CELL, height: CELL, background: 'var(--warning)', opacity: 0.85, marginLeft: 10 }} />
+          <span className="run-heatmap-cell" style={{ width: CELL, height: CELL, background: fade('var(--warning)', 0.85), marginLeft: 10 }} />
           <span>Mixed</span>
-          <span className="run-heatmap-cell" style={{ width: CELL, height: CELL, background: 'var(--danger)', opacity: 0.85 }} />
+          <span className="run-heatmap-cell" style={{ width: CELL, height: CELL, background: fade('var(--danger)', 0.85) }} />
           <span>Failing</span>
+          {gaps && (
+            <>
+              <span className="run-heatmap-cell run-heatmap-cell--missed"
+                    style={{ width: CELL, height: CELL, background: 'var(--hm-empty, rgba(127,127,127,0.10))', marginLeft: 10 }} />
+              <span>Missed</span>
+              <span className="run-heatmap-cell run-heatmap-cell--paused"
+                    style={{ width: CELL, height: CELL, background: 'transparent' }} />
+              <span>Paused</span>
+            </>
+          )}
         </div>
+        {gaps && (showGapFloor || !gapsComplete) && (
+          <p className="run-heatmap-gap-note">
+            {gapFloor !== null && `Missed-run marks cover ${new Date(gapFloor).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} onward. `}
+            {gapsComplete
+              ? 'Earlier days in this range were not scanned for missed runs.'
+              : 'The scan stopped early — earlier days are unchecked, not clean.'}
+          </p>
+        )}
       </div>
     </div>
   );

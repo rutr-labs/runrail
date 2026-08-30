@@ -11,7 +11,7 @@ from pydantic import (
     model_validator,
 )
 
-from runrail.models import EnvironmentStatus, EnvironmentType, TaskType
+from runrail.models import EnvironmentStatus, EnvironmentType, LockMode, TaskType
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -109,6 +109,20 @@ class WorkflowIn(BaseModel):
     # silently clear a snooze. Those live on dedicated endpoints instead.
     missed_run_grace_minutes: int | None = Field(default=None, ge=1)
     sla_minutes: int | None = Field(default=None, ge=1)
+    # Configuration: the named resource this workflow serialises on. NULL is no
+    # locking, and the mode is inert without a resource.
+    lock_resource: str | None = Field(default=None, max_length=255)
+    lock_mode: LockMode = LockMode.shared
+
+    @model_validator(mode="after")
+    def _mode_needs_a_resource(self) -> "WorkflowIn":
+        # An empty box in the edit modal means "no lock", and a mode stored
+        # without a resource is configuration that claims a rule it never applies.
+        resource = (self.lock_resource or "").strip()
+        self.lock_resource = resource or None
+        if not resource:
+            self.lock_mode = LockMode.shared
+        return self
 
     @field_validator("schedule_timezone")
     @classmethod

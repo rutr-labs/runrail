@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from runrail.api.routes_activity import router as activity_router
 from runrail.api.routes_insights import router as insights_router
 from runrail.api.routes_reports import router as reports_router
 from runrail.api.routes_resources import router as resources_router
@@ -33,6 +34,7 @@ def create_app() -> FastAPI:
     # matches "/{path:path}" and would otherwise swallow their paths.
     app.include_router(runcontrol_router); app.include_router(watchdog_router)
     app.include_router(reports_router); app.include_router(insights_router)
+    app.include_router(activity_router)
 
     @app.get("/api/health")
     def health(): return {"status": "ok", "service": "runrail"}

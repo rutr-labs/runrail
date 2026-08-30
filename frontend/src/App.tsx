@@ -8,7 +8,7 @@ import {
   AlertTriangle, CheckCircle2, RefreshCw, Trash2, Pencil,
   ArrowLeft, Terminal, Download, Settings, ChevronsRight,
   Database, FileText, Info, Ban, Menu, X, SlidersHorizontal,
-  ShieldAlert, ShieldCheck, CircleSlash, Share2, BookOpen,
+  ShieldAlert, ShieldCheck, CircleSlash, Share2, BookOpen, Lock,
 } from 'lucide-react';
 import { api, del, post, put } from './api';
 import { rrws } from './ws';
@@ -24,6 +24,9 @@ import { ApprovalGate, ApprovalInbox, useOpenApprovals } from './components/Appr
 import { ResumeButton } from './components/ResumeDialog';
 import { SnoozeBadge, SnoozeControl } from './components/SnoozeControl';
 import { WatchdogFields, watchdogValues } from './components/WatchdogFields';
+import { NotificationBell } from './components/NotificationCenter';
+import { ScheduleGapsPanel, useScheduleGaps, heatmapGapFeed } from './components/ScheduleGaps';
+import { LockField, LockBadge, lockValues } from './components/LockField';
 import { LatestReportPanel, ReportPanel } from './components/ReportPanel';
 import type { LatestReportMeta } from './components/ReportPanel';
 import { ShareRunModal } from './components/ShareRunModal';
@@ -95,6 +98,11 @@ type Workflow = {
   // v0.5 configuration — part of WorkflowIn, so both modals must round-trip it.
   missed_run_grace_minutes?: number | null;
   sla_minutes?: number | null;
+  /** The named resource this workflow serialises on. NULL is no locking, and
+   *  the mode is inert without it — see LockField. Also WorkflowIn keys, so the
+   *  same round-trip rule applies. */
+  lock_resource?: string | null;
+  lock_mode?: 'shared' | 'exclusive';
 };
 
 type Project = {
@@ -412,11 +420,16 @@ function Shell() {
             <span className="bc-sep">›</span>
             <span className="bc-page" key={page.label}>{page.label}</span>
           </div>
+          {/* Search → notifications → health → theme: a command, then the
+              history behind it, then status, then a preference. The label and
+              the shortcut hint are wrapped so the button can collapse to its
+              icon on a phone and leave the bell room. */}
           <div className="topbar-actions">
             <button className="cmd-k-btn" onClick={() => setPaletteOpen(true)} aria-label="Open command palette">
-              <Search size={13} /> Search
+              <Search size={13} /> <span className="cmd-k-label">Search</span>
               <kbd>{navigator.platform?.includes('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
             </button>
+            <NotificationBell />
             <HealthChip label={health === 'online' ? 'Healthy' : health === 'offline' ? 'Offline' : 'Checking'} status={health} />
             <ThemeToggle />
           </div>
@@ -1137,6 +1150,206 @@ function Runs() {
   );
 }
 
+/* ─── Why a queued run is waiting ─────────────────────────
+   A run sitting at `queued` with nothing visibly happening is the one place
+   this app can leave someone guessing, and the reason is never in the run's
+   own row — it is in some OTHER run holding a slot or a named resource.
+
+   worker/queue.claim_next_run refuses a queued run for exactly three reasons,
+   and they are all derivable from lists the API already serves: its workflow
+   is at max_concurrent_runs; a run holds its lock_resource in a mode that
+   cannot share; or, for a shared run, an exclusive run is already queued for
+   that resource and the starvation barrier holds newcomers behind it. Anything
+   else and the run is simply next in line.
+
+   Read-only, computed client-side, and only while the run is actually queued —
+   which is normally seconds. The verdict names the blocking run and links
+   straight to it, because "wait for something" is not an answer. */
+
+type QueueHolder = { run: Run; flow: Workflow };
+
+type QueueVerdict =
+  | { kind: 'concurrency'; holders: Run[] }
+  | { kind: 'lock-held'; resource: string; holders: QueueHolder[] }
+  | { kind: 'lock-barrier'; resource: string; holders: QueueHolder[] }
+  | { kind: 'ahead'; count: number }
+  | { kind: 'clear' };
+
+/** How deep each status list is read. Generous for a single-user tool, and a
+ *  short read is never wrong in a dangerous direction: an unseen holder only
+ *  costs the calmer "waiting for the worker" copy, never a false accusation. */
+const RUN_LIST_CAP = 200;
+
+function useQueueVerdict(run: Run | undefined, flow: Workflow | undefined): QueueVerdict | null {
+  const queued = Boolean(run && run.status === 'queued');
+  const [snapshot, setSnapshot] = useState<{ active: Run[]; queue: Run[] } | null>(null);
+  const [flows, setFlows] = useState<Workflow[] | null>(null);
+
+  // Lock configuration is not a per-tick fact; fetching it once keeps the poll
+  // below to the three lists that actually move.
+  useEffect(() => {
+    if (!queued || flows) return;
+    let alive = true;
+    api<Workflow[]>('/workflows')
+      .then(list => { if (alive) setFlows(list); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [queued, flows]);
+
+  useEffect(() => {
+    if (!queued) { setSnapshot(null); return; }
+    let alive = true;
+    const read = () => {
+      Promise.all([
+        api<Run[]>(`/runs?status=running&limit=${RUN_LIST_CAP}`),
+        api<Run[]>(`/runs?status=waiting_approval&limit=${RUN_LIST_CAP}`),
+        api<Run[]>(`/runs?status=queued&limit=${RUN_LIST_CAP}`),
+      ])
+        .then(([running, parked, queue]) => {
+          if (alive) setSnapshot({ active: [...running, ...parked], queue });
+        })
+        // A failure leaves the last snapshot in place; the generic waiting
+        // copy is the fallback, never a wrong reason.
+        .catch(() => {});
+    };
+    read();
+    // Slower than the run's own 2s poll: this answer changes when some OTHER
+    // run finishes, not when this one does.
+    const timer = window.setInterval(read, 5000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [queued, run?.id]);
+
+  return useMemo<QueueVerdict | null>(() => {
+    if (!run || !flow || !snapshot || !flows) return null;
+    const flowOf = new Map(flows.map(f => [f.id, f]));
+    const pair = (list: Run[]) => list
+      .filter(r => r.id !== run.id)
+      .map(r => ({ run: r, flow: flowOf.get(r.workflow_id) }))
+      .filter((h): h is QueueHolder => Boolean(h.flow));
+
+    // 1. Its own workflow's budget, checked first because it is the limit the
+    //    operator set on this very page.
+    const mine = snapshot.active.filter(r => r.workflow_id === run.workflow_id);
+    if (mine.length >= flow.max_concurrent_runs) return { kind: 'concurrency', holders: mine };
+
+    // 2. The named resource. NULL locks nothing and is locked by nothing —
+    //    the same rule SQL's NULL comparison gives the worker.
+    const resource = flow.lock_resource;
+    if (resource) {
+      const exclusiveHere = flow.lock_mode === 'exclusive';
+      const holders = pair(snapshot.active).filter(
+        h => h.flow.lock_resource === resource
+          && (exclusiveHere || h.flow.lock_mode === 'exclusive'));
+      if (holders.length) return { kind: 'lock-held', resource, holders };
+      if (!exclusiveHere) {
+        const barrier = pair(snapshot.queue).filter(
+          h => h.flow.lock_resource === resource && h.flow.lock_mode === 'exclusive');
+        if (barrier.length) return { kind: 'lock-barrier', resource, holders: barrier };
+      }
+    }
+
+    // 3. Not blocked, just not first. Workers claim the oldest queued run.
+    const mark = new Date(run.created_at).getTime();
+    const older = snapshot.queue.filter(
+      r => r.id !== run.id && new Date(r.created_at).getTime() < mark).length;
+    return older > 0 ? { kind: 'ahead', count: older } : { kind: 'clear' };
+  }, [snapshot, flows, run, flow]);
+}
+
+function QueueHolderChips({ holders }: { holders: { run: Run; label: string; tail?: string }[] }) {
+  const shown = holders.slice(0, 6);
+  return (
+    <div className="queue-why-holders">
+      {shown.map(({ run, label, tail }) => (
+        <Link key={run.id} to={`/runs/${run.id}`} className="queue-why-holder"
+              title={`Started ${formatDate(run.started_at || run.created_at)}`}>
+          <b>{label}</b><em>#{run.id}{tail ? ` · ${tail}` : ''}</em>
+        </Link>
+      ))}
+      {holders.length > shown.length && (
+        <span className="queue-why-holder">+{holders.length - shown.length} more</span>
+      )}
+    </div>
+  );
+}
+
+function QueueWhy({ run, flow }: { run: Run; flow?: Workflow }) {
+  const verdict = useQueueVerdict(run, flow);
+  const kind = verdict?.kind;
+  const blocked = kind === 'concurrency' || kind === 'lock-held' || kind === 'lock-barrier';
+  const Glyph = kind === 'lock-held' || kind === 'lock-barrier' ? Lock
+    : kind === 'concurrency' ? ChevronsRight
+    : Clock;
+
+  let headline: ReactNode = 'Waiting for the worker';
+  let body: ReactNode = 'Task runs appear here the moment a worker claims this run.';
+  let chips: { run: Run; label: string; tail?: string }[] | null = null;
+
+  if (verdict?.kind === 'concurrency') {
+    const limit = flow?.max_concurrent_runs ?? 1;
+    headline = 'Its own workflow is already at capacity';
+    body = (
+      <>
+        {flow?.name ?? 'This workflow'} allows {limit} active {limit === 1 ? 'run' : 'runs'} at a
+        time, and {verdict.holders.length === 1 ? 'one is' : `${verdict.holders.length} are`} going
+        now. This run starts the moment a slot frees up — nothing needs doing.
+      </>
+    );
+    chips = verdict.holders.map(r => ({
+      run: r, label: flow?.name ?? 'This workflow',
+      tail: r.status === 'waiting_approval' ? 'awaiting approval' : 'running',
+    }));
+  } else if (verdict?.kind === 'lock-held') {
+    const alone = flow?.lock_mode === 'exclusive';
+    headline = <>Waiting for <code>{verdict.resource}</code></>;
+    body = alone ? (
+      <>
+        This workflow takes <code>{verdict.resource}</code> alone, so it waits for every run
+        currently holding it — including ones that would happily share with each other.
+      </>
+    ) : (
+      <>
+        {verdict.holders.length === 1 ? 'A run is holding' : `${verdict.holders.length} runs are holding`}{' '}
+        <code>{verdict.resource}</code> alone. This run shares the resource, so it starts once
+        that finishes.
+      </>
+    );
+    chips = verdict.holders.map(h => ({
+      run: h.run, label: h.flow.name,
+      tail: h.flow.lock_mode === 'exclusive' ? 'runs alone' : 'shares',
+    }));
+  } else if (verdict?.kind === 'lock-barrier') {
+    headline = 'Held back so a run-alone job gets its turn';
+    body = (
+      <>
+        {verdict.holders.length === 1 ? 'A run' : `${verdict.holders.length} runs`} queued for{' '}
+        <code>{verdict.resource}</code> {verdict.holders.length === 1 ? 'takes' : 'take'} it alone,
+        and no new shared run may start ahead of {verdict.holders.length === 1 ? 'it' : 'them'}.
+        That barrier is what stops a steady drip of small runs from starving the heavy one.
+      </>
+    );
+    chips = verdict.holders.map(h => ({ run: h.run, label: h.flow.name, tail: 'queued, runs alone' }));
+  } else if (verdict?.kind === 'ahead') {
+    headline = `${verdict.count} older ${verdict.count === 1 ? 'run is' : 'runs are'} queued ahead of it`;
+    body = 'Workers claim the oldest queued run first. Nothing is blocking this one — it is simply next in line.';
+  } else if (verdict?.kind === 'clear') {
+    body = 'Nothing is holding this run back: no lock, no concurrency limit, nothing older in the queue. A worker claims it on the next tick.';
+  }
+
+  return (
+    <div className={`queue-why${blocked ? ' queue-why--blocked' : ''}`}>
+      <span className="queue-why-glyph" aria-hidden="true"><Glyph size={17} /></span>
+      <div className="queue-why-text">
+        <span className="queue-why-eyebrow">Waiting to start</span>
+        <h3>{headline}</h3>
+        <p>{body}</p>
+        {chips && chips.length > 0 && <QueueHolderChips holders={chips} />}
+        {!blocked && <div className="queue-why-bar"><LoadingBar /></div>}
+      </div>
+    </div>
+  );
+}
+
 /* ─── Run detail ──────────────────────────────────────── */
 function RunDetail() {
   const { id } = useParams<{ id: string }>();
@@ -1254,6 +1467,11 @@ function RunDetail() {
         <div><span>Trigger</span><strong>{run.trigger_type}</strong></div>
         <div><span>Duration</span><strong>{liveDuration(run, now)}</strong></div>
         <div><span>Tasks</span><strong>{run.task_runs?.length || 0}</strong></div>
+        {/* A run that queues behind a lock does so because of THIS, and the
+            run page is where that question gets asked. */}
+        {flow?.lock_resource && (
+          <div><span>Resource lock</span><LockBadge resource={flow.lock_resource} mode={flow.lock_mode} /></div>
+        )}
         {Boolean(run.resume_count) && <div><span>Resumed</span><strong>{run.resume_count}×</strong></div>}
         {run.started_at && <div><span>Started</span><strong>{formatDate(run.started_at)}</strong></div>}
         {run.finished_at && <div><span>Finished</span><strong>{formatDate(run.finished_at)}</strong></div>}
@@ -1326,11 +1544,7 @@ function RunDetail() {
                              openByDefault={openTaskAnchor != null && openTaskAnchor === t.task_name} />
               ))
             : run.status === 'queued'
-            ? <div className="empty-state">
-                <div style={{ width: 200, marginBottom: 4 }}><LoadingBar /></div>
-                <h3 className="empty-title">Waiting for the worker</h3>
-                <p className="empty-text">Task runs appear here the moment a worker claims this run.</p>
-              </div>
+            ? <QueueWhy run={run} flow={flow} />
             : <EmptyState icon={<Clock size={22} />} title="No task output" text="This run produced no task executions." />}
         </div>
       </div>
@@ -1894,6 +2108,9 @@ function Workflows() {
               <div className="workflow-top">
                 <div className="workflow-glyph"><GitBranch size={18} /></div>
                 <div className="workflow-top-tags">
+                  {/* Renders nothing for the unlocked majority, so the row is
+                      unchanged for them. */}
+                  <LockBadge resource={w.lock_resource} mode={w.lock_mode} />
                   {/* Renders nothing unless muted; stops its own click so the
                       card's navigation never fires from the un-snooze. */}
                   <SnoozeBadge workflow={w}
@@ -1966,6 +2183,7 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
         notify_webhook_url: f.get('webhook') || null,
         auto_pause_failures: f.get('autopause') ? Number(f.get('autopause')) : null,
         ...watchdogValues(f),
+        ...lockValues(f),
       });
       toast('Workflow created');
       done(w.id);
@@ -2009,6 +2227,9 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
         {/* Publishes missed_grace_minutes / sla_minutes through hidden inputs,
             read back by watchdogValues(f) above. */}
         <WatchdogFields />
+        {/* Same idiom: publishes lock_resource / lock_mode through hidden
+            inputs, read back by lockValues(f). */}
+        <LockField />
         <div className="modal-actions">
           <CancelButton />
           <Button type="submit">Create &amp; add tasks</Button>
@@ -2042,8 +2263,10 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
         notify_webhook_url: f.get('webhook') || null,
         auto_pause_failures: f.get('autopause') ? Number(f.get('autopause')) : null,
         // Not optional: apply_update writes every key of WorkflowIn, so
-        // omitting these would silently wipe a configured watchdog.
+        // omitting these would silently wipe a configured watchdog — or
+        // release a resource lock this workflow depends on.
         ...watchdogValues(f),
+        ...lockValues(f),
       });
       toast('Workflow saved');
       done();
@@ -2089,6 +2312,10 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
           slaMinutes={w.sla_minutes}
           hasSchedule={Boolean(w.schedule_cron)}
         />
+        {/* maxConcurrentRuns is the SAVED value, not the live box above — it
+            only drives an advisory warning, so a stale read is harmless. */}
+        <LockField resource={w.lock_resource} mode={w.lock_mode}
+                   workflowId={w.id} maxConcurrentRuns={w.max_concurrent_runs} />
         <label className="field toggle-field">
           <span>Enabled</span>
           <label className="toggle"><input type="checkbox" name="enabled" defaultChecked={w.enabled} /><span /></label>
@@ -2154,6 +2381,10 @@ function WorkflowDetail() {
   };
 
   const trends = useTaskDurations(id);
+  // One scan feeds two surfaces: the heatmap's per-day marks and the panel
+  // below it. The page pays for it once.
+  const gaps = useScheduleGaps(Number(id));
+  const gapFeed = heatmapGapFeed(gaps.data);
 
   useEffect(() => { load(); }, [id]);
   useEffect(() => {
@@ -2166,6 +2397,9 @@ function WorkflowDetail() {
   // Durations only change when a run finishes — a much slower beat than the
   // 3s run poll above, and one whole query per tick.
   useLiveRefresh(runs.some(r => LIVE(r.status)), trends.reload, 15_000);
+  // A scheduled run landing changes the answer, but the whole scan is a walk
+  // of the crontab — the slowest beat on the page.
+  useLiveRefresh(runs.some(r => LIVE(r.status)), gaps.reload, 60_000);
 
   if (!w) return (
     <div>
@@ -2214,6 +2448,9 @@ function WorkflowDetail() {
         <div><span>Schedule</span><strong title={w.schedule_timezone || undefined}>{w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'Manual only'}</strong></div>
         <div><span>Tasks</span><strong>{tasks.length}</strong></div>
         <div><span>Max active runs</span><strong>{w.max_concurrent_runs}</strong></div>
+        {w.lock_resource && (
+          <div><span>Resource lock</span><LockBadge resource={w.lock_resource} mode={w.lock_mode} /></div>
+        )}
         <div><span>Total runs</span><strong>{runs.length}</strong></div>
         {w.project_id && <div><span>Project</span><strong title={projectName}>{projectName}</strong></div>}
         {w.default_environment_id && <div><span>Default env</span><strong title={defaultEnvName}>{defaultEnvName}</strong></div>}
@@ -2221,12 +2458,26 @@ function WorkflowDetail() {
 
       {runs.length > 0 && <RunMiniHistory runs={runs} />}
 
+      {/* The grid and the card below it are one story: the grid shows WHERE a
+          scheduled run never happened, the card says how many and when. They
+          stay adjacent for that reason. The grid's marks stop at the scan's
+          own floor (30 days) and its footnote says so — widening the scan to
+          match a 6-month range would trip the fire cap on anything hourly and
+          replace real marks with a "scan stopped early" banner. */}
       {runs.length > 0 && (
         <div className="panel" style={{ marginBottom: 20 }}>
-          <div className="panel-head"><div><h2>Activity</h2><p>Runs per day, this workflow only</p></div></div>
-          <RunHeatmap workflowId={Number(id)} selectable />
+          <div className="panel-head"><div><h2>Activity</h2>
+            <p>{gapFeed ? 'Runs per day, and the fires that never ran' : 'Runs per day, this workflow only'}</p>
+          </div></div>
+          <RunHeatmap workflowId={Number(id)} selectable
+                      gaps={gapFeed?.gaps} gapsSince={gapFeed?.gapsSince}
+                      gapsComplete={gapFeed?.gapsComplete} />
         </div>
       )}
+
+      {/* Unconditional, unlike everything above it: a workflow whose schedule
+          has never once fired is exactly the case this exists for. */}
+      <ScheduleGapsPanel workflowId={Number(id)} state={gaps} />
 
       {orderedTasks.length > 1 && (
         <div className="panel" style={{ marginBottom: 20 }}>
