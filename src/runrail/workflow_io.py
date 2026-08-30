@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from runrail.crontab import validate_cron
 from runrail.models import Environment, LockMode, Project, Task, Workflow
 from runrail.schemas import TaskIn
 
@@ -141,7 +142,11 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
             workflow = Workflow(name=wf_name)
             db.add(workflow)
         workflow.description = entry.get("description")
-        workflow.schedule_cron = entry.get("schedule_cron")
+        # The API validates this in WorkflowIn; a YAML apply writes the column
+        # directly, and an expression the scheduler cannot parse is silently
+        # skipped by sync() — the workflow would look scheduled and never run.
+        cron = entry.get("schedule_cron")
+        workflow.schedule_cron = validate_cron(cron) if cron else None
         workflow.schedule_timezone = entry.get("schedule_timezone")
         workflow.enabled = bool(entry.get("enabled", True))
         workflow.max_concurrent_runs = int(entry.get("max_concurrent_runs", 1))

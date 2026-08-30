@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { api } from '../api';
+import { formatBytes, formatDate, timeAgo } from '../format';
 import { Button, EmptyState, LoadingBar, PageHeader, StatusBadge } from './ui';
 
 /* ─── Log search ───────────────────────────────────────────
@@ -23,35 +24,6 @@ import { Button, EmptyState, LoadingBar, PageHeader, StatusBadge } from './ui';
        scanned", never as "nothing happened".
    The per-file byte cap and unreadable files get the same treatment: both mean
    lines existed that were never looked at. */
-
-const DAY = 86_400_000;
-
-/* Mirrors formatDate/timeAgo/formatBytes in App.tsx, which does not export
-   them. Lift to a shared module when it does. */
-function formatDate(value?: string | null): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleString(undefined, {
-    month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }),
-    hour: '2-digit', minute: '2-digit',
-  });
-}
-
-function timeAgo(value?: string | null): string {
-  if (!value) return '—';
-  const ms = Date.now() - new Date(value).getTime();
-  if (ms < 60_000) return 'just now';
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-  if (ms < DAY) return `${Math.floor(ms / 3_600_000)}h ago`;
-  return `${Math.floor(ms / DAY)}d ago`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-}
 
 /* ─── API shapes (GET /api/logs/search) ────────────────── */
 export interface LogMatch {

@@ -2,7 +2,6 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -10,6 +9,7 @@ from sqlalchemy.orm import Session
 from runrail import notify
 from runrail.api.ws import manager as _ws_manager
 from runrail.config import get_settings
+from runrail.crontab import cron_trigger
 from runrail.db import SessionLocal
 from runrail.maintenance import cleanup_runs
 from runrail.models import RunStatus, TriggerType, Workflow, WorkflowRun, _aware, now
@@ -52,8 +52,9 @@ def enqueue_scheduled(workflow_id: int) -> None:
 
 #: A workflow in any of these states is not silent, it is busy. enqueue_scheduled
 #: deliberately drops a fire while an iteration is already queued, and a gated run
-#: is waiting on a human — neither means the schedule died. A permanently backed-up
-#: workflow is caught by the SLA watchdog instead; the two partition the space.
+#: is waiting on a human — neither means the schedule died. Busy is not the same
+#: as healthy: check_sla_breaches reads the same set and reports the oldest of
+#: these runs once it is past its deadline, the gated one included.
 _IN_FLIGHT = (RunStatus.queued, RunStatus.running, RunStatus.waiting_approval)
 
 #: Floor for the optional anchor terms. updated_at is always present, so it never wins alone.
@@ -68,8 +69,7 @@ def _expected_fire(workflow: Workflow, anchor: datetime) -> datetime | None:
     about a fire that correctly never happened.
     """
     try:
-        trigger = CronTrigger.from_crontab(workflow.schedule_cron,
-                                           timezone=workflow.schedule_timezone or "UTC")
+        trigger = cron_trigger(workflow.schedule_cron, workflow.schedule_timezone or "UTC")
     except (ValueError, KeyError):
         return None  # a crontab sync() also rejects: skipped, never raised
     return trigger.get_next_fire_time(None, anchor)
@@ -154,25 +154,37 @@ def check_sla_breaches(db: Session) -> None:
     """Alert once, while the run is still in flight, when it passes the deadline
     its workflow promised.
 
-    Repeat avoidance is structural: the transition key is the run, so the WHERE
-    clause filters an already-breached run out of the query. The next run starts
-    clean with no reset logic, and retention deletes the marker with the run.
+    Repeat avoidance is structural: the transition key is the run, so a marked
+    run alerts once however long it then overruns. The next run starts clean with
+    no reset logic, and retention deletes the marker with the run.
     """
     rows = db.execute(
         select(WorkflowRun, Workflow)
         .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
         .where(Workflow.sla_minutes.is_not(None),
-               WorkflowRun.sla_breached_at.is_(None),
-               # waiting_approval is excluded on purpose — that run is blocked on
-               # a human who has already been asked. Backfills are bulk work: a
-               # 30-day range would breach in one burst as the queue drains.
-               WorkflowRun.status.in_((RunStatus.queued, RunStatus.running)),
-               WorkflowRun.trigger_type != TriggerType.backfill)).all()
+               # waiting_approval is in: a run parked on a human eight hours past
+               # a thirty-minute deadline has missed that deadline, and the
+               # operator who set sla_minutes asked to hear about exactly that.
+               # Backfills are bulk work: a 30-day range would breach in one burst
+               # as the queue drains.
+               WorkflowRun.status.in_(_IN_FLIGHT),
+               WorkflowRun.trigger_type != TriggerType.backfill)
+        .order_by(WorkflowRun.workflow_id, WorkflowRun.created_at, WorkflowRun.id)).all()
     current = now()
+    reported: set[int] = set()
     for run, workflow in rows:
-        # No marker while snoozed either, or the late-finish message notify.py
-        # sends on success leaks out after the mute lifts.
-        if workflow.snoozed:
+        # Only the oldest in-flight run of a workflow can breach. Everything
+        # behind it — above all the iteration enqueue_scheduled coalesced behind
+        # an approval gate — is late BECAUSE of it, and alerting on the follower
+        # names the one run that is blameless.
+        if workflow.id in reported:
+            continue
+        reported.add(workflow.id)
+        # A run already marked keeps its slot rather than handing the alert down
+        # the queue on the next tick: that is one incident, not two. And no marker
+        # while snoozed, or the late-finish message notify.py sends on success
+        # leaks out after the mute lifts.
+        if run.sla_breached_at is not None or workflow.snoozed:
             continue
         # From created_at, not started_at: for a scheduled run that is the cron
         # fire minute, so "240" on a 02:00 workflow means "done by 06:00" with no
@@ -222,12 +234,14 @@ class SchedulerService:
             job_id = f"workflow-{workflow.id}"; wanted.add(job_id)
             try:
                 # Cron fields are wall-clock in the workflow's timezone (UTC when
-                # unset). APScheduler owns the DST semantics: a time skipped by a
-                # spring-forward gap is not fired; a repeated fall-back time fires
-                # once. pytz's UnknownTimeZoneError subclasses KeyError, hence the
-                # broad except alongside ValueError for bad crontabs.
+                # unset). APScheduler owns the DST semantics, and they are not the
+                # intuitive ones: a wall time inside a spring-forward gap still
+                # fires, resolved against the offset in force before the jump (so
+                # 02:30 runs at 03:30 on that one day), and a repeated fall-back
+                # time fires twice. ZoneInfo raises KeyError for an unknown zone,
+                # hence the broad except alongside ValueError for bad crontabs.
                 tz = workflow.schedule_timezone or "UTC"
-                trigger = CronTrigger.from_crontab(workflow.schedule_cron, timezone=tz)
+                trigger = cron_trigger(workflow.schedule_cron, tz)
                 # misfire_grace_time: APScheduler's default of 1 second silently skips
                 # a firing the moment the process is briefly busy or the host wakes from
                 # sleep. Late enqueueing is safe here — runs are deduped per minute and

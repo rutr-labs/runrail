@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -58,10 +58,14 @@ def cancel_run(object_id: int, db: Session = Depends(get_db)):
     run.status = RunStatus.cancelled
     if settles_now:
         run.finished_at = now()
-        for task_run in db.scalars(select(TaskRun).where(
-                TaskRun.workflow_run_id == run.id,
-                TaskRun.status.in_((TaskRunStatus.queued, TaskRunStatus.awaiting_approval)))):
-            task_run.status = TaskRunStatus.cancelled
+    # The undecided rows are settled on every path, including a running run's:
+    # its worker never revisits a gate another branch opened, so that row would
+    # be left awaiting_approval on a terminal run — invisible to /approvals and
+    # counted against every later segment's re-entry.
+    for task_run in db.scalars(select(TaskRun).where(
+            TaskRun.workflow_run_id == run.id,
+            TaskRun.status.in_((TaskRunStatus.queued, TaskRunStatus.awaiting_approval)))):
+        task_run.status = TaskRunStatus.cancelled
     db.commit()
     db.refresh(run)
     ws_manager.notify({"type": "run_updated", "id": run.id})
@@ -126,9 +130,10 @@ def stats_summary(db: Session = Depends(get_db)):
     5-minute schedule is ~288 runs/day). Aggregating in the database keeps the
     numbers correct at any volume.
     """
-    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-    since_24h = now_utc - timedelta(days=1)
-    since_7d = now_utc - timedelta(days=7)
+    # Aware UTC, never a naive cutoff: PostgreSQL reads a naive bind against
+    # timestamptz in the session timezone, and SQLite drops the offset anyway.
+    since_24h = now() - timedelta(days=1)
+    since_7d = now() - timedelta(days=7)
 
     def count(*conditions) -> int:
         return db.scalar(select(func.count()).select_from(WorkflowRun).where(*conditions)) or 0
@@ -166,7 +171,9 @@ def stats_summary(db: Session = Depends(get_db)):
 def daily_stats(days: int = Query(112, ge=1, le=366), workflow_id: int | None = None,
                 db: Session = Depends(get_db)):
     """Per-day run counts by outcome, for activity heatmaps."""
-    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+    since = now() - timedelta(days=days)
+    # date() exists on both; on PostgreSQL it truncates in the session timezone,
+    # which db._make_engine pins to UTC so the buckets match SQLite's.
     day = func.date(WorkflowRun.created_at)
     stmt = (select(day.label("day"), WorkflowRun.status, func.count())
             .where(WorkflowRun.created_at >= since)

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Download, Info, ShieldAlert } from 'lucide-react';
 import clsx from 'clsx';
 import { api } from '../api';
+import { formatBytes } from '../format';
 import { Button, CancelButton, LoadingBar, Modal } from './ui';
 import type { RunOutputs } from './ReportPanel';
 
@@ -25,12 +26,6 @@ const LOG_MODES: { value: LogMode; label: string; hint: string }[] = [
   { value: 'full', label: 'Full',  hint: 'up to 2 MB total' },
   { value: 'none', label: 'None',  hint: 'no output' },
 ];
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-}
 
 /** Split the API's three estimates back into the parts they were built from.
  *

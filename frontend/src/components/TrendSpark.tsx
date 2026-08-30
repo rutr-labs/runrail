@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { api } from '../api';
+import { formatDuration } from '../format';
 
 /* ─── Duration trend sparkline ─────────────────────────────
    A task's recent SUCCESSFUL durations, with the median marked.
@@ -51,17 +52,6 @@ export interface TaskDurationSeries {
   last: number;
   slow: boolean;
   slow_ratio: number | null;
-}
-
-/* Mirrors formatDuration in App.tsx. Duplicated rather than imported because
-   App.tsx does not export it; lift both to a shared module when it does. */
-function formatDuration(seconds?: number | null): string {
-  if (seconds == null) return '—';
-  if (seconds < 1) return '<1s';
-  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 /** One fetch per workflow, indexed both ways: the workflow page has Task rows

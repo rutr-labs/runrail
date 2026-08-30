@@ -1,15 +1,33 @@
 /* ─── Timezone-aware cron helpers ─────────────────────────
    Schedules evaluate as wall-clock in the workflow's IANA timezone
-   (UTC when unset), matching the server's APScheduler semantics:
-   a spring-forward gap skips the firing, a fall-back repeat fires
-   once. Occurrences are computed by probing real instants through
-   Intl (no offset tables shipped), so DST is exact for any zone.
+   (UTC when unset), matching the server's APScheduler semantics —
+   including the unintuitive ones. A wall time inside a spring-forward
+   gap is NOT skipped: it fires, resolved against the offset in force
+   before the jump, so 02:30 runs at 03:30 on that one day. An ambiguous
+   fall-back time takes the earlier of its two instants. Occurrences are
+   computed by probing real instants through Intl (no offset tables
+   shipped), so DST is exact for any zone.
 
    Supported grammar mirrors what the ScheduleBuilder emits plus the
    pre-existing fast paths: minute/hour accept N, *, and *​/N; day-of-
-   month accepts N or *; month must be *; day-of-week accepts N, a
-   comma list, or *. Anything else returns null and callers fall back
-   to showing the raw expression. */
+   month accepts N or *; month must be *; day-of-week accepts N, a comma
+   list, or *, counting 0=Sun..6=Sat with 7 a second spelling of Sunday —
+   the standard-crontab dialect src/runrail/crontab.py translates for the
+   scheduler. Every field is range-checked against what that parser
+   accepts: an expression the server would refuse must never be given a
+   confident label or a next-run time, because it will never run.
+   Anything else returns null and callers fall back to showing the raw
+   expression. */
+
+/* Inclusive field bounds, matching the server's parser column for column.
+   A step wider than the span is rejected there too — a 61-minute step over
+   0-59 is not a cadence, it is a typo. */
+const MINUTE = [0, 59] as const;
+const HOUR = [0, 23] as const;
+const DOM = [1, 31] as const;
+const WEEKDAY = [0, 7] as const;
+
+type Bounds = readonly [number, number];
 
 const stepOf = (part: string): number | null => {
   const match = part.match(/^\*\/(\d+)$/);
@@ -23,8 +41,17 @@ const fieldMatch = (part: string, value: number): boolean => {
   return part.split(',').some(p => Number(p) === value);
 };
 
-const fieldValid = (part: string): boolean =>
-  part === '*' || stepOf(part) != null || part.split(',').every(p => /^\d+$/.test(p));
+const fieldValid = (part: string, [min, max]: Bounds): boolean => {
+  if (part === '*') return true;
+  const step = stepOf(part);
+  if (step) return step <= max - min;
+  return part.split(',').every(p => /^\d+$/.test(p) && +p >= min && +p <= max);
+};
+
+/* 7 is Sunday in crontab, and the server translates it to the same day, so
+   the preview must not disagree about the one day it names. */
+const sundayIsZero = (part: string): string =>
+  part.split(',').map(p => (p === '7' ? '0' : p)).join(',');
 
 /* Cached per-zone formatters; an unknown zone falls back to UTC so a
    stale/bad value degrades to the old behavior instead of crashing. */
@@ -57,22 +84,47 @@ function wallParts(date: Date, tz: string): Wall {
   };
 }
 
-/* Wall-clock → instant, by refining an offset guess through the real
-   zone rules. Returns null when the wall time does not exist (DST gap),
-   which callers treat as "skip this day" — same as the server. */
+/* Wall-clock → instant, resolved the way the server's zoneinfo does: with the
+   offset in force BEFORE the transition. That makes an ambiguous fall-back
+   time the earlier of its two instants, and a wall time that never happens at
+   all the instant the schedule really fires — an hour past the wall time the
+   operator typed, never a skipped day. */
 function zonedTimeToUtc(
   y: number, mo: number, d: number, h: number, mi: number, tz: string,
-): Date | null {
+): Date {
   const target = Date.UTC(y, mo - 1, d, h, mi);
-  let guess = target;
-  for (let i = 0; i < 3; i++) {
-    const wall = wallParts(new Date(guess), tz);
-    const wallAsUtc = Date.UTC(wall.y, wall.mo - 1, wall.d, wall.h, wall.mi);
-    if (wallAsUtc === target) return new Date(guess);
-    guess += target - wallAsUtc;
-  }
-  const wall = wallParts(new Date(guess), tz);
-  return wall.h === h && wall.mi === mi ? new Date(guess) : null;
+  const offsetAt = (instant: number): number => {
+    const w = wallParts(new Date(instant), tz);
+    return Date.UTC(w.y, w.mo - 1, w.d, w.h, w.mi) - instant;
+  };
+  const reads = (instant: number): boolean => {
+    const w = wallParts(new Date(instant), tz);
+    return w.y === y && w.mo === mo && w.d === d && w.h === h && w.mi === mi;
+  };
+  /* A day either side brackets any transition. The earlier offset wins when
+     both read back correctly, and is the fallback when neither does — which
+     is exactly the gap. */
+  const earlier = target - offsetAt(target - 86_400_000);
+  if (reads(earlier)) return new Date(earlier);
+  const later = target - offsetAt(target + 86_400_000);
+  return new Date(reads(later) ? later : earlier);
+}
+
+interface Fields { min: string; hour: string; dom: string; dow: string }
+
+/** The fields this engine can evaluate, normalised, or null when the
+ *  expression is outside its grammar or outside the ranges the server's parser
+ *  accepts. Callers render the raw text instead. */
+function parse(expr: string): Fields | null {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const [min, hour, dom, month, dow] = parts;
+  if (month !== '*') return null;
+  if (!fieldValid(min, MINUTE) || !fieldValid(hour, HOUR) || !fieldValid(dow, WEEKDAY)) return null;
+  if (dom !== '*' && !(/^\d+$/.test(dom) && +dom >= DOM[0] && +dom <= DOM[1])) return null;
+  /* dom+dow both restricted uses cron's OR semantics — out of scope here. */
+  if (dom !== '*' && dow !== '*') return null;
+  return { min, hour, dom, dow: sundayIsZero(dow) };
 }
 
 /* The wallboard asks every second for every workflow; cron resolves at
@@ -82,29 +134,22 @@ const occCache = new Map<string, Date | null>();
 export function nextCronOccurrence(
   expr: string, tz?: string | null, after: Date = new Date(),
 ): Date | null {
+  const fields = parse(expr);
+  if (!fields) return null;
   const zone = tz || 'UTC';
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return null;
-  const [minP, hourP, domP, monP, dowP] = parts;
-  if (monP !== '*') return null;
-  if (![minP, hourP, dowP].every(fieldValid) || !(domP === '*' || /^\d+$/.test(domP))) return null;
-  /* dom+dow both restricted uses cron's OR semantics — out of scope here. */
-  if (domP !== '*' && dowP !== '*') return null;
 
   const bucket = Math.floor(after.getTime() / 60_000);
   const key = `${expr}|${zone}|${bucket}`;
   if (occCache.has(key)) return occCache.get(key)!;
   if (occCache.size > 512) occCache.clear();
 
-  const result = compute(minP, hourP, domP, dowP, zone, after);
+  const result = compute(fields, zone, after);
   occCache.set(key, result);
   return result;
 }
 
-function compute(
-  minP: string, hourP: string, domP: string, dowP: string, zone: string, after: Date,
-): Date | null {
-  const subDaily = hourP === '*' || stepOf(hourP) != null;
+function compute(f: Fields, zone: string, after: Date): Date | null {
+  const subDaily = f.hour === '*' || stepOf(f.hour) != null;
 
   if (subDaily) {
     /* Minute walk, bounded to 26h — covers every sub-daily pattern the
@@ -114,16 +159,16 @@ function compute(
     for (let i = 0; i < 26 * 60; i++) {
       cursor.setMinutes(cursor.getMinutes() + 1);
       const w = wallParts(cursor, zone);
-      if (fieldMatch(minP, w.mi) && fieldMatch(hourP, w.h) &&
-          fieldMatch(domP, w.d) && fieldMatch(dowP, w.dow)) {
+      if (fieldMatch(f.min, w.mi) && fieldMatch(f.hour, w.h) &&
+          fieldMatch(f.dom, w.d) && fieldMatch(f.dow, w.dow)) {
         return new Date(cursor);
       }
     }
     return null;
   }
 
-  const hour = Number(hourP);
-  const minute = minP === '*' ? 0 : Number(minP);
+  const hour = Number(f.hour);
+  const minute = f.min === '*' ? 0 : Number(f.min);
   if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
 
   /* Fixed-time: walk half-days (so 23h DST days can't skip a wall date)
@@ -135,9 +180,9 @@ function compute(
     const dateKey = `${w.y}-${w.mo}-${w.d}`;
     if (seen.has(dateKey)) continue;
     seen.add(dateKey);
-    if (!fieldMatch(domP, w.d) || !fieldMatch(dowP, w.dow)) continue;
+    if (!fieldMatch(f.dom, w.d) || !fieldMatch(f.dow, w.dow)) continue;
     const instant = zonedTimeToUtc(w.y, w.mo, w.d, hour, minute, zone);
-    if (instant && instant > after) return instant;
+    if (instant > after) return instant;
   }
   return null;
 }
@@ -160,10 +205,9 @@ export const viewerZone = (): string => Intl.DateTimeFormat().resolvedOptions().
  *  WORKFLOW's zone (that is what the author chose), tagged with the offset
  *  when it differs from the viewer's zone; sub-hourly cadences are zoneless. */
 export function cronLabel(expr: string, tz?: string | null): string {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return expr;
-  const [minutePart, hourPart, domPart, monthPart, dowPart] = parts;
-  if (monthPart !== '*') return expr;
+  const fields = parse(expr);
+  if (!fields) return expr;
+  const { min: minutePart, hour: hourPart, dom: domPart, dow: dowPart } = fields;
 
   if (hourPart === '*' && dowPart === '*' && domPart === '*') {
     if (minutePart === '*') return 'every minute';
@@ -188,10 +232,13 @@ export function cronLabel(expr: string, tz?: string | null): string {
   }
   if (domPart !== '*') return `monthly on day ${domPart} at ${time}${tag}`;
   if (dowPart === '*') return `daily at ${time}${tag}`;
-  const days = dowPart.split(',').map(Number).filter(n => !Number.isNaN(n));
+  const days = [...new Set(dowPart.split(',').map(Number))];
+  // A step has no list of day names to give; the raw expression is the honest
+  // label rather than a weekly one with the days left out.
+  if (days.some(day => !Number.isInteger(day))) return expr;
   const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const dayLabel = days.length === 1
-    ? `every ${names[days[0]] ?? dowPart}`
-    : days.map(d => names[d] ?? String(d)).join('/');
+    ? `every ${names[days[0]]}`
+    : days.map(d => names[d]).join('/');
   return `${dayLabel} at ${time}${tag}`;
 }

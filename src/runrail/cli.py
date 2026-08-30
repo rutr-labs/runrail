@@ -3,7 +3,7 @@ import signal
 import sys
 import threading
 import time
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
 import typer
@@ -13,7 +13,7 @@ from sqlalchemy import select
 from runrail.api.crud import create_backfill, create_run
 from runrail.config import get_settings
 from runrail.db import SessionLocal, init_db
-from runrail.models import RunStatus, TriggerType, Workflow, WorkflowRun
+from runrail.models import RunStatus, TriggerType, Workflow, WorkflowRun, _aware, now
 from runrail.scheduler.service import SchedulerService
 from runrail.worker.service import WorkerService
 
@@ -158,8 +158,10 @@ def _executing_summary(worker_service: WorkerService) -> list[str]:
                 continue
             workflow = db.get(Workflow, run.workflow_id)
             name = workflow.name if workflow else f"workflow {run.workflow_id}"
-            started = run.started_at or run.created_at
-            elapsed = (datetime.now(timezone.utc).replace(tzinfo=None) - started).total_seconds()
+            # Through _aware: PostgreSQL hands back an aware datetime and SQLite a
+            # naive one, and subtracting a mix of the two raises TypeError.
+            started = _aware(run.started_at) or _aware(run.created_at)
+            elapsed = (now() - started).total_seconds()
             durations = sorted(d for d in db.scalars(
                 select(WorkflowRun.duration_seconds).where(
                     WorkflowRun.workflow_id == run.workflow_id,

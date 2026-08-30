@@ -6,6 +6,7 @@ import {
   CornerDownRight, AlertTriangle, RefreshCw, Info, GitBranch,
 } from 'lucide-react';
 import { api, post } from '../api';
+import { formatDuration } from '../format';
 import { Button, CancelButton, Modal, LoadingBar } from './ui';
 import { useToast } from './toast';
 
@@ -38,15 +39,6 @@ export interface ResumePlan {
   reuse: ResumePlanReuse[];
   rerun: ResumePlanRerun[];
   seconds_reused: number;
-}
-
-function formatSpan(seconds?: number | null): string {
-  if (seconds == null) return '—';
-  if (seconds < 1) return '<1s';
-  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 type ReasonIcon = typeof XCircle;
@@ -209,7 +201,7 @@ export function ResumeDialog({ runId, runStatus, workflowId, onClose, onResumed 
               {reuse.length ? (
                 <span>
                   Reuses <b>{reuse.length}</b> finished task{reuse.length === 1 ? '' : 's'} —
-                  about <b>{formatSpan(plan?.seconds_reused ?? 0)}</b> of work this run does not repeat.
+                  about <b>{formatDuration(plan?.seconds_reused ?? 0)}</b> of work this run does not repeat.
                   <b> {rerun.length}</b> task{rerun.length === 1 ? '' : 's'} will execute.
                 </span>
               ) : (
@@ -232,7 +224,7 @@ export function ResumeDialog({ runId, runStatus, workflowId, onClose, onResumed 
                       <li key={item.task} className="resume-row resume-row--reuse">
                         <CheckCircle2 size={12} className="resume-row-icon" />
                         <span className="resume-row-name" title={item.task}>{item.task}</span>
-                        <span className="resume-row-dur">{formatSpan(item.duration_seconds)}</span>
+                        <span className="resume-row-dur">{formatDuration(item.duration_seconds)}</span>
                         <button
                           type="button"
                           className="resume-row-action"

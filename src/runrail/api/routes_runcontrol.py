@@ -126,10 +126,14 @@ def _decide(db: Session, object_id: int, approved: bool,
         raise HTTPException(409, f"This gate is already {gate.status.value}")
     db.commit()
     run = get_or_404(db, WorkflowRun, gate.workflow_run_id)
+    # Scoped to the segment like _gate_decision: a gate left open by a dead
+    # segment is not a decision this one is waiting on, and counting it would
+    # wedge the run in waiting_approval however many gates are decided here.
     open_gates = db.scalar(select(func.count()).select_from(TaskRun).where(
-        TaskRun.workflow_run_id == run.id, TaskRun.status == TaskRunStatus.awaiting_approval))
+        TaskRun.workflow_run_id == run.id, TaskRun.resume_index == run.resume_count,
+        TaskRun.status == TaskRunStatus.awaiting_approval))
     if not open_gates:
-        # Re-enter once, when every gate in the run is decided: two parallel
+        # Re-enter once, when every gate in the segment is decided: two parallel
         # gates resumed on the first decision would re-claim the run only to
         # park it again. A rejection re-enters too — the executor writes the
         # skipped rows downstream and lands the run cancelled.

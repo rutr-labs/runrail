@@ -23,6 +23,7 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from runrail.crontab import cron_trigger
 from runrail.models import TriggerType, Workflow, WorkflowRun, _aware, now
 
 #: How far from its expected instant a scheduled run may land and still answer
@@ -46,18 +47,18 @@ DEFAULT_MISSED = 200
 
 
 def _trigger(workflow: Workflow) -> CronTrigger | None:
-    """The workflow's own trigger, built exactly as scheduler/service.py builds
-    it in _expected_fire.
+    """The workflow's own trigger, from the one builder scheduler/service.py
+    also uses.
 
     A second cron implementation here would disagree with the scheduler about a
-    DST boundary and paint gaps for fires that correctly never happened; the
-    tests pin the first fire of this module to the watchdog's own.
+    day of the week or a DST boundary and paint gaps for fires that correctly
+    never happened; the tests pin the first fire of this module to the
+    watchdog's own.
     """
     if not workflow.schedule_cron:
         return None
     try:
-        return CronTrigger.from_crontab(workflow.schedule_cron,
-                                        timezone=workflow.schedule_timezone or "UTC")
+        return cron_trigger(workflow.schedule_cron, workflow.schedule_timezone or "UTC")
     except (ValueError, KeyError):
         return None  # a crontab sync() also rejects: skipped, never raised
 

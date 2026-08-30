@@ -213,11 +213,13 @@ def test_grace_window_is_respected(client, monkeypatch):
 def test_opt_outs_and_an_unparseable_crontab_stay_silent(client, monkeypatch):
     sent = capture_webhooks(monkeypatch)
     off = make_workflow(client, "off", schedule_cron="* * * * *")
-    bad = make_workflow(client, "bad", schedule_cron="not a crontab",
-                        missed_run_grace_minutes=5)
+    bad = make_workflow(client, "bad", missed_run_grace_minutes=5)
     for workflow in (off, bad):
         add_run(workflow["id"], RunStatus.success, age_minutes=600)
         configure(workflow["id"], aged_minutes=600)
+    # The API rejects this now, so only a YAML import or a hand-edited row can
+    # still hold it — written straight to the column, exactly as it would arrive.
+    configure(bad["id"], schedule_cron="not a crontab", aged_minutes=600)
 
     run_watchdogs()
     assert sent == []                      # NULL grace is off; a bad cron is skipped, not raised
@@ -318,6 +320,38 @@ def test_sla_catches_a_run_that_never_started_and_exempts_backfills(client, monk
     # a burst of backfill runs draining a 30-day range does not.
     assert [n["run_id"] for n in sent] == [never_started]
     assert breach_marker(fresh) is None
+
+
+def test_a_run_parked_on_a_human_breaches_like_any_other(client, monkeypatch):
+    sent = capture_webhooks(monkeypatch)
+    workflow = make_workflow(client, "gated", sla_minutes=30)
+    parked = add_run(workflow["id"], RunStatus.waiting_approval, age_minutes=480)
+
+    # "Blocked on a human who has already been asked" used to exempt this run
+    # entirely: eight hours past a thirty-minute deadline and not a word. The
+    # deadline is the promise, and nobody kept it.
+    run_watchdogs()
+    assert [n["run_id"] for n in sent] == [parked]
+    assert sent[0]["status"] == "waiting_approval"
+    assert breach_marker(parked) is not None
+
+
+def test_only_the_oldest_in_flight_run_is_blamed(client, monkeypatch):
+    sent = capture_webhooks(monkeypatch)
+    workflow = make_workflow(client, "gated-nightly", sla_minutes=30)
+    parked = add_run(workflow["id"], RunStatus.waiting_approval, age_minutes=480)
+    following = add_run(workflow["id"], RunStatus.queued, age_minutes=240)
+
+    # The coalesced iteration is late because of the gate in front of it. One
+    # alert, and it names the run that actually missed the deadline.
+    run_watchdogs()
+    assert [n["run_id"] for n in sent] == [parked]
+    assert breach_marker(following) is None
+    # And the marker on the parked run must not hand the alert down the queue on
+    # the next tick — that is the same incident wearing the wrong run's number.
+    run_watchdogs()
+    assert len(sent) == 1
+    assert breach_marker(following) is None
 
 
 def test_a_breached_run_reports_how_late_it_finished(client, monkeypatch):

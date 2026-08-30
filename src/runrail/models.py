@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -207,9 +208,20 @@ class Task(TimestampMixin, Base):
 
 class WorkflowRun(Base):
     __tablename__ = "workflow_runs"
+    # Composite, not two single-column indexes: every filtered run list is also
+    # ordered newest-first, and a leading-column-only index makes the database
+    # read and sort a workflow's entire history to return one page of it.
+    __table_args__ = (
+        Index("ix_workflow_runs_workflow_id_created_at", "workflow_id", "created_at"),
+        Index("ix_workflow_runs_status_created_at", "status", "created_at"),
+        # Read on every poll of the activity feed, where the predicate is
+        # IS NOT NULL and nearly every row is NULL; without it that poll costs a
+        # full table scan of every run ever.
+        Index("ix_workflow_runs_sla_breached_at", "sla_breached_at"),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
-    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"), index=True)
-    status: Mapped[RunStatus] = mapped_column(Enum(RunStatus), default=RunStatus.queued, index=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"))
+    status: Mapped[RunStatus] = mapped_column(Enum(RunStatus), default=RunStatus.queued)
     trigger_type: Mapped[TriggerType] = mapped_column(Enum(TriggerType))
     run_key: Mapped[str | None] = mapped_column(String(255), unique=True)
     parameters_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
@@ -235,7 +247,9 @@ class TaskRun(Base):
     __tablename__ = "task_runs"
     id: Mapped[int] = mapped_column(primary_key=True)
     workflow_run_id: Mapped[int] = mapped_column(ForeignKey("workflow_runs.id", ondelete="CASCADE"), index=True)
-    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    # Indexed for the cascade, not for a read: deleting one task made SQLite
+    # scan every task run ever recorded to find the children to delete.
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     status: Mapped[TaskRunStatus] = mapped_column(Enum(TaskRunStatus), default=TaskRunStatus.queued)
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -281,7 +295,10 @@ class RunNote(TimestampMixin, Base):
 class Artifact(Base):
     __tablename__ = "artifacts"
     id: Mapped[int] = mapped_column(primary_key=True)
-    task_run_id: Mapped[int | None] = mapped_column(ForeignKey("task_runs.id", ondelete="CASCADE"))
+    # Same cascade reason as TaskRun.task_id: retention deletes runs, each
+    # deleted task run then swept the whole artifacts table for children.
+    task_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("task_runs.id", ondelete="CASCADE"), index=True)
     workflow_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("workflow_runs.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(255))

@@ -6,6 +6,7 @@ import {
   CornerDownRight, MessageSquare, CircleSlash, Hourglass, FolderOpen,
 } from 'lucide-react';
 import { api, post } from '../api';
+import { formatDuration } from '../format';
 import { Button, TaskTypeBadge } from './ui';
 import { useToast } from './toast';
 
@@ -80,19 +81,6 @@ export interface OpenApproval {
   status: string;
   created_at: string;
   rendered_command: string | null;
-}
-
-/* ─── Local formatting ─────────────────────────────────────
-   App.tsx keeps formatDuration/timeAgo module-private; these mirror its
-   output exactly so a gate reads like the rest of the run page. */
-
-function formatSpan(seconds?: number | null): string {
-  if (seconds == null) return '—';
-  if (seconds < 1) return '<1s';
-  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 function elapsedSince(value?: string | null, now = Date.now()): number | null {
@@ -231,7 +219,7 @@ export function ApprovalGate({ run, tasks, onDecided, className }: ApprovalGateP
         </div>
         {!done && oldest != null && (
           <span className="approval-gate-timer" title="Time since the gate opened">
-            <Hourglass size={12} /> waiting {formatSpan(oldest)}
+            <Hourglass size={12} /> waiting {formatDuration(oldest)}
           </span>
         )}
       </header>
@@ -368,7 +356,7 @@ function GateDecision({ gate, run, tasks, prompt, now, onSettled, onDecided }: {
         <span className="approval-gate-task-sep">needs a decision before it runs</span>
         {waited != null && (
           <span className="approval-gate-waited">
-            <Hourglass size={11} /> {formatSpan(waited)}
+            <Hourglass size={11} /> {formatDuration(waited)}
           </span>
         )}
       </div>
@@ -401,7 +389,7 @@ function GateDecision({ gate, run, tasks, prompt, now, onSettled, onDecided }: {
               {standsOn.slice(0, 10).map(item => (
                 <span key={item.name} className="approval-chip approval-chip--done">
                   <Check size={10} /> {item.name}
-                  {item.seconds != null && <i>{formatSpan(item.seconds)}</i>}
+                  {item.seconds != null && <i>{formatDuration(item.seconds)}</i>}
                 </span>
               ))}
               {standsOn.length > 10 && (
@@ -495,21 +483,72 @@ function GateDecision({ gate, run, tasks, prompt, now, onSettled, onDecided }: {
    A gate nobody sees is a run nobody finishes, so the open gates surface on
    the dashboard too. */
 
-/** Polls GET /api/approvals and follows the WebSocket. `null` until the first
- *  response, so callers can tell "loading" from "none open". */
-export function useOpenApprovals(intervalMs = 15000): OpenApproval[] | null {
-  const [rows, setRows] = useState<OpenApproval[] | null>(null);
+/* ─── Shared poll of GET /api/approvals ────────────────────
+   The dashboard asks twice — once for the headline count in the hero, once
+   inside <ApprovalInbox> in the column beside it — so a per-caller interval
+   put the same request on the wire twice every tick. One timer, owned by the
+   module and alive only while something is subscribed, feeds every reader.
+
+   Paused while the tab is hidden and re-read on the way back, so a window left
+   open overnight neither spends a request a minute behind someone's back nor
+   comes back showing last night's gates. Same rule as the notification bell. */
+const APPROVAL_POLL_MS = 15_000;
+const approvalReaders = new Set<(rows: OpenApproval[]) => void>();
+let approvalRows: OpenApproval[] | null = null;
+let approvalTimer = 0;
+
+const publishApprovals = (rows: OpenApproval[]) => {
+  approvalRows = rows;
+  approvalReaders.forEach(notify => notify(rows));
+};
+
+function readApprovals() {
+  api<OpenApproval[]>('/approvals')
+    .then(publishApprovals)
+    // The last good answer stays on screen; only a first failure has to resolve
+    // "loading" into "none open" so the panel stops waiting on it.
+    .catch(() => publishApprovals(approvalRows ?? []));
+}
+
+function startApprovalPoll() {
+  if (approvalTimer || document.hidden) return;
+  approvalTimer = window.setInterval(readApprovals, APPROVAL_POLL_MS);
+}
+
+function stopApprovalPoll() {
+  window.clearInterval(approvalTimer);
+  approvalTimer = 0;
+}
+
+function onApprovalVisibility() {
+  stopApprovalPoll();
+  if (document.hidden) return;
+  readApprovals();
+  startApprovalPoll();
+}
+
+/** The open approval gates, polled once for the whole page however many
+ *  components read them. `null` until the first response, so callers can tell
+ *  "loading" from "none open". */
+export function useOpenApprovals(): OpenApproval[] | null {
+  const [rows, setRows] = useState<OpenApproval[] | null>(approvalRows);
   useEffect(() => {
-    let alive = true;
-    const load = () => {
-      api<OpenApproval[]>('/approvals')
-        .then(next => { if (alive) setRows(next); })
-        .catch(() => { if (alive) setRows(current => current ?? []); });
+    approvalReaders.add(setRows);
+    // The first reader on the page asks; anyone joining a poll already running
+    // paints from the cache rather than firing a second identical request.
+    if (approvalReaders.size === 1) {
+      document.addEventListener('visibilitychange', onApprovalVisibility);
+      if (!document.hidden) readApprovals();
+      startApprovalPoll();
+    }
+    return () => {
+      approvalReaders.delete(setRows);
+      if (approvalReaders.size === 0) {
+        stopApprovalPoll();
+        document.removeEventListener('visibilitychange', onApprovalVisibility);
+      }
     };
-    load();
-    const timer = window.setInterval(load, intervalMs);
-    return () => { alive = false; window.clearInterval(timer); };
-  }, [intervalMs]);
+  }, []);
   return rows;
 }
 
@@ -571,7 +610,7 @@ export function ApprovalInbox({ limit = 6, showEmpty = false, className }: Appro
                 <div className="approval-inbox-name" title={head.workflow_name}>{head.workflow_name}</div>
                 <div className="approval-inbox-meta" title={names}>
                   #{head.run_id} · {group.length > 1 ? `${group.length} gates · ` : ''}{names}
-                  {waited != null && ` · waiting ${formatSpan(waited)}`}
+                  {waited != null && ` · waiting ${formatDuration(waited)}`}
                 </div>
               </div>
               <span className="approval-inbox-cta">Review</span>

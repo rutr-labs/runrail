@@ -12,8 +12,19 @@ class Base(DeclarativeBase):
 
 def _make_engine():
     url = get_settings().database_url
-    # timeout: wait for locks instead of failing when worker threads write concurrently.
-    kwargs = {"connect_args": {"check_same_thread": False, "timeout": 30}} if url.startswith("sqlite") else {}
+    if url.startswith("sqlite"):
+        # timeout: wait for locks instead of failing when worker threads write concurrently.
+        kwargs = {"connect_args": {"check_same_thread": False, "timeout": 30}}
+    elif url.startswith("postgresql"):
+        # SQLite drops the offset, so every stored instant is naive UTC and a bare
+        # timestamp means UTC throughout the app. A PostgreSQL session otherwise
+        # inherits the server's timezone and would read a naive bind — and truncate
+        # timestamptz to a day for /stats/daily — as local wall clock. A libpq
+        # startup option, not a SET: SET is transactional, and the pool's
+        # rollback-on-return would undo it partway through a connection's life.
+        kwargs = {"connect_args": {"options": "-c timezone=utc"}}
+    else:
+        kwargs = {}
     engine = create_engine(url, **kwargs)
     if url.startswith("sqlite"):
         @event.listens_for(engine, "connect")

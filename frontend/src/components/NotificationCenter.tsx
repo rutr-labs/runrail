@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { api } from '../api';
+import { timeAgo } from '../format';
 import { Button, EmptyState } from './ui';
 
 /* ─── Notification centre ──────────────────────────────────
@@ -109,16 +110,6 @@ const ms = (value?: string | null): number => {
   const parsed = value ? Date.parse(value) : NaN;
   return Number.isNaN(parsed) ? 0 : parsed;
 };
-
-/** Matches App.tsx's timeAgo. Duplicated rather than imported: that helper is
- *  module-private to App.tsx, as it is for every other component here. */
-function relativeTime(value: string, now: number): string {
-  const diff = now - ms(value);
-  if (diff < 60_000) return 'just now';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
 
 function absoluteTime(value: string): string {
   const at = new Date(value);
@@ -420,7 +411,7 @@ function NotificationRow({
             {unread && <span className="notif-item-dot" aria-hidden="true" />}
           </span>
           <time className="notif-item-when" dateTime={event.at}>
-            {relativeTime(event.at, now)}
+            {timeAgo(event.at, now)}
           </time>
         </span>
         <span className="notif-item-title">{event.title}</span>

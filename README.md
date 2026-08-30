@@ -102,7 +102,7 @@ A FastAPI process serves the API and the prebuilt React UI. APScheduler acts pur
 
 All of that concurrency happens on one machine (threads and subprocesses); RunRail does not yet distribute work across remote worker nodes.
 
-SQLite in WAL mode is the default store; set `RUNRAIL_DB_URL` for PostgreSQL. Logs live under `$RUNRAIL_HOME/logs/run_<id>/`, artifacts under `$RUNRAIL_HOME/artifacts/<id>/` with timestamped filenames so frequent runs and retries never collide.
+SQLite in WAL mode is the default store; set `RUNRAIL_DB_URL=postgresql+psycopg://user:password@host:5432/runrail` for PostgreSQL. The `+psycopg` names the bundled psycopg 3 driver — a bare `postgresql://` URL reaches for psycopg2, which RunRail does not install. Logs live under `$RUNRAIL_HOME/logs/run_<id>/`, artifacts under `$RUNRAIL_HOME/artifacts/<id>/` with timestamped filenames so frequent runs and retries never collide.
 
 ## Configuration
 

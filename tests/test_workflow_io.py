@@ -120,3 +120,26 @@ def test_apply_rejects_unknown_references_and_cycles(client):
             }]})
     # Failed applies must not leave partial workflows behind.
     assert client.get("/api/workflows").json() == []
+
+
+def test_apply_rejects_a_cron_the_scheduler_cannot_run(client):
+    """sync() skips an unparseable crontab silently, so a YAML apply that let one
+    through would leave a workflow looking scheduled while it never ran."""
+    import pytest
+
+    from runrail.db import SessionLocal
+    from runrail.workflow_io import apply_workflows
+
+    entry = {"name": "bad-cron", "enabled": True, "schedule_cron": "60 9 * * *",
+             "tasks": [{"name": "t", "task_type": "shell", "command": "echo hi"}]}
+    with SessionLocal() as db:
+        with pytest.raises(ValueError, match="minute"):
+            apply_workflows(db, {"workflows": [entry]})
+
+    # A valid weekly expression still applies, and keeps standard-cron numbering.
+    entry["schedule_cron"] = "0 9 * * 0"
+    with SessionLocal() as db:
+        apply_workflows(db, {"workflows": [entry]})
+        db.commit()
+    stored = client.get("/api/workflows").json()
+    assert next(w for w in stored if w["name"] == "bad-cron")["schedule_cron"] == "0 9 * * 0"

@@ -5,6 +5,7 @@ import {
   PauseCircle, RefreshCw, ScanSearch,
 } from 'lucide-react';
 import { api } from '../api';
+import { formatDate, timeAgo } from '../format';
 import { Button } from './ui';
 import { cronLabel, viewerZone, zoneTag } from '../cron';
 
@@ -141,25 +142,6 @@ export function useScheduleGaps(
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
-
-function formatDate(value?: string | null): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleString(undefined, {
-    month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }),
-    hour: '2-digit', minute: '2-digit',
-  });
-}
-
-function timeAgo(value?: string | null): string {
-  if (!value) return '—';
-  const ms = Date.now() - new Date(value).getTime();
-  if (ms < MINUTE) return 'just now';
-  if (ms < HOUR) return `${Math.floor(ms / MINUTE)}m ago`;
-  if (ms < DAY) return `${Math.floor(ms / HOUR)}h ago`;
-  return `${Math.floor(ms / DAY)}d ago`;
-}
 
 /** Wall-clock only — the day is already carried by the row above the chips. */
 function clockTime(value: string): string {

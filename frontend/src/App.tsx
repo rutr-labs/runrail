@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { api, del, post, put } from './api';
 import { rrws } from './ws';
+import { formatBytes, formatDate, formatDuration, timeAgo } from './format';
 import { FilePicker } from './components/FilePicker';
 import { DagGraph } from './components/DagGraph';
 import { RunHeatmap } from './components/Heatmap';
@@ -160,47 +161,6 @@ const DAY = 86_400_000;
 const LIVE = (status: string) =>
   status === 'running' || status === 'queued' || status === 'waiting_approval';
 
-/* ─── New v0.5 statuses ───────────────────────────────────
-   components/ui.tsx owns STATUS_MAP and has no entry for the approval
-   statuses, so <StatusBadge value="waiting_approval" /> renders a muted chip
-   reading `waiting_approval`. That file is outside this integration's scope,
-   so the mapping lives here instead and every run/task status in App.tsx goes
-   through <Status>. Delete this the moment STATUS_MAP learns the four values —
-   the chip classes it emits are the same ones ui.tsx uses. */
-function formatDate(value?: string | null): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleString(undefined, {
-    month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }),
-    hour: '2-digit', minute: '2-digit',
-  });
-}
-
-function timeAgo(value?: string | null): string {
-  if (!value) return '—';
-  const ms = Date.now() - new Date(value).getTime();
-  if (ms < 60_000) return 'just now';
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-  if (ms < DAY) return `${Math.floor(ms / 3_600_000)}h ago`;
-  return `${Math.floor(ms / DAY)}d ago`;
-}
-
-function formatDuration(seconds?: number | null): string {
-  if (seconds == null) return '—';
-  if (seconds < 1) return '<1s';
-  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-}
-
 /** Split a stored second-count into the largest whole unit for editing. */
 function splitTimeout(seconds?: number | null): { value: string; unit: string } {
   if (!seconds) return { value: '', unit: '1' };
@@ -292,20 +252,41 @@ function useFlip(ref: React.RefObject<HTMLElement | null>, deps: unknown[]) {
   }, deps);
 }
 
-/** Runs with live statuses keep pages fresh even when the WebSocket is unavailable
- *  (for example when the API and worker run as separate processes). */
-function useLiveRefresh(hasLive: boolean, refresh: () => void, intervalMs = 3000) {
-  // Keep the latest callback in a ref so a new `refresh` identity every render
+/** Every poll in this file, on one rule: it runs only while `active` AND the
+ *  tab is visible, and fires once on the way back from hidden. A window left
+ *  open on another desktop must not spend a request every few seconds on a
+ *  page nobody is looking at, and must not be showing yesterday when it is
+ *  looked at again. Matches the notification bell and the approvals poll. */
+function useVisibleInterval(active: boolean, tick: () => void, intervalMs: number) {
+  // Keep the latest callback in a ref so a new `tick` identity every render
   // (common — callers define it inline, and a 1s useNow ticker re-renders while
   // a run is live) does not tear down and recreate the interval before it ever
   // fires. Without this the poll silently never runs and live views go stale.
-  const saved = useRef(refresh);
-  saved.current = refresh;
+  const saved = useRef(tick);
+  saved.current = tick;
   useEffect(() => {
-    if (!hasLive) return;
-    const timer = window.setInterval(() => saved.current(), intervalMs);
-    return () => window.clearInterval(timer);
-  }, [hasLive, intervalMs]);
+    if (!active) return;
+    let timer = 0;
+    const start = () => { timer = window.setInterval(() => saved.current(), intervalMs); };
+    const onVisibility = () => {
+      window.clearInterval(timer);
+      if (document.hidden) return;
+      saved.current();
+      start();
+    };
+    if (!document.hidden) start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [active, intervalMs]);
+}
+
+/** Runs with live statuses keep pages fresh even when the WebSocket is unavailable
+ *  (for example when the API and worker run as separate processes). */
+function useLiveRefresh(hasLive: boolean, refresh: () => void, intervalMs = 3000) {
+  useVisibleInterval(hasLive, refresh, intervalMs);
 }
 
 /* ─── Shell ───────────────────────────────────────────── */
@@ -328,15 +309,11 @@ const OFF_NAV: { prefix: string; label: string }[] = [
 
 function useApiHealth(): 'online' | 'offline' | 'unknown' {
   const [health, setHealth] = useState<'online' | 'offline' | 'unknown'>('unknown');
-  useEffect(() => {
-    let cancelled = false;
-    const check = () => api<{ status: string }>('/health')
-      .then(() => !cancelled && setHealth('online'))
-      .catch(() => !cancelled && setHealth('offline'));
-    check();
-    const timer = window.setInterval(check, 30_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, []);
+  const check = () => void api<{ status: string }>('/health')
+    .then(() => setHealth('online'))
+    .catch(() => setHealth('offline'));
+  useEffect(() => { check(); }, []);
+  useVisibleInterval(true, check, 30_000);
   return health;
 }
 
@@ -1195,28 +1172,31 @@ function useQueueVerdict(run: Run | undefined, flow: Workflow | undefined): Queu
     return () => { alive = false; };
   }, [queued, flows]);
 
+  const stillQueued = useRef(queued);
+  stillQueued.current = queued;
+  const read = () => {
+    Promise.all([
+      api<Run[]>(`/runs?status=running&limit=${RUN_LIST_CAP}`),
+      api<Run[]>(`/runs?status=waiting_approval&limit=${RUN_LIST_CAP}`),
+      api<Run[]>(`/runs?status=queued&limit=${RUN_LIST_CAP}`),
+    ])
+      .then(([running, parked, queue]) => {
+        // A response landing after the run started must not repopulate the
+        // snapshot the effect below just cleared.
+        if (stillQueued.current) setSnapshot({ active: [...running, ...parked], queue });
+      })
+      // A failure leaves the last snapshot in place; the generic waiting
+      // copy is the fallback, never a wrong reason.
+      .catch(() => {});
+  };
+
   useEffect(() => {
     if (!queued) { setSnapshot(null); return; }
-    let alive = true;
-    const read = () => {
-      Promise.all([
-        api<Run[]>(`/runs?status=running&limit=${RUN_LIST_CAP}`),
-        api<Run[]>(`/runs?status=waiting_approval&limit=${RUN_LIST_CAP}`),
-        api<Run[]>(`/runs?status=queued&limit=${RUN_LIST_CAP}`),
-      ])
-        .then(([running, parked, queue]) => {
-          if (alive) setSnapshot({ active: [...running, ...parked], queue });
-        })
-        // A failure leaves the last snapshot in place; the generic waiting
-        // copy is the fallback, never a wrong reason.
-        .catch(() => {});
-    };
     read();
-    // Slower than the run's own 2s poll: this answer changes when some OTHER
-    // run finishes, not when this one does.
-    const timer = window.setInterval(read, 5000);
-    return () => { alive = false; window.clearInterval(timer); };
   }, [queued, run?.id]);
+  // Slower than the run's own 2s poll: this answer changes when some OTHER
+  // run finishes, not when this one does.
+  useVisibleInterval(queued, read, 5000);
 
   return useMemo<QueueVerdict | null>(() => {
     if (!run || !flow || !snapshot || !flows) return null;
@@ -1900,11 +1880,11 @@ function Environments() {
   // Instant updates via WebSocket when an environment build finishes.
   useEffect(() => rrws.on('environment_updated', () => void load()), []);
   // Fallback polling while environments are building (covers the WS-not-yet-connected window).
-  useEffect(() => {
-    if (!items.some(x => x.status === 'creating' || x.status === 'building')) return;
-    const timer = window.setInterval(() => { void load(); }, 1500);
-    return () => window.clearInterval(timer);
-  }, [items]);
+  useVisibleInterval(
+    items.some(x => x.status === 'creating' || x.status === 'building'),
+    () => void load(),
+    1500,
+  );
 
   const removeEnv = async (env: Env) => {
     if (!confirm(`Remove environment "${env.name}"?${env.managed ? ' Its virtual environment will be deleted from disk.' : ''}`)) return;
@@ -3024,12 +3004,12 @@ function Wallboard() {
   };
   useEffect(() => {
     load();
-    const poll = window.setInterval(load, 5000);
     const tick = window.setInterval(() => setClock(new Date()), 1000);
     const u1 = rrws.on('run_updated', load);
     const u2 = rrws.on('run_created', load);
-    return () => { window.clearInterval(poll); window.clearInterval(tick); u1(); u2(); };
+    return () => { window.clearInterval(tick); u1(); u2(); };
   }, []);
+  useVisibleInterval(true, load, 5000);
   const now = useNow(runs.some(r => r.status === 'running'));
 
   const live = runs.filter(r => LIVE(r.status));

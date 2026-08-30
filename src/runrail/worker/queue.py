@@ -3,22 +3,42 @@ from sqlalchemy.orm import Session, aliased
 
 from runrail.models import LockMode, RunStatus, Workflow, WorkflowRun, now
 
-#: A run parked on an approval gate still occupies its workflow's concurrency
-#: budget — it holds partial state and will resume into the same tasks. Counting
-#: only `running` would let the next scheduled iteration start underneath it and
-#: race the approved one over the same outputs.
+#: The statuses that are unconditionally mid-flight. `queued` belongs to the
+#: same window but only sometimes, so it is not a member here — see
+#: _occupies_slot.
 _OCCUPIES_SLOT = (RunStatus.running, RunStatus.waiting_approval)
 
 
+def _occupies_slot(run):
+    """A run is mid-flight — holding its workflow's concurrency budget and its
+    named resource — from its first claim until it lands terminal.
+
+    A run parked on an approval gate holds both: it has partial state and will
+    resume into the same tasks. So does one a decision has just handed back to
+    `queued`; only the re-claim is missing, and the half-written state is still
+    there. Releasing either in that window lets the next scheduled iteration
+    start underneath it and race it over the same outputs.
+
+    started_at is what separates that re-entry from a run that has never
+    executed: the claim stamps it once and never rewrites it, and a resume nulls
+    it to open a fresh segment — so a resumed run is new again.
+    """
+    return or_(run.status.in_(_OCCUPIES_SLOT),
+               and_(run.status == RunStatus.queued, run.started_at.is_not(None)))
+
+
 def _running_runs_for_same_workflow():
-    """Correlated count of runs holding a concurrency slot for the candidate's workflow."""
+    """Correlated count of OTHER runs holding a concurrency slot for the
+    candidate's workflow. The candidate is excluded because it may now hold one
+    itself, and a re-entering run must not be barred by its own claim."""
     other = aliased(WorkflowRun)
     return (
         select(func.count())
         .select_from(other)
         .where(
             other.workflow_id == WorkflowRun.workflow_id,
-            other.status.in_(_OCCUPIES_SLOT),
+            other.id != WorkflowRun.id,
+            _occupies_slot(other),
         )
         .correlate(WorkflowRun)
         .scalar_subquery()
@@ -54,16 +74,20 @@ def _resource_blocked():
             # NULL equals nothing in SQL, so a workflow without a resource is
             # blocked by no one and blocks no one.
             holder_workflow.lock_resource == resource,
+            # A run re-entering mid-segment is its own holder: it must not be
+            # barred by the resource it is already holding.
+            holder.id != WorkflowRun.id,
             or_(
-                and_(holder.status.in_(_OCCUPIES_SLOT),
+                and_(_occupies_slot(holder),
                      or_(holder_is_exclusive, mode == LockMode.exclusive)),
                 # Starvation guard: while an exclusive run waits its turn, no NEW
                 # shared run may start ahead of it — otherwise a steady drip of
                 # hourly jobs means the monthly maintenance never runs. Shared runs
                 # already holding the resource finish untouched: a barrier, never a
-                # preemption.
+                # preemption — and a shared run that is mid-segment (started_at
+                # stamped) is one of those, not a new arrival.
                 and_(holder.status == RunStatus.queued, holder_is_exclusive,
-                     mode == LockMode.shared),
+                     mode == LockMode.shared, WorkflowRun.started_at.is_(None)),
             ),
         )
         .correlate(WorkflowRun)

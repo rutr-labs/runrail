@@ -8,9 +8,9 @@ import { cronLabel, nextCronOccurrence, viewerZone, zoneTag } from '../cron';
    flow stays untouched. Parsing an existing cron back into a mode is
    best-effort — anything the dropdowns can't express opens as Advanced. */
 
-type Mode = 'none' | 'minutes' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'custom';
+export type Mode = 'none' | 'minutes' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'custom';
 
-interface State {
+export interface State {
   mode: Mode;
   everyMinutes: number;   // minutes mode
   atMinute: number;       // hourly mode
@@ -20,15 +20,19 @@ interface State {
   custom: string;         // raw cron — custom mode
 }
 
-const MINUTE_PRESETS = [1, 2, 5, 10, 15, 20, 30, 45];
+/* Exported so the round-trip tests enumerate the option sets the dropdowns
+   actually offer, rather than a copy that stops covering a new preset. */
+export const MINUTE_PRESETS = [1, 2, 5, 10, 15, 20, 30, 45];
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const DAY_CRON = [1, 2, 3, 4, 5, 6, 0]; // Mon-first display → cron dow
+// Mon-first display → standard cron dow, 0=Sun. APScheduler numbers the field
+// 0=Mon instead; src/runrail/crontab.py translates, so this stays standard.
+export const DAY_CRON = [1, 2, 3, 4, 5, 6, 0];
 
-const DEFAULTS: Omit<State, 'mode'> = {
+export const DEFAULTS: Omit<State, 'mode'> = {
   everyMinutes: 15, atMinute: 0, time: '09:00', days: [1], dayOfMonth: 1, custom: '',
 };
 
-function parseCron(cron: string): State {
+export function parseCron(cron: string): State {
   const custom: State = { mode: 'custom', ...DEFAULTS, custom: cron };
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return custom;
@@ -58,7 +62,7 @@ function parseCron(cron: string): State {
   return custom;
 }
 
-function toCron(s: State): string | null {
+export function toCron(s: State): string | null {
   const [h, m] = s.time.split(':').map(Number);
   switch (s.mode) {
     case 'none': return null;

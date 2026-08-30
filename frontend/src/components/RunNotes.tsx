@@ -3,6 +3,7 @@ import { AlertTriangle, MessageSquare, StickyNote } from 'lucide-react';
 import clsx from 'clsx';
 import { api, del, post, put } from '../api';
 import { rrws } from '../ws';
+import { formatDate, timeAgo } from '../format';
 import { Button, EmptyState } from './ui';
 import { useToast } from './toast';
 
@@ -31,29 +32,6 @@ export interface RunNote {
   body: string;
   created_at: string;
   updated_at: string;
-}
-
-/* Mirrors formatDate/timeAgo in App.tsx, which does not export them.
-   Lift both to a shared module when it does. */
-const DAY = 86_400_000;
-
-function formatDate(value?: string | null): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleString(undefined, {
-    month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }),
-    hour: '2-digit', minute: '2-digit',
-  });
-}
-
-function timeAgo(value?: string | null): string {
-  if (!value) return '—';
-  const ms = Date.now() - new Date(value).getTime();
-  if (ms < 60_000) return 'just now';
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-  if (ms < DAY) return `${Math.floor(ms / 3_600_000)}h ago`;
-  return `${Math.floor(ms / DAY)}d ago`;
 }
 
 const reason = (error: unknown) =>

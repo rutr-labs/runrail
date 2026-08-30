@@ -481,6 +481,14 @@ def execute_workflow_run(db: Session, run: WorkflowRun) -> None:
     db.execute(update(WorkflowRun)
                .where(WorkflowRun.id == run.id, WorkflowRun.finished_at.is_(None))
                .values(finished_at=finished, duration_seconds=duration))
+    # The run is terminal on every path that reaches here, so a gate still open
+    # on it is not a decision anyone can make. The one that gets here is a cancel
+    # that landed between the executor's poll and the gate row it then wrote;
+    # left open, that row counts against every later segment's re-entry.
+    db.execute(update(TaskRun)
+               .where(TaskRun.workflow_run_id == run.id,
+                      TaskRun.status == TaskRunStatus.awaiting_approval)
+               .values(status=TaskRunStatus.cancelled, finished_at=finished))
     db.commit()
     _ws_manager.notify({"type": "run_updated", "id": run.id})
     # Read the status that actually landed (a cancellation may have won the race).
@@ -517,9 +525,9 @@ def _over_gate_budget(db: Session, run: WorkflowRun) -> bool:
     """True when this workflow's concurrency budget is already spent once runs
     parked on an approval gate are counted.
 
-    CONSTRAINT: claim_next_run counts only `running` runs, so a waiting run does
-    not hold its workflow's slot there. Without this re-check, a
-    max_concurrent_runs=1 workflow on a schedule sends its next run straight
+    A backstop, not the enforcement: claim_next_run counts parked runs itself,
+    so this only catches two claimers racing the same budget. Without it, a
+    max_concurrent_runs=1 workflow on a schedule could send its next run straight
     past the same gate — N pending approvals and out-of-order side effects.
     """
     limit = db.scalar(select(Workflow.max_concurrent_runs)
@@ -569,10 +577,20 @@ def recover_interrupted_runs(db: Session) -> int:
         run.status = RunStatus.failed
         run.finished_at = finished
         run.duration_seconds = _duration(run.started_at or run.created_at)
+    stale_ids = [run.id for run in stale]
     db.execute(update(TaskRun)
-               .where(TaskRun.workflow_run_id.in_([run.id for run in stale]),
+               .where(TaskRun.workflow_run_id.in_(stale_ids),
                       TaskRun.status == TaskRunStatus.running)
                .values(status=TaskRunStatus.failed, finished_at=finished,
+                       error_message="Interrupted by worker shutdown"))
+    # A gate open on a run this just failed is not a decision anyone can still
+    # make, and an open gate row outlives the segment that wrote it: left alone
+    # it keeps the re-entry count of every later segment above zero, so the
+    # resumed run could never return to `queued`.
+    db.execute(update(TaskRun)
+               .where(TaskRun.workflow_run_id.in_(stale_ids),
+                      TaskRun.status == TaskRunStatus.awaiting_approval)
+               .values(status=TaskRunStatus.cancelled, finished_at=finished,
                        error_message="Interrupted by worker shutdown"))
     db.commit()
     return len(stale)

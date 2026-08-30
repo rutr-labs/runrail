@@ -11,6 +11,7 @@ from pydantic import (
     model_validator,
 )
 
+from runrail.crontab import validate_cron
 from runrail.models import EnvironmentStatus, EnvironmentType, LockMode, TaskType
 
 
@@ -124,6 +125,15 @@ class WorkflowIn(BaseModel):
             self.lock_mode = LockMode.shared
         return self
 
+    @field_validator("schedule_cron")
+    @classmethod
+    def _runnable_crontab(cls, value: str | None) -> str | None:
+        # sync() skips a crontab APScheduler cannot parse, so an unvalidated one
+        # is a workflow that reads as scheduled and never runs — "60 9 * * *"
+        # labelled "daily at 10:00" forever. Rejecting it here is the only place
+        # anybody is still looking at the form.
+        return validate_cron(value) if value and value.strip() else None
+
     @field_validator("schedule_timezone")
     @classmethod
     def _known_timezone(cls, value: str | None) -> str | None:
@@ -143,6 +153,15 @@ class WorkflowOut(WorkflowIn, ORMModel):
     snooze_until: UTCDateTime | None = None
     snooze_pauses_runs: bool = False
     snoozed: bool = False  # from the model property, via from_attributes
+
+    @field_validator("schedule_cron")
+    @classmethod
+    def _runnable_crontab(cls, value: str | None) -> str | None:
+        # Overrides WorkflowIn's check, deliberately. A YAML import or a hand
+        # edit writes the column directly, and refusing to SHOW such a row would
+        # take the whole workflow list down with it; schedule-gaps already
+        # reports it as invalid_cron where the operator can act on it.
+        return value
 
 
 class SnoozeIn(BaseModel):
