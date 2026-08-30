@@ -1,15 +1,21 @@
 # RunRail
 
-Schedule the scripts you already have. Python, Jupyter notebooks, SQL and shell commands, with dependencies, retries, backfills and a full record of every run.
+A scheduler with a web UI for the scripts, notebooks and queries you already have.
 
 [![CI](https://github.com/rutr-labs/runrail/actions/workflows/ci.yml/badge.svg)](https://github.com/rutr-labs/runrail/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/runrail.svg)](https://pypi.org/project/runrail/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 
-RunRail is one Python process and one SQLite file. You point it at a folder, describe when things should run and what depends on what, and it takes care of the rest: running them, keeping the logs, retrying what fails, and telling you when something breaks.
+A task in RunRail is a command:
 
-Your code stays yours. No DAG files, no decorators, no imports. If it runs in a terminal today, it runs here.
+```bash
+python scripts/refresh_sales.py --date {{ ds }}
+```
+
+That is the whole configuration. Nothing is imported into your code, and there is no DAG file to keep in sync with it. RunRail runs that command on a schedule, in a Python environment you declare, and keeps the logs, the timings and the history.
+
+It installs as one process with one SQLite file behind it:
 
 ```bash
 pipx install runrail && runrail serve
@@ -17,43 +23,37 @@ pipx install runrail && runrail serve
 
 ![RunRail dashboard](docs/img/01-dashboard.png)
 
-## What it does
+## The parts that matter
 
-**Runs your work**
+**Your code doesn't change.** Point RunRail at a folder. Shell commands, Python scripts, notebooks and SQL files run as they are, each in its own subprocess with its own logs and timeout. Your dependencies are installed into an environment you declare, never into RunRail's own.
 
-- Scripts, notebooks, SQL files and shell commands, each in its own subprocess with its own logs, timeout and cleanup.
-- Task graphs run with real parallelism. Independent tasks start as soon as their dependencies finish.
-- Retries, per-workflow concurrency limits, and backfills that queue one run per date across a range.
-- Resume a failed run from the task that broke. Everything that already succeeded is kept, so a three-hour first step doesn't run twice.
-- Approval gates. A task can wait for a person, showing the prompt and the exact command it's about to run. The run steps aside while it waits, so nothing else is held up.
-- Resource locks. Name something that can't take two jobs at once, like a warehouse or a licence, and say whether a workflow needs it alone or can share.
+**Nothing quietly disappears.** Every run keeps its logs, its timings and its place in the history, with independent tasks laid out in parallel on a timeline. You can search the logs of every run at once, which is usually how you find out when something actually started going wrong. And a schedule that came due while the machine was asleep is recorded as missed, because a run that never happened is more interesting than one that did.
 
-**Tells you what happened**
+**A failed run picks up where it stopped.** Resume re-executes the task that broke and everything downstream, keeping what already succeeded. A three-hour first step doesn't run again because the fourth one failed.
 
-- Live logs with colour, search and tail-follow, next to a timeline and a dependency graph that update as the run moves.
-- Search the logs of every run at once, for when the question is really "when did this start happening?"
-- Schedules that came due while the machine was asleep are shown as missed, alongside the runs that did happen.
-- Per-task duration history, with a flag when something has quietly got slower.
-- Notes on a run, so the reason a failure was ignored is still there next month.
-- Webhooks on the first failure and again on recovery, not once per red run. Slack and Microsoft Teams work as-is.
+**Some things should wait for a person.** Mark a task as needing approval and the run parks there, showing the prompt and the exact command it is about to run. It gives up its worker thread while it waits, so a gate left open overnight holds nothing else up.
 
-**Turns notebooks into reports**
+**Notebooks come out the other end as reports.** An executed notebook renders to HTML on the run page, charts and tables included. `/reports/<workflow>/latest` always resolves to the newest successful run, so a link you shared last month still shows this morning's numbers.
 
-- Executed notebooks render as HTML on the run page, charts and tables included, with the `.ipynb` still one click away.
-- `/reports/<workflow>/latest` always points at the newest successful run, so the link you shared stays current.
-- Any run exports as a single HTML file you can send to someone who doesn't have access.
+Also in the box: retries and backfills, per-workflow concurrency, resource locks so two jobs never enter the same database at once, snooze, auto-pause after repeated failures, deadlines that alert while a run is still going, per-task duration trends, notes on a run, webhooks for Slack and Microsoft Teams, YAML export and apply, and a REST API with live docs at `/docs`.
 
-**Stays out of your way**
+## A look around
 
-- Schedules built from dropdowns, in the workflow's own timezone. Raw cron is still there under Advanced.
-- Snooze a workflow until tomorrow instead of disabling it and forgetting.
-- Auto-pause after repeated failures, and a deadline that alerts while a run is still going.
-- `runrail export` and `runrail apply` round-trip everything through YAML.
-- A REST API with live docs at `/docs`.
+A run in progress. Independent tasks overlap on the timeline, and every attempt keeps its own logs.
+
+![Run detail](docs/img/02-run-detail.png)
+
+A run waiting on approval, showing the prompt from whoever built the workflow and the command about to execute.
+
+![Approval gate](docs/img/05-approval.png)
+
+The wallboard, for a screen on the wall. Progress runs against each workflow's own median duration and turns amber when a run goes over.
+
+![Live wallboard](docs/img/demo.gif)
 
 ## Install
 
-One package, with the web UI already built in. Python 3.11 or newer, nothing else.
+One package, with the web UI already built into it. Python 3.11 or newer, nothing else.
 
 ```bash
 pipx install runrail    # isolated, recommended. Or: pip install runrail
@@ -62,7 +62,7 @@ runrail serve
 
 The first launch offers to import an existing setup. Press Enter to start fresh, then open **http://127.0.0.1:8080**.
 
-Startup takes about 0.6 seconds, including creating the database and applying migrations. It sits at roughly 96 MB of memory as a single process, and stays there.
+Startup takes about 0.6 seconds, including creating the database and applying migrations. It settles at roughly 96 MB as a single process and stays there.
 
 Data lives in a per-user directory:
 
@@ -74,29 +74,27 @@ Data lives in a per-user directory:
 
 `RUNRAIL_HOME` moves it, for example `RUNRAIL_HOME=./.runrail` to keep it beside a project. RunRail also reads a `.env` from the directory you start it in, which matters if you launch it from more than one place.
 
-Rendering notebooks as HTML reports needs the extra: `pipx install "runrail[notebook]"`. Running notebooks does not; papermill is installed into the task's own environment for that.
-
-## A look around
-
-A run in progress. Independent tasks overlap on the timeline, and every attempt keeps its own logs.
-
-![Run detail](docs/img/02-run-detail.png)
-
-A run waiting on approval. It shows the prompt from whoever built the workflow, the command about to execute, and what already succeeded.
-
-![Approval gate](docs/img/05-approval.png)
-
-The wallboard, for a screen on the wall. Progress is measured against each workflow's own median duration, and turns amber when a run goes over it.
-
-![Live wallboard](docs/img/demo.gif)
+Rendering notebooks as HTML reports needs an extra: `pipx install "runrail[notebook]"`. Running notebooks does not; papermill goes into the task's own environment for that.
 
 ## How it fits together
 
 **Projects** point at the directories your code lives in. **Environments** say how Python runs: a managed virtualenv built from pip requirements, an interpreter you already have, or a Conda environment. **Workflows** group **tasks** into a dependency graph with an optional schedule.
 
-Environments resolve per task, then per workflow, then per project. Python and notebook tasks will not fall back to RunRail's own interpreter, which is deliberate. Your dependencies are not its dependencies.
+Environments resolve per task, then per workflow, then per project. Python and notebook tasks will not fall back to RunRail's own interpreter. That is deliberate: your dependencies are not its dependencies.
 
-For most setups, *Environments → New environment → Managed Python* is the one to use. Declare `pandas==2.3.0` and RunRail builds an isolated virtualenv, records the build log and Python version, and rebuilds atomically when the requirements change. A failed rebuild keeps the last working one. Each managed environment also carries papermill and ipykernel so notebook tasks work, which is about 127 MB before your own packages.
+For most setups, *Environments → New environment → Managed Python* is the one to use. Declare `pandas==2.3.0` and RunRail builds an isolated virtualenv, records the build log and Python version, and rebuilds atomically when the requirements change. A failed rebuild keeps the last working one. Every managed environment also carries papermill and ipykernel so notebook tasks work, which is about 127 MB before your own packages.
+
+## Templating
+
+Commands and paths are Jinja templates. Every run gets:
+
+| Variable | Meaning |
+|---|---|
+| `ds` | Logical date (`2026-07-08`), set per-date during backfills |
+| `ts` / `ts_nodash` | Run timestamp, ISO and compact (`20260708T141005`) |
+| `run_id`, `task_run_id` | Identifiers for this execution |
+| `project_root`, `artifacts_dir` | Resolved paths for the run |
+| *your parameters* | Run and per-task parameters, merged |
 
 ## CLI
 
@@ -116,37 +114,23 @@ runrail scheduler
 runrail worker --concurrency 8
 ```
 
-## Templating
-
-Commands and paths are Jinja templates. Every run gets:
-
-| Variable | Meaning |
-|---|---|
-| `ds` | Logical date (`2026-07-08`), set per-date during backfills |
-| `ts` / `ts_nodash` | Run timestamp, ISO and compact (`20260708T141005`) |
-| `run_id`, `task_run_id` | Identifiers for this execution |
-| `project_root`, `artifacts_dir` | Resolved paths for the run |
-| *your parameters* | Run and per-task parameters, merged |
-
-```bash
-python scripts/daily.py --date {{ ds }} --region {{ region }}
-```
-
 ## Notifications
 
-Set `RUNRAIL_NOTIFY_WEBHOOK_URL`, or a webhook per workflow. RunRail posts on the first failure after a success, and again when it recovers. A schedule that breaks at midnight produces one message, not three hundred. Nine event kinds are sent in all, covering failures, recoveries, auto-pause, approvals, missed schedules and deadlines.
+Set `RUNRAIL_NOTIFY_WEBHOOK_URL`, or a webhook per workflow. RunRail posts on the first failure after a success, and again when it recovers. A schedule that breaks at midnight sends one message, not three hundred. Nine event kinds go out in all, covering failures, recoveries, auto-pause, approvals, missed schedules and deadlines.
 
 Slack and custom receivers get JSON whose `text` field renders directly. For Microsoft Teams, make a Workflow from the "when a webhook request is received" template (Teams → channel → Workflows) and paste the URL. RunRail recognises Teams URLs and sends the Adaptive Card envelope that flow expects.
 
 ## Architecture
 
-FastAPI serves the API and the prebuilt React UI. APScheduler is used purely as a clock, writing due runs into the database. While a run executes, the next scheduled iteration collapses into a single queued run rather than stacking up or disappearing, and a 60-second watchdog looks for schedules that have gone quiet and runs that have missed a deadline.
+FastAPI serves the API and the prebuilt React UI. APScheduler is used purely as a clock, writing due runs into the database. While a run executes, the next scheduled iteration collapses into a single queued run rather than stacking up or vanishing, and a 60-second watchdog looks for schedules that have gone quiet and runs that have missed a deadline.
 
 A bounded worker pool (`RUNRAIL_WORKER_CONCURRENCY`) claims queued runs atomically, so different workflows execute at the same time and a long job never blocks a frequent one. Runs of the same workflow are serialised by its `max_concurrent_runs`. Inside a run, the task graph executes with real parallelism (`RUNRAIL_TASK_PARALLELISM`).
 
 All of it happens on one machine, using threads and subprocesses. There are no remote workers.
 
-SQLite in WAL mode is the default. For PostgreSQL, set `RUNRAIL_DB_URL=postgresql+psycopg://user:password@host:5432/runrail`; the `+psycopg` matters, because a bare `postgresql://` looks for psycopg2, which isn't installed. CI runs the whole suite against both. Logs live under `$RUNRAIL_HOME/logs/` and artifacts under `$RUNRAIL_HOME/artifacts/<id>/`, timestamped so retries never overwrite each other.
+SQLite in WAL mode is the default. For PostgreSQL, set `RUNRAIL_DB_URL=postgresql+psycopg://user:password@host:5432/runrail`; the `+psycopg` matters, because a bare `postgresql://` looks for psycopg2, which isn't installed. CI runs the whole suite against both. Logs live under `$RUNRAIL_HOME/logs/`, artifacts under `$RUNRAIL_HOME/artifacts/<id>/`, timestamped so retries never overwrite each other.
+
+Docker is available (`docker compose up --build` starts RunRail with PostgreSQL on port 8080) and entirely optional.
 
 ## Configuration
 
@@ -165,14 +149,6 @@ SQLite in WAL mode is the default. For PostgreSQL, set `RUNRAIL_DB_URL=postgresq
 | `RUNRAIL_SQLITE_DB_PATH` | unset; the database SQL tasks run against, unless the task sets `sqlite_db_path` |
 
 Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:00 on that workflow's clock across DST. The UI shows occurrences in yours.
-
-## Docker
-
-```bash
-docker compose up --build
-```
-
-Starts RunRail with PostgreSQL and persistent volumes on port 8080. It's optional; the point of the project is that you don't need it.
 
 ## Worth knowing
 
