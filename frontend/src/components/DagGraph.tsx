@@ -78,6 +78,15 @@ function layout(tasks: DagTask[]): { nodes: Node[]; width: number; height: numbe
 const STATUS_STROKE: Record<string, string> = {
   running: 'var(--running)', success: 'var(--success)', failed: 'var(--danger)',
   skipped: 'var(--queued)', cancelled: 'var(--queued)', queued: 'var(--warning)',
+  // A gate is the one node holding the whole run up; it must not be the one
+  // node with no colour.
+  awaiting_approval: 'var(--warning)', approved: 'var(--success)',
+  rejected: 'var(--danger)',
+};
+
+//: Statuses are snake_case on the wire; the node label is read by humans.
+const STATUS_LABEL: Record<string, string> = {
+  awaiting_approval: 'awaiting approval', approved: 'approved', rejected: 'rejected',
 };
 
 export function DagGraph({ tasks, statuses, onSelect }: {
@@ -141,7 +150,7 @@ export function DagGraph({ tasks, statuses, onSelect }: {
                 {clip(node.name)}
               </text>
               <text x={58} y={48} className="dag-node-status">
-                {status ?? node.task_type}
+                {(status && (STATUS_LABEL[status] ?? status)) ?? node.task_type}
               </text>
             </g>
           );

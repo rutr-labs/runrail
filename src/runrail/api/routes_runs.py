@@ -135,6 +135,10 @@ def stats_summary(db: Session = Depends(get_db)):
 
     running = count(WorkflowRun.status == RunStatus.running)
     queued = count(WorkflowRun.status == RunStatus.queued)
+    # A run parked on an approval gate is live: it holds a concurrency slot and
+    # is waiting on a person, so a dashboard that omitted it would show "nothing
+    # live" while a pipeline sat stopped.
+    waiting = count(WorkflowRun.status == RunStatus.waiting_approval)
     done_7d = count(WorkflowRun.created_at >= since_7d,
                     WorkflowRun.status.in_((RunStatus.success, RunStatus.failed)))
     success_7d = count(WorkflowRun.created_at >= since_7d, WorkflowRun.status == RunStatus.success)
@@ -144,7 +148,8 @@ def stats_summary(db: Session = Depends(get_db)):
     return {
         "running": running,
         "queued": queued,
-        "live": running + queued,
+        "waiting": waiting,
+        "live": running + queued + waiting,
         "runs_24h": count(WorkflowRun.created_at >= since_24h),
         "succeeded_24h": count(WorkflowRun.created_at >= since_24h,
                                WorkflowRun.status == RunStatus.success),

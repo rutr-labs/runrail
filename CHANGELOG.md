@@ -4,6 +4,19 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 
 ## [Unreleased]
 
+### Added
+- **Resume from the failed task.** A failed run picks up in place — same run id, same `ds`, same artifacts folder — re-executing only what did not succeed plus everything downstream. A dialog shows the plan first: which tasks are reused, how much time that saves, and why each remaining task will run again.
+- **Manual approval gates.** Any task can require a human before it runs. The run parks, releases its worker thread (so a gate left open overnight cannot starve the pool) and waits; the run page shows the author's prompt, the exact command about to run, and what already succeeded, with approve and reject. A waiting run is surfaced on the dashboard, and cancelling one is allowed — approve and reject are otherwise its only exits.
+- **Snooze a workflow** until a chosen time, optionally pausing its scheduled runs too. It expires by the clock, so there is nothing to re-enable and nothing to forget.
+- **Missed-run alerts (a dead man's switch)** — opt-in per workflow, alerting when a schedule goes silent because the scheduler stopped, the host slept, or someone paused it and forgot. Expected fire times come from the scheduler's own trigger, so the watchdog can never disagree with it about a DST boundary.
+- **"Must finish by" SLAs** — alert while a run is still going once it passes its deadline, measured from creation so queue wait counts.
+- **Notebook reports.** Executed notebooks render as HTML inline on the run page — charts, tables and markdown — cached on first view, with the original `.ipynb` a click away. Requires the `notebook` extra; without it the UI says so instead of failing.
+- **A stable `/latest` report URL** per workflow, resolving to the newest successful run that produced a report, and saying how stale it is rather than quietly showing month-old numbers.
+- **Share a run** as one self-contained HTML file — status, timeline, logs and the embedded report — that opens from an email with no RunRail and no login.
+- **Log search across runs**, answering "when did this error first appear?" without opening runs one at a time. Every scan is bounded, and the result says which bound stopped it: a partial window is never presented as a full history.
+- **Run notes** — annotate a run ("bad upstream file, ignore") so the reason a failure was dismissed outlives the person who dismissed it. Annotated runs are flagged in run tables.
+- **Per-task duration trends** with a sparkline and a "slower than usual" flag, computed from a median and a robust spread so one pathological run cannot poison the baseline, and never flagged without enough history.
+
 ### Fixed
 - Progress-bar comets animate correctly in Chromium-based browsers (Edge, Chrome), where they could appear to shift without animating. Two independent causes, both fixed:
   - **Blanked frames.** Resizing a canvas clears it, and per the HTML spec ResizeObserver callbacks run *after* `requestAnimationFrame` but *before* paint — so on a bar whose width animates every frame (wallboard fills, growing Gantt bars) the observer wiped the frame that had just been drawn, before it was ever shown. Measured at 86% blank frames in Chromium; every resize now repaints immediately, measured at 0%.

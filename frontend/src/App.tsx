@@ -8,6 +8,7 @@ import {
   AlertTriangle, CheckCircle2, RefreshCw, Trash2, Pencil,
   ArrowLeft, Terminal, Download, Settings, ChevronsRight,
   Database, FileText, Info, Ban, Menu, X, SlidersHorizontal,
+  ShieldAlert, ShieldCheck, CircleSlash, Share2, BookOpen,
 } from 'lucide-react';
 import { api, del, post, put } from './api';
 import { rrws } from './ws';
@@ -19,6 +20,18 @@ import { ScheduleBuilder } from './components/ScheduleBuilder';
 import { Button, CancelButton, StatusBadge, MetricCard, EmptyState, Modal, PageHeader, TaskTypeBadge, SkeletonCard, HealthChip, LoadingBar, CometCanvas } from './components/ui';
 import { LogViewer } from './components/LogViewer';
 import { useToast } from './components/toast';
+import { ApprovalGate, ApprovalInbox, useOpenApprovals } from './components/ApprovalGate';
+import { ResumeButton } from './components/ResumeDialog';
+import { SnoozeBadge, SnoozeControl } from './components/SnoozeControl';
+import { WatchdogFields, watchdogValues } from './components/WatchdogFields';
+import { LatestReportPanel, ReportPanel } from './components/ReportPanel';
+import type { LatestReportMeta } from './components/ReportPanel';
+import { ShareRunModal } from './components/ShareRunModal';
+import { LogSearch } from './components/LogSearch';
+import { RunNotes, RunNotesIndicator, useRunNotesSummary } from './components/RunNotes';
+import type { RunNote } from './components/RunNotes';
+import { TrendSpark, useTaskDurations } from './components/TrendSpark';
+import type { TaskDurationSeries } from './components/TrendSpark';
 
 /* ─── Types ───────────────────────────────────────────── */
 type Run = {
@@ -33,6 +46,11 @@ type Run = {
   run_key?: string | null;
   parameters_json?: Record<string, unknown> | null;
   task_runs?: TaskRun[];
+  // v0.5: GET /runs/{id} answers WorkflowRunDetail, which embeds the note
+  // thread and the resume/SLA bookkeeping.
+  notes?: RunNote[];
+  resume_count?: number;
+  sla_breached_at?: string | null;
 };
 
 type TaskRun = {
@@ -49,6 +67,13 @@ type TaskRun = {
   exit_code?: number | null;
   error_message?: string | null;
   rendered_command?: string | null;
+  // v0.5: an approval gate is a TaskRun with no logs. created_at is when the
+  // gate opened, which is what the card counts up from.
+  created_at?: string;
+  resume_index?: number;
+  approved_by?: string | null;
+  approval_note?: string | null;
+  approved_at?: string | null;
 };
 
 type Workflow = {
@@ -63,6 +88,13 @@ type Workflow = {
   default_environment_id?: number | null;
   notify_webhook_url?: string | null;
   auto_pause_failures?: number | null;
+  // v0.5 operator state — written by the snooze endpoints, never by WorkflowIn.
+  snooze_until?: string | null;
+  snooze_pauses_runs?: boolean;
+  snoozed?: boolean;
+  // v0.5 configuration — part of WorkflowIn, so both modals must round-trip it.
+  missed_run_grace_minutes?: number | null;
+  sla_minutes?: number | null;
 };
 
 type Project = {
@@ -108,12 +140,26 @@ type Task = {
   retries: number;
   retry_delay_seconds: number;
   timeout_seconds?: number | null;
+  requires_approval?: boolean;
+  approval_prompt?: string | null;
 };
 
 /* ─── Helpers ─────────────────────────────────────────── */
 const DAY = 86_400_000;
-const LIVE = (status: string) => status === 'running' || status === 'queued';
+/** Unfinished, and therefore still cancellable and still worth polling.
+ *  `waiting_approval` belongs here: routes_runs.cancel_run explicitly allows
+ *  cancelling a parked run — without it a gate nobody decides would hold a
+ *  concurrency slot forever with no way out of the UI. */
+const LIVE = (status: string) =>
+  status === 'running' || status === 'queued' || status === 'waiting_approval';
 
+/* ─── New v0.5 statuses ───────────────────────────────────
+   components/ui.tsx owns STATUS_MAP and has no entry for the approval
+   statuses, so <StatusBadge value="waiting_approval" /> renders a muted chip
+   reading `waiting_approval`. That file is outside this integration's scope,
+   so the mapping lives here instead and every run/task status in App.tsx goes
+   through <Status>. Delete this the moment STATUS_MAP learns the four values —
+   the chip classes it emits are the same ones ui.tsx uses. */
 function formatDate(value?: string | null): string {
   if (!value) return '—';
   const date = new Date(value);
@@ -262,8 +308,15 @@ const NAV: { href: string; icon: typeof LayoutDashboard; label: string; section:
   { href: '/workflows',    icon: GitBranch,       label: 'Workflows',    section: 'Build' },
   { href: '/projects',     icon: FolderOpen,      label: 'Projects',     section: 'Build' },
   { href: '/environments', icon: Cpu,             label: 'Environments', section: 'Build' },
+  { href: '/logs',         icon: Search,          label: 'Log search',   section: 'Observe' },
   { href: '/artifacts',    icon: Package,         label: 'Artifacts',    section: 'Observe' },
   { href: '/settings',     icon: Settings,        label: 'Settings',     section: 'System' },
+];
+
+/** Destinations that are reached from a workflow or a run rather than the
+ *  sidebar — they still need a breadcrumb label. */
+const OFF_NAV: { prefix: string; label: string }[] = [
+  { prefix: '/reports', label: 'Reports' },
 ];
 
 function useApiHealth(): 'online' | 'offline' | 'unknown' {
@@ -313,6 +366,7 @@ function Shell() {
   }, [location.pathname]);
 
   const page = NAV.find(n => n.href !== '/' && location.pathname.startsWith(n.href))
+    ?? OFF_NAV.find(n => location.pathname.startsWith(n.prefix))
     ?? (location.pathname.startsWith('/runs') ? NAV[1] : NAV[0]);
 
   const sections = ['Overview', 'Build', 'Observe'];
@@ -377,6 +431,12 @@ function Shell() {
             <Route path="/workflows/:id" element={<WorkflowDetail />} />
             <Route path="/runs" element={<Runs />} />
             <Route path="/runs/:id" element={<RunDetail />} />
+            {/* Per-run report permalink: run ids are never reused, so this URL
+                survives a workflow rename. */}
+            <Route path="/runs/:id/report" element={<RunReportPage />} />
+            {/* Pinnable per-workflow link; :workflow is an id or an exact name. */}
+            <Route path="/reports/:workflow/latest" element={<LatestReport />} />
+            <Route path="/logs" element={<LogSearch />} />
             <Route path="/artifacts" element={<Artifacts />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
@@ -538,7 +598,13 @@ function CancelRunButton({ run, onDone, size = 'sm' }: { run: Run; onDone?: () =
     setBusy(true);
     try {
       await post(`/runs/${run.id}/cancel`, {});
-      toast(run.status === 'queued' ? 'Run cancelled' : 'Cancellation requested — stops before the next task', 'info');
+      // Only a *running* run has a worker attached; the other two settle inside
+      // the request, and the open gate is cancelled with them.
+      toast(run.status === 'running'
+        ? 'Cancellation requested — stops before the next task'
+        : run.status === 'waiting_approval'
+        ? 'Run cancelled — the open approval was withdrawn'
+        : 'Run cancelled', 'info');
       onDone?.();
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Could not cancel run', 'error');
@@ -555,6 +621,8 @@ function CancelRunButton({ run, onDone, size = 'sm' }: { run: Run; onDone?: () =
 function RunTable({ runs, flows, onChanged }: { runs: Run[]; flows: Workflow[]; onChanged?: () => void }) {
   const now = useNow(runs.some(r => r.status === 'running'));
   const navTo = useNavigate();
+  // One query for the whole table; a broken summary must not break the table.
+  const { entryFor } = useRunNotesSummary();
   return (
     <div className="table-scroll">
       <table>
@@ -580,6 +648,7 @@ function RunTable({ runs, flows, onChanged }: { runs: Run[]; flows: Workflow[]; 
                         onClick={e => { e.preventDefault(); navigateWithTransition(navTo, `/runs/${r.id}`); }}>
                     #{r.id}
                   </Link>
+                  <RunNotesIndicator entry={entryFor(r.id)} />
                 </td>
                 <td><Link to={`/workflows/${r.workflow_id}`} style={{ color: 'inherit', textDecoration: 'none' }}><b className="run-flow-name" title={flowName}>{flowName}</b></Link></td>
                 <td><StatusBadge value={r.status} /></td>
@@ -680,7 +749,7 @@ function UpcomingList({ flows }: { flows: Workflow[] }) {
 type DailyStat = { date: string; success: number; failed: number; other: number };
 
 type Summary = {
-  running: number; queued: number; live: number;
+  running: number; queued: number; waiting: number; live: number;
   runs_24h: number; succeeded_24h: number; failed_24h: number;
   avg_duration_24h: number | null;
   done_7d: number; success_7d: number; success_rate_7d: number | null;
@@ -745,6 +814,11 @@ function Dashboard() {
     api<Workflow[]>('/workflows').then(setFlows).catch(() => setFlows([]));
     api<Summary>('/stats/summary').then(setSummary).catch(() => {});
   };
+  // A run stopped on a gate that nobody notices is this feature's main failure
+  // mode, so the count is a headline stat, not only a panel further down.
+  const approvals = useOpenApprovals();
+  const waitingRuns = new Set((approvals ?? []).map(row => row.run_id)).size;
+
   useEffect(() => { load(); }, []);
   useEffect(() => {
     const u1 = rrws.on('run_created', loadStats);
@@ -761,8 +835,10 @@ function Dashboard() {
   const liveRuns = runs.filter(r => LIVE(r.status)).slice(0, 6);
   const failures = runs.filter(r => r.status === 'failed').slice(0, 4);
   const empty = flows.length === 0;
-  // Server-aggregated headline metrics (fall back to the recent fetch until loaded).
-  const liveCount = summary?.live ?? liveRuns.length;
+  // `waiting` are runs parked on an approval gate: live, but blocked on a
+  // person rather than making progress, so the card says so.
+  const parked = summary?.waiting ?? runs.filter(r => r.status === 'waiting_approval').length;
+  const liveCount = summary?.live ?? (liveRuns.length + parked);
   const runningCount = summary?.running ?? liveRuns.filter(r => r.status === 'running').length;
   const queuedCount = summary?.queued ?? liveRuns.filter(r => r.status === 'queued').length;
   const runs24h = summary?.runs_24h ?? 0;
@@ -807,6 +883,14 @@ function Dashboard() {
               </span>
               <span className="dash-sep">·</span>
               <span className="dash-stat"><AlertTriangle size={12} /> {failed24h} failed today</span>
+              {waitingRuns > 0 && (
+                <>
+                  <span className="dash-sep">·</span>
+                  <span className="dash-stat stat-approval">
+                    <ShieldAlert size={12} /> {waitingRuns} run{waitingRuns === 1 ? '' : 's'} waiting for you
+                  </span>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -824,7 +908,7 @@ function Dashboard() {
       {empty ? <QuickStart /> : (
         <>
           <div className="metric-grid dashboard-metric-grid">
-            <MetricCard icon={<Activity size={18} />} label="Live now" value={liveCount} tone={liveCount ? 'running' : 'default'} note="Running and queued" />
+            <MetricCard icon={<Activity size={18} />} label="Live now" value={liveCount} tone={parked ? 'warning' : liveCount ? 'running' : 'default'} note={parked ? `${parked} waiting on a person` : 'Running and queued'} />
             <MetricCard icon={<Zap size={18} />} label="Runs · 24h" value={runs24h} note={`${succeeded24h} succeeded`} />
             <MetricCard icon={<CheckCircle2 size={18} />} label="Success rate · 7d" value={successRate != null ? `${successRate}%` : '—'} tone={successRate != null && successRate < 80 ? 'warning' : 'success'} note={`${done7d} completed runs`} />
             <MetricCard icon={<AlertTriangle size={18} />} label="Failures · 24h" value={failed24h} tone={failed24h ? 'danger' : 'default'} note={failed24h ? 'Needs attention' : 'All clear'} />
@@ -845,8 +929,11 @@ function Dashboard() {
               </div>
             </div>
             <div>
+              {/* Self-fetching and self-hiding — first in the column so a
+                  paused run is the first thing the column says. */}
+              <ApprovalInbox />
               <div className="panel" style={{ marginBottom: 16 }}>
-                <div className="panel-head"><div><h2>Live now</h2><p>Running and queued</p></div></div>
+                <div className="panel-head"><div><h2>Live now</h2><p>Running, queued, and waiting on a person</p></div></div>
                 {liveRuns.length > 0
                   ? <div style={{ padding: '6px 0' }}>{liveRuns.map(r => <LiveRunRow key={r.id} run={r} flows={flows} />)}</div>
                   : <EmptyState icon={<Activity size={22} />} title="Nothing live" text="Runs appear here the moment they queue or start." />}
@@ -972,6 +1059,7 @@ function Runs() {
   }
 
   const liveRuns = runs.filter(r => LIVE(r.status)).slice(0, 6);
+  const parked = summary?.waiting ?? runs.filter(r => r.status === 'waiting_approval').length;
   const avgDuration = summary?.avg_duration_24h ?? null;
   const filtersActive = Boolean(status || workflowId || trigger || query);
 
@@ -980,7 +1068,8 @@ function Runs() {
       <PageHeader eyebrow="OBSERVABILITY" title="Runs" subtitle="Live activity, schedule context, and the full execution history." />
 
       <div className="summary-strip">
-        <div><span>Live</span><strong>{summary?.live ?? liveRuns.length}</strong></div>
+        <div><span>Live</span><strong>{summary?.live ?? (liveRuns.length + parked)}</strong></div>
+        {parked > 0 && <div><span>Waiting on a person</span><strong>{parked}</strong></div>}
         <div><span>Runs · 24h</span><strong>{summary?.runs_24h ?? '—'}</strong></div>
         <div><span>Failures · 24h</span><strong>{summary?.failed_24h ?? '—'}</strong></div>
         <div><span>Avg duration · 24h</span><strong>{avgDuration != null ? formatDuration(avgDuration) : '—'}</strong></div>
@@ -1009,7 +1098,9 @@ function Runs() {
               </select>
               <select value={status} onChange={e => setStatus(e.target.value)} aria-label="Status filter">
                 <option value="">All statuses</option>
-                {['queued', 'running', 'success', 'failed', 'cancelled'].map(s => <option key={s}>{s}</option>)}
+                {['queued', 'running', 'waiting_approval', 'success', 'failed', 'cancelled'].map(s => (
+                  <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
+                ))}
               </select>
               <select value={trigger} onChange={e => setTrigger(e.target.value)} aria-label="Trigger filter">
                 <option value="">All triggers</option>
@@ -1031,7 +1122,7 @@ function Runs() {
 
         <div>
           <div className="panel" style={{ marginBottom: 16 }}>
-            <div className="panel-head"><div><h2>Live now</h2><p>Running and queued runs</p></div></div>
+            <div className="panel-head"><div><h2>Live now</h2><p>Running, queued, and waiting on a person</p></div></div>
             {liveRuns.length > 0
               ? <div style={{ padding: '6px 0' }}>{liveRuns.map(r => <LiveRunRow key={r.id} run={r} flows={flows} />)}</div>
               : <EmptyState icon={<Activity size={22} />} title="Nothing live right now" text="Runs surface here as soon as they queue or start." />}
@@ -1052,7 +1143,12 @@ function RunDetail() {
   const [run, setRun] = useState<Run>();
   const [flow, setFlow] = useState<Workflow>();
   const [flowTasks, setFlowTasks] = useState<Task[]>([]);
+  const [shareOpen, setShareOpen] = useState(false);
+  // Graph and Timeline answer the same question — the shape of the run — so
+  // they share one panel instead of stacking two.
+  const [shape, setShape] = useState<'graph' | 'timeline'>('timeline');
   const navTo = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
 
   const retry = async () => {
@@ -1080,6 +1176,18 @@ function RunDetail() {
   }, [id]);
   useLiveRefresh(Boolean(run && LIVE(run.status)), refresh, 2000);
   const now = useNow(Boolean(run && run.status === 'running'));
+  // One fetch for the page; every task card reads its own series out of it.
+  const trends = useTaskDurations(run?.workflow_id);
+  useLiveRefresh(Boolean(run && LIVE(run.status)), trends.reload, 15_000);
+
+  // Log search deep-links to /runs/{id}#task-{name}; without this the link
+  // lands on the run but never reaches the task.
+  const hash = location.hash;
+  useEffect(() => {
+    if (!run || !hash.startsWith('#task-')) return;
+    const anchor = document.getElementById(`task-${decodeURIComponent(hash.slice(6))}`);
+    anchor?.scrollIntoView({ behavior: REDUCED_MOTION() ? 'auto' : 'smooth', block: 'center' });
+  }, [Boolean(run), hash]);
 
   if (!run) return (
     <div>
@@ -1089,6 +1197,12 @@ function RunDetail() {
   );
 
   const params = Object.entries(run.parameters_json ?? {});
+  const hasGraph = flowTasks.length > 1;
+  const hasTimeline = Boolean(run.task_runs?.some(t => t.started_at));
+  const view: 'graph' | 'timeline' =
+    hasTimeline && (shape === 'timeline' || !hasGraph) ? 'timeline' : 'graph';
+  const hasNotebook = flowTasks.some(t => t.task_type === 'notebook');
+  const openTaskAnchor = hash.startsWith('#task-') ? decodeURIComponent(hash.slice(6)) : null;
   return (
     <>
       <div className="detail-head">
@@ -1104,11 +1218,26 @@ function RunDetail() {
           </div>
           <div className="detail-actions">
             <CancelRunButton run={run} onDone={refresh} size="md" />
+            {/* Renders nothing unless the run is failed or cancelled. Resume is
+                the primary action there, so Retry steps down to ghost. */}
+            <ResumeButton run={run} onResumed={refresh} />
             {!LIVE(run.status) && (
-              <Button variant={run.status === 'failed' ? 'primary' : 'ghost'} onClick={retry}
-                      title="Queue a new run with this run's parameters">
+              <Button variant="ghost" onClick={retry}
+                      title="Queue a NEW run (new run id) with this run's parameters">
                 <RefreshCw size={13} /> {run.status === 'failed' ? 'Retry' : 'Run again'}
               </Button>
+            )}
+            {!LIVE(run.status) && (
+              <Button variant="ghost" onClick={() => setShareOpen(true)}
+                      title="Download this run as one self-contained HTML file">
+                <Share2 size={13} /> Share
+              </Button>
+            )}
+            {hasNotebook && !LIVE(run.status) && (
+              <Link className="btn btn-ghost btn-md" to={`/runs/${run.id}/report`}
+                    title="This run's notebook report on its own page — a stable link to paste">
+                <BookOpen size={13} /> Report
+              </Link>
             )}
             {flow && <Link className="btn btn-ghost btn-md" to={`/workflows/${flow.id}`}><GitBranch size={13} /> Workflow</Link>}
             <StatusBadge value={run.status} />
@@ -1116,11 +1245,16 @@ function RunDetail() {
         </div>
       </div>
 
+      {/* Above everything: a run stopped on a person is the page's headline.
+          Renders nothing when no gate is open, so it needs no status guard. */}
+      <ApprovalGate run={run} tasks={flowTasks} onDecided={refresh} />
+
       <div className="summary-strip">
         <div><span>Status</span><StatusBadge value={run.status} /></div>
         <div><span>Trigger</span><strong>{run.trigger_type}</strong></div>
         <div><span>Duration</span><strong>{liveDuration(run, now)}</strong></div>
         <div><span>Tasks</span><strong>{run.task_runs?.length || 0}</strong></div>
+        {Boolean(run.resume_count) && <div><span>Resumed</span><strong>{run.resume_count}×</strong></div>}
         {run.started_at && <div><span>Started</span><strong>{formatDate(run.started_at)}</strong></div>}
         {run.finished_at && <div><span>Finished</span><strong>{formatDate(run.finished_at)}</strong></div>}
       </div>
@@ -1136,36 +1270,61 @@ function RunDetail() {
         </div>
       )}
 
-      {flowTasks.length > 1 && (
+      {(hasGraph || hasTimeline) && (
         <div className="panel" style={{ marginBottom: 20 }}>
           <div className="panel-head">
-            <div><h2>Graph</h2><p>Live task statuses across the dependency graph</p></div>
-          </div>
-          <DagGraph
-            tasks={flowTasks.map(t => ({
-              name: t.name, task_type: t.task_type, depends_on: t.depends_on_json || [],
-            }))}
-            statuses={Object.fromEntries(
-              [...(run.task_runs ?? [])]
-                .sort((a, b) => a.attempt - b.attempt)
-                .map(t => [t.task_name ?? '', t.status])
+            <div>
+              <h2>Run shape</h2>
+              <p>{view === 'graph'
+                ? 'Live task statuses across the dependency graph'
+                : 'Overlapping bars ran in parallel; multiple bars on a lane are retry attempts'}</p>
+            </div>
+            {hasGraph && hasTimeline && (
+              <div className="segmented slim run-shape-pick" role="group" aria-label="Run shape view">
+                {(['timeline', 'graph'] as const).map(mode => (
+                  <button key={mode} type="button" className={view === mode ? 'active' : ''}
+                          aria-pressed={view === mode} onClick={() => setShape(mode)}>
+                    {mode}
+                  </button>
+                ))}
+              </div>
             )}
-            onSelect={name => document.getElementById(`task-${name}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-          />
+          </div>
+          {view === 'graph' ? (
+            <DagGraph
+              tasks={flowTasks.map(t => ({
+                name: t.name, task_type: t.task_type, depends_on: t.depends_on_json || [],
+              }))}
+              statuses={Object.fromEntries(
+                [...(run.task_runs ?? [])]
+                  .sort((a, b) => a.attempt - b.attempt)
+                  .map(t => [t.task_name ?? '', t.status])
+              )}
+              onSelect={name => document.getElementById(`task-${name}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+            />
+          ) : (
+            <TaskTimeline taskRuns={run.task_runs ?? []} runStart={run.started_at || run.created_at} now={now} />
+          )}
         </div>
       )}
 
-      {run.task_runs && run.task_runs.some(t => t.started_at) && (
-        <TaskTimeline taskRuns={run.task_runs} runStart={run.started_at || run.created_at} now={now} />
-      )}
+      {/* The conclusion, above the raw stdout it was drawn from. Renders
+          nothing when the run produced no notebook. Keyed on status so a run
+          that finishes while you watch picks up the notebook it just wrote —
+          the panel deliberately does not re-probe on the 2s live tick. */}
+      <ReportPanel key={run.status} runId={run.id} runStatus={run.status} />
 
-      <div className="panel">
+      <div className="panel" style={{ marginBottom: 20 }}>
         <div className="panel-head">
           <div><h2>Task runs</h2><p>Commands, attempts, and captured output</p></div>
         </div>
         <div className="run-tasks">
           {run.task_runs && run.task_runs.length > 0
-            ? run.task_runs.map((t, i) => <TaskRunCard key={t.id} task={t} index={i + 1} />)
+            ? run.task_runs.map((t, i) => (
+                <TaskRunCard key={t.id} task={t} index={i + 1}
+                             trend={trends.byTaskId.get(t.task_id)}
+                             openByDefault={openTaskAnchor != null && openTaskAnchor === t.task_name} />
+              ))
             : run.status === 'queued'
             ? <div className="empty-state">
                 <div style={{ width: 200, marginBottom: 4 }}><LoadingBar /></div>
@@ -1175,6 +1334,13 @@ function RunDetail() {
             : <EmptyState icon={<Clock size={22} />} title="No task output" text="This run produced no task executions." />}
         </div>
       </div>
+
+      <RunNotes runId={run.id} initialNotes={run.notes} onChanged={refresh} />
+
+      {shareOpen && (
+        <ShareRunModal runId={run.id} runStatus={run.status}
+                       workflowName={flow?.name} onClose={() => setShareOpen(false)} />
+      )}
     </>
   );
 }
@@ -1206,12 +1372,10 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
     lanes.set(key, [...(lanes.get(key) ?? []), t]);
   }
   const ticks = [0.25, 0.5, 0.75];
+  // Bare on purpose: RunDetail owns the panel, because Graph and Timeline
+  // share one.
   return (
-    <div className="panel" style={{ marginBottom: 20 }}>
-      <div className="panel-head">
-        <div><h2>Timeline</h2><p>Overlapping bars ran in parallel; multiple bars on a lane are retry attempts</p></div>
-      </div>
-      <div className="task-timeline">
+    <div className="task-timeline">
         {[...lanes.entries()].map(([name, attempts], laneIndex) => (
           <div key={name} className="tl-row">
             <span className="tl-name" title={name}>{name}</span>
@@ -1256,19 +1420,33 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
           </div>
           <span className="tl-dur" />
         </div>
-      </div>
     </div>
   );
 }
 
-function TaskRunCard({ task, index }: { task: TaskRun; index: number }) {
-  const [open, setOpen] = useState(index === 1 || task.status === 'failed' || task.status === 'running');
-  const collapsible = task.status !== 'skipped' && task.status !== 'cancelled';
+/** A TaskRun row that never produced logs: the approval gate rows, plus the
+ *  statuses that were already excluded. Expanding one into an empty LogViewer
+ *  is a promise the row cannot keep. */
+const NO_LOGS = new Set([
+  'skipped', 'cancelled', 'awaiting_approval', 'approved', 'rejected',
+]);
+
+function TaskRunCard({ task, index, trend, openByDefault }: {
+  task: TaskRun; index: number; trend?: TaskDurationSeries; openByDefault?: boolean;
+}) {
+  const collapsible = !NO_LOGS.has(task.status);
+  const [open, setOpen] = useState(
+    collapsible && (openByDefault || index === 1 || task.status === 'failed' || task.status === 'running'));
   const name = task.task_name ?? `Task #${task.task_id}`;
-  const meta = `Attempt ${task.attempt}`
-    + (task.exit_code != null ? ` · exit ${task.exit_code}` : '')
-    + (task.duration_seconds != null ? ` · ${formatDuration(task.duration_seconds)}` : '')
-    + (task.rendered_command ? ` · ${task.rendered_command}` : '');
+  const decided = task.approved_by || task.approval_note;
+  const meta = decided
+    ? [task.approved_by ? `Decided by ${task.approved_by}` : 'Decided',
+       task.approved_at ? formatDate(task.approved_at) : null,
+       task.approval_note].filter(Boolean).join(' · ')
+    : `Attempt ${task.attempt}`
+      + (task.exit_code != null ? ` · exit ${task.exit_code}` : '')
+      + (task.duration_seconds != null ? ` · ${formatDuration(task.duration_seconds)}` : '')
+      + (task.rendered_command ? ` · ${task.rendered_command}` : '');
   return (
     <article className="run-task" id={task.task_name ? `task-${task.task_name}` : undefined}>
       <button className="run-task-head" onClick={() => collapsible && setOpen(!open)}>
@@ -1277,6 +1455,8 @@ function TaskRunCard({ task, index }: { task: TaskRun; index: number }) {
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {task.task_type && <TaskTypeBadge type={task.task_type} />}
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>{name}</span>
+            <TrendSpark series={trend} taskName={task.task_name ?? undefined}
+                        size="md" highlightTaskRunId={task.id} showLabel />
           </h3>
           <p title={meta}>{meta}</p>
         </div>
@@ -1294,6 +1474,63 @@ function TaskRunCard({ task, index }: { task: TaskRun; index: number }) {
         <div style={{ padding: '0 20px 14px', fontSize: 12.5, color: 'var(--text-3)' }}>{task.error_message}</div>
       )}
     </article>
+  );
+}
+
+/* ─── Report pages ────────────────────────────────────────
+   Two permalinks, both safe to paste somewhere that outlives this session:
+   one pinned to a run id (never reused, so it survives a rename), one pinned
+   to a workflow and always showing its newest successful notebook. */
+
+function RunReportPage() {
+  const { id } = useParams<{ id: string }>();
+  const [run, setRun] = useState<Run>();
+  const [flow, setFlow] = useState<Workflow>();
+  useEffect(() => {
+    api<Run>(`/runs/${id}`).then(setRun).catch(() => {});
+  }, [id]);
+  useEffect(() => {
+    if (run) api<Workflow>(`/workflows/${run.workflow_id}`).then(setFlow).catch(() => {});
+  }, [run?.workflow_id]);
+
+  return (
+    <>
+      <div className="detail-head">
+        <Link to={`/runs/${id}`}><ArrowLeft size={14} /> Run #{id}</Link>
+      </div>
+      <PageHeader
+        eyebrow="OUTPUTS"
+        title={flow ? `${flow.name} · report for #${id}` : `Report for run #${id}`}
+        subtitle="The notebook this run executed, rendered. This URL is pinned to the run id, so it keeps meaning the same thing forever."
+        action={run && <StatusBadge value={run.status} />}
+      />
+      {/* hideWhenEmpty=false: someone followed this link on purpose and is
+          owed a reason when there is nothing to show. */}
+      <ReportPanel runId={id!} runStatus={run?.status} hideWhenEmpty={false} />
+    </>
+  );
+}
+
+function LatestReport() {
+  const { workflow } = useParams<{ workflow: string }>();
+  const [meta, setMeta] = useState<LatestReportMeta | null>(null);
+  return (
+    <>
+      <div className="detail-head">
+        <Link to="/workflows"><ArrowLeft size={14} /> Workflows</Link>
+      </div>
+      <PageHeader
+        eyebrow="OUTPUTS"
+        title={meta ? `${meta.workflow_name} · latest` : 'Latest report'}
+        subtitle="A stable link to the newest successful run that produced a notebook. Safe to pin in a wiki."
+        action={meta && (
+          <Link className="btn btn-ghost btn-md" to={`/workflows/${meta.workflow_id}`}>
+            <GitBranch size={13} /> Workflow
+          </Link>
+        )}
+      />
+      <LatestReportPanel workflow={workflow!} onMeta={setMeta} />
+    </>
   );
 }
 
@@ -1656,7 +1893,13 @@ function Workflows() {
             <article className="workflow-card" key={w.id} onClick={() => navigateWithTransition(navTo, `/workflows/${w.id}`)}>
               <div className="workflow-top">
                 <div className="workflow-glyph"><GitBranch size={18} /></div>
-                <StatusBadge value={w.enabled ? 'enabled' : 'disabled'} />
+                <div className="workflow-top-tags">
+                  {/* Renders nothing unless muted; stops its own click so the
+                      card's navigation never fires from the un-snooze. */}
+                  <SnoozeBadge workflow={w}
+                               onChange={u => setItems(list => list.map(x => x.id === u.id ? u : x))} />
+                  <StatusBadge value={w.enabled ? 'enabled' : 'disabled'} />
+                </div>
               </div>
               <h3 style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties} title={w.name}>{w.name}</h3>
               <p>{w.description || 'No description yet'}</p>
@@ -1722,6 +1965,7 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
         default_environment_id: environmentId ? Number(environmentId) : null,
         notify_webhook_url: f.get('webhook') || null,
         auto_pause_failures: f.get('autopause') ? Number(f.get('autopause')) : null,
+        ...watchdogValues(f),
       });
       toast('Workflow created');
       done(w.id);
@@ -1762,6 +2006,9 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
             <small>Consecutive failures before pausing.</small>
           </label>
         </div>
+        {/* Publishes missed_grace_minutes / sla_minutes through hidden inputs,
+            read back by watchdogValues(f) above. */}
+        <WatchdogFields />
         <div className="modal-actions">
           <CancelButton />
           <Button type="submit">Create &amp; add tasks</Button>
@@ -1794,6 +2041,9 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
         default_environment_id: environmentId ? Number(environmentId) : null,
         notify_webhook_url: f.get('webhook') || null,
         auto_pause_failures: f.get('autopause') ? Number(f.get('autopause')) : null,
+        // Not optional: apply_update writes every key of WorkflowIn, so
+        // omitting these would silently wipe a configured watchdog.
+        ...watchdogValues(f),
       });
       toast('Workflow saved');
       done();
@@ -1834,6 +2084,11 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
             <small>Consecutive failures before pausing.</small>
           </label>
         </div>
+        <WatchdogFields
+          missedGraceMinutes={w.missed_run_grace_minutes}
+          slaMinutes={w.sla_minutes}
+          hasSchedule={Boolean(w.schedule_cron)}
+        />
         <label className="field toggle-field">
           <span>Enabled</span>
           <label className="toggle"><input type="checkbox" name="enabled" defaultChecked={w.enabled} /><span /></label>
@@ -1898,6 +2153,8 @@ function WorkflowDetail() {
     }
   };
 
+  const trends = useTaskDurations(id);
+
   useEffect(() => { load(); }, [id]);
   useEffect(() => {
     const refreshRuns = () => void api<Run[]>(`/runs?workflow_id=${id}`).then(setRuns).catch(() => {});
@@ -1906,6 +2163,9 @@ function WorkflowDetail() {
     return () => { u1(); u2(); };
   }, [id]);
   useLiveRefresh(runs.some(r => LIVE(r.status)), () => void api<Run[]>(`/runs?workflow_id=${id}`).then(setRuns).catch(() => {}));
+  // Durations only change when a run finishes — a much slower beat than the
+  // 3s run poll above, and one whole query per tick.
+  useLiveRefresh(runs.some(r => LIVE(r.status)), trends.reload, 15_000);
 
   if (!w) return (
     <div>
@@ -1934,6 +2194,13 @@ function WorkflowDetail() {
             <Button onClick={runNow}><Play size={13} /> Run now</Button>
             <Button variant="ghost" onClick={() => setRunParamsOpen(true)} title="Run with one-off parameters"><SlidersHorizontal size={13} /> Run with…</Button>
             <Button variant="ghost" onClick={() => setBackfillOpen(true)}><Calendar size={13} /> Backfill</Button>
+            <SnoozeControl workflow={w} onChange={setW} />
+            {tasks.some(t => t.task_type === 'notebook') && (
+              <Link className="btn btn-ghost btn-md" to={`/reports/${w.id}/latest`}
+                    title="A stable link to the newest report — safe to pin in a wiki">
+                <BookOpen size={13} /> Latest report
+              </Link>
+            )}
             <Button variant="danger" onClick={deleteWorkflow}><Trash2 size={13} /></Button>
           </div>
         </div>
@@ -1941,6 +2208,9 @@ function WorkflowDetail() {
 
       <div className="summary-strip">
         <div><span>Status</span><StatusBadge value={w.enabled ? 'enabled' : 'disabled'} /></div>
+        {w.snooze_until && (
+          <div><span>Alerts</span><SnoozeBadge workflow={w} onChange={setW} onExpire={load} /></div>
+        )}
         <div><span>Schedule</span><strong title={w.schedule_timezone || undefined}>{w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'Manual only'}</strong></div>
         <div><span>Tasks</span><strong>{tasks.length}</strong></div>
         <div><span>Max active runs</span><strong>{w.max_concurrent_runs}</strong></div>
@@ -1986,6 +2256,7 @@ function WorkflowDetail() {
                   <div className="task-card-top">
                     <TaskTypeBadge type={t.task_type} />
                     <span className="task-card-name" title={t.name}>{t.name}</span>
+                    <TrendSpark series={trends.byTaskId.get(t.id)} taskName={t.name} size="sm" showLabel />
                     <div className="task-card-actions">
                       <button className="edit-link" onClick={() => setEditingTask(t)}>Edit</button>
                       <button className="delete-link" onClick={() => removeTask(t)}>Remove</button>
@@ -1997,6 +2268,11 @@ function WorkflowDetail() {
                     </div>
                   )}
                   <div className="task-card-meta">
+                    {t.requires_approval && (
+                      <span style={{ color: 'var(--warning)' }} title={t.approval_prompt || undefined}>
+                        <ShieldAlert size={11} />Parks the run for approval
+                      </span>
+                    )}
                     {t.depends_on_json.length > 0 && (
                       <span><GitMerge size={11} />Depends on: {t.depends_on_json.join(', ')}</span>
                     )}
@@ -2478,8 +2754,10 @@ function medianDuration(runs: Run[], workflowId: number): number | null {
   return durations.length ? durations[Math.floor(durations.length / 2)] : null;
 }
 
+// `waiting` outranks `running`: a run nobody has decided on is not progress,
+// it is a queue of one person's attention.
 const WB_RANK: Record<string, number> = {
-  failed: 0, overdue: 1, running: 2, queued: 3, success: 4, cancelled: 5, never: 6,
+  failed: 0, waiting: 1, overdue: 2, running: 3, queued: 4, success: 5, cancelled: 6, never: 7,
 };
 
 function Wallboard() {
@@ -2520,6 +2798,7 @@ function Wallboard() {
     const week = completed.filter(r => Date.now() - new Date(r.created_at).getTime() < 7 * DAY);
     const rate7d = week.length ? Math.round(week.filter(r => r.status === 'success').length / week.length * 100) : null;
     const running = live.some(r => r.workflow_id === w.id && r.status === 'running');
+    const waiting = live.some(r => r.workflow_id === w.id && r.status === 'waiting_approval');
     const next = w.enabled && w.schedule_cron ? nextCronOccurrence(w.schedule_cron, w.schedule_timezone, clock) : null;
     // Overdue: the schedule should have fired after the latest run, gave it a
     // 2-minute grace, and no newer run ever appeared — a silently dead scheduler.
@@ -2529,7 +2808,8 @@ function Wallboard() {
       overdue = !!expected && expected.getTime() < clock.getTime() - 120_000
         && !mine.some(r => new Date(r.created_at) >= expected);
     }
-    const status = running ? 'running'
+    const status = waiting ? 'waiting'
+      : running ? 'running'
       : last?.status === 'failed' ? 'failed'
       : overdue ? 'overdue'
       : (last?.status ?? (mine.length ? mine[0].status : 'never'));
@@ -2555,10 +2835,12 @@ function Wallboard() {
 
   const failing = tiles.filter(t => t.status === 'failed').length;
   const overdueCount = tiles.filter(t => t.status === 'overdue').length;
+  const waitingCount = tiles.filter(t => t.status === 'waiting').length;
   const runningCount = live.filter(r => r.status === 'running').length;
-  const mood = failing || overdueCount ? 'attention' : runningCount ? 'active' : 'calm';
+  const mood = failing || overdueCount ? 'attention' : waitingCount || runningCount ? 'active' : 'calm';
   const verdict = failing ? `${failing} failing`
     : overdueCount ? `${overdueCount} overdue`
+    : waitingCount ? `${waitingCount} waiting for approval`
     : runningCount ? `${runningCount} running`
     : 'All systems nominal';
   const nextUp = tiles.filter(t => t.next).sort((a, b) => a.next!.getTime() - b.next!.getTime())[0];
@@ -2600,7 +2882,7 @@ function Wallboard() {
                 <span className={`run-pulse ${r.status}`} />
                 <div className="wallboard-live-body">
                   <b title={flowName}>{flowName}</b>
-                  <small>#{r.id} · {r.status} · {liveDuration(r, now)}</small>
+                  <small>#{r.id} · {r.status.replace(/_/g, ' ')} · {liveDuration(r, now)}</small>
                   {pct != null && (
                     <div className="wb-progress" style={{ '--over-ratio': overRatio.toFixed(3) } as CSSProperties}>
                       <div className="wb-progress-fill" style={{ width: `${pct}%` }}>

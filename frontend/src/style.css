@@ -2455,3 +2455,1083 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 }
 .sched-preview b { color: var(--text-1); font-weight: 600; }
 .sched-warn { color: var(--warning); font-size: 11.5px; }
+
+/* ═══════════════════════════════════════════════════════
+   V0.5 — RUN CONTROL · ALERTS · OUTPUTS · INSIGHTS
+   Approval gates, resume, snooze + watchdogs, notebook
+   reports, run exports, log search, run notes, duration
+   trends.
+
+   House rules, unchanged: tokens only (no literal colour
+   outside the two documented exceptions — the wallboard's
+   fixed TV surface and the report frame's white plate),
+   both themes correct by construction, and every new
+   animation answered in the reduced-motion block that
+   closes this section. Motion is never the only carrier
+   of a state: the reduced-motion path keeps the tint, the
+   dim and the background and drops only the movement.
+═══════════════════════════════════════════════════════ */
+
+/* ─── Keyframes for this pass ─────────────────────────── */
+@keyframes gate-arrive     { from { opacity: 0; transform: translateY(8px); } }
+@keyframes gate-breathe    { from { opacity: .5; } to { opacity: 1; } }
+@keyframes gate-glyph-pulse{ 0%,100% { box-shadow: 0 0 28px -8px var(--warning); }
+                             50%     { box-shadow: 0 0 34px -2px var(--warning); } }
+@keyframes settle-flash    { from { background: var(--settle-tint); } to { background: var(--bg-hover); } }
+@keyframes confirm-slide   { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes inbox-pip       { 0%,100% { box-shadow: 0 0 0 3px var(--warning-soft); }
+                             50%     { box-shadow: 0 0 0 6px var(--warning-soft); } }
+@keyframes forced-in       { from { opacity: 0; transform: translateX(-4px); } }
+@keyframes pop-in          { from { opacity: 0; transform: translateY(4px); } }
+/* currentColor, so the same breathe reads amber on a mute and red on a
+   run-pausing mute without a second keyframe. */
+@keyframes snooze-breathe  { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 35%, transparent); }
+                             50%     { box-shadow: 0 0 0 4px transparent; } }
+@keyframes reveal-down     { from { opacity: 0; transform: translateY(-2px); } }
+@keyframes spark-land      { from { opacity: .35; } }
+
+/* ═══ Approval gate — the salient card ══════════════════
+   A run parked on a person is the loudest thing on its
+   page. Warm, never red: nothing has failed, someone is
+   simply being asked. */
+.approval-gate {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 20px;
+  padding: 0;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--warning-border);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-md), 0 0 60px -28px var(--warning), inset 3px 0 0 var(--warning);
+  animation: gate-arrive .5s var(--ease-out) both;
+}
+.approval-gate--settled {
+  border-color: var(--success-border);
+  box-shadow: var(--shadow-md), 0 0 60px -28px var(--success), inset 3px 0 0 var(--success);
+}
+.approval-gate-aura {
+  position: absolute;
+  inset: -40% -10% auto -10%;
+  height: 220px;
+  pointer-events: none;
+  background: radial-gradient(60% 100% at 20% 0%, var(--warning-soft), transparent 70%);
+  animation: gate-breathe 6s var(--ease-swift) infinite alternate;
+}
+.approval-gate--settled .approval-gate-aura {
+  background: radial-gradient(60% 100% at 20% 0%, var(--success-soft), transparent 70%);
+  animation: none;
+  opacity: .8;
+}
+/* Both sit above the aura. */
+.approval-gate-head, .approval-gate-list { position: relative; }
+.approval-gate-head {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.approval-gate-glyph {
+  width: 40px; height: 40px; flex-shrink: 0;
+  border-radius: var(--r-md);
+  display: grid; place-items: center;
+  color: var(--warning);
+  background: var(--warning-soft);
+  border: 1px solid var(--warning-border);
+  box-shadow: 0 0 28px -8px var(--warning);
+  animation: gate-glyph-pulse 2.6s var(--ease-swift) infinite;
+}
+.approval-gate--settled .approval-gate-glyph {
+  color: var(--success);
+  background: var(--success-soft);
+  border-color: var(--success-border);
+  box-shadow: 0 0 28px -8px var(--success);
+  animation: none;
+}
+.approval-gate-headtext { flex: 1; min-width: 0; }
+.approval-gate-headtext h2 {
+  font-size: 16.5px; font-weight: 700; color: var(--text-1); letter-spacing: -0.2px;
+}
+.approval-gate-headtext p {
+  font-size: 12.5px; color: var(--text-2); line-height: 1.55; margin-top: 4px;
+}
+.approval-gate-eyebrow {
+  display: block; margin-bottom: 3px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em;
+  color: var(--warning);
+}
+.approval-gate--settled .approval-gate-eyebrow { color: var(--success); }
+.approval-gate-timer {
+  display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+  font-size: 11.5px; font-variant-numeric: tabular-nums;
+  padding: 4px 9px; border-radius: 999px; white-space: nowrap;
+  color: var(--warning); background: var(--warning-soft);
+  border: 1px solid var(--warning-border);
+}
+
+.approval-gate-list { display: flex; flex-direction: column; }
+.approval-gate-item {
+  padding: 16px 20px 18px;
+  display: flex; flex-direction: column; gap: 14px;
+  border-top: 1px solid var(--border);
+}
+.approval-gate-item:first-child { border-top: 0; }
+.approval-gate-item--settled {
+  --settle-tint: var(--success-soft);
+  background: var(--bg-hover);
+  animation: settle-flash .6s var(--ease-out);
+}
+.approval-gate-item--settled:has(.is-rejected) { --settle-tint: var(--danger-soft); }
+
+.approval-gate-task { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.approval-gate-task-name {
+  font-size: 14.5px; font-weight: 700; color: var(--text-1);
+  font-family: var(--font-mono); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.approval-gate-task-sep { font-size: 12.5px; color: var(--text-3); }
+.approval-gate-waited {
+  margin-left: auto;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums;
+}
+
+/* The author's question — the loudest text in the card. */
+.approval-gate-prompt {
+  margin: 0;
+  padding: 12px 14px 12px 16px;
+  border-left: 2px solid var(--warning);
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  background: var(--warning-soft);
+  color: var(--text-1);
+  font-size: 14px; line-height: 1.6; white-space: pre-wrap;
+}
+.approval-gate-prompt--empty {
+  color: var(--text-3); font-style: italic;
+  background: var(--bg-hover); border-left-color: var(--border-strong);
+}
+
+.approval-gate-cmd { display: flex; flex-direction: column; gap: 6px; }
+.approval-gate-cmd-label {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--text-3);
+}
+/* Scrolls inside itself — a long command never widens the page. */
+.approval-gate-cmd pre {
+  margin: 0; padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: var(--bg-code); border: 1px solid var(--border);
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-1);
+  overflow-x: auto; white-space: pre;
+}
+.approval-gate-cmd small { font-size: 11px; color: var(--text-3); }
+.approval-gate-cmd small code { font-family: var(--font-mono); color: var(--text-2); }
+.approval-gate-cmd-cwd {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.approval-gate-context {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px;
+}
+.approval-gate-ctx {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 11px 12px; border-radius: var(--r-md);
+  background: var(--bg-hover); border: 1px solid var(--border);
+}
+.approval-gate-ctx-label {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--text-3);
+}
+.approval-gate-ctx-empty { margin: 0; font-size: 11.5px; color: var(--text-3); line-height: 1.5; }
+.approval-gate-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.approval-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 999px;
+  font-size: 11.5px; font-family: var(--font-mono);
+  border: 1px solid var(--border-strong); color: var(--text-2); background: var(--bg-card);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.approval-chip i { font-style: normal; color: var(--text-3); font-size: 10.5px; margin-left: 2px; }
+.approval-chip--done { color: var(--success); background: var(--success-soft); border-color: var(--success-border); }
+.approval-chip--next { color: var(--warning); background: var(--warning-soft); border-color: var(--warning-border); font-weight: 600; }
+/* Dashed: these have not run — the chip must not read as a result. */
+.approval-chip--downstream { color: var(--text-2); background: var(--queued-soft); border-color: var(--queued-border); border-style: dashed; }
+.approval-chip--more { color: var(--text-3); background: transparent; border-style: dashed; }
+
+/* Attribution — deliberately plain. This is not a sign-in. */
+.approval-gate-attribution {
+  display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+  gap: 12px; align-items: start;
+}
+.approval-gate-name, .approval-gate-note { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+/* Wraps: the "attribution only" note is long and the name column is narrow,
+   so the em drops to its own line rather than breaking the label in two. */
+.approval-gate-name > span, .approval-gate-note > span {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 12.5px; font-weight: 600; color: var(--text-2);
+}
+.approval-gate-name > span em, .approval-gate-note > span em {
+  font-style: normal; font-weight: 400; font-size: 11.5px; color: var(--text-3);
+}
+.approval-gate-name input, .approval-gate-note textarea {
+  height: 36px; padding: 0 12px;
+  border-radius: var(--r-sm); border: 1px solid var(--border-strong);
+  background-color: var(--bg-input); color: var(--text-1); outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.approval-gate-note textarea { height: auto; padding: 10px 12px; min-height: 62px; resize: vertical; }
+.approval-gate-name input:focus, .approval-gate-note textarea:focus {
+  border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.approval-gate-name input::placeholder, .approval-gate-note textarea::placeholder { color: var(--text-3); }
+.approval-gate-note small { font-size: 11px; color: var(--text-3); }
+.approval-gate-note small b { color: var(--text-2); }
+.approval-gate-note-toggle {
+  align-self: start; background: none; border: 0; padding: 4px 0;
+  font-size: 12px; color: var(--text-3);
+  display: inline-flex; align-items: center; gap: 5px;
+  cursor: pointer; transition: color .12s;
+}
+.approval-gate-note-toggle:hover { color: var(--accent); }
+
+.approval-gate-actions {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 2px;
+}
+/* The deliberate single click. */
+.approval-approve.btn-primary {
+  background: var(--success);
+  border-color: var(--success);
+  color: #062018;
+  font-weight: 650;
+  padding-inline: 18px;
+  box-shadow: 0 0 30px -12px var(--success);
+}
+.approval-approve.btn-primary:hover:not(:disabled) {
+  background: var(--success);
+  box-shadow: 0 0 34px -8px var(--success);
+}
+[data-theme="light"] .approval-approve.btn-primary { color: #053224; }
+/* Quiet until hovered — a reject must never look armed. */
+.approval-reject.btn-ghost { color: var(--text-2); }
+.approval-reject.btn-ghost:hover:not(:disabled) {
+  color: var(--danger); border-color: var(--danger-border); background: var(--danger-soft);
+}
+.approval-gate-actions-hint { margin-left: auto; font-size: 11.5px; color: var(--text-3); }
+
+.approval-gate-confirm {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 14px; border-radius: var(--r-md);
+  background: var(--danger-soft); border: 1px solid var(--danger-border);
+  animation: confirm-slide .18s var(--ease-out);
+}
+.approval-gate-confirm-text {
+  flex: 1; min-width: 220px;
+  display: flex; align-items: flex-start; gap: 8px;
+  font-size: 12.5px; line-height: 1.55; color: var(--text-1);
+}
+.approval-gate-confirm-text > svg { color: var(--danger); flex-shrink: 0; margin-top: 2px; }
+.approval-gate-confirm-text b { color: var(--danger); }
+.approval-gate-confirm-actions { display: flex; gap: 8px; margin-left: auto; }
+
+.approval-gate-settled { display: flex; align-items: flex-start; gap: 12px; }
+.approval-gate-settled b { font-size: 13.5px; font-weight: 700; color: var(--text-1); }
+.approval-gate-settled b em { font-style: normal; font-family: var(--font-mono); color: var(--text-1); }
+.approval-gate-settled p { font-size: 12.5px; color: var(--text-2); margin-top: 3px; line-height: 1.55; }
+.approval-gate-settled-icon {
+  width: 32px; height: 32px; flex-shrink: 0;
+  border-radius: var(--r-sm); display: grid; place-items: center;
+}
+.approval-gate-settled.is-approved { color: var(--success); }
+.approval-gate-settled.is-approved b { color: var(--success); }
+.approval-gate-settled.is-approved .approval-gate-settled-icon {
+  background: var(--success-soft); border: 1px solid var(--success-border);
+}
+.approval-gate-settled.is-rejected { color: var(--danger); }
+.approval-gate-settled.is-rejected b { color: var(--danger); }
+.approval-gate-settled.is-rejected .approval-gate-settled-icon {
+  background: var(--danger-soft); border: 1px solid var(--danger-border);
+}
+.approval-gate-settled-body { flex: 1; min-width: 0; }
+.approval-gate-settled-note {
+  margin-top: 6px; padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  font-size: 12.5px; color: var(--text-2); font-style: italic;
+}
+.approval-gate-dismiss {
+  margin-left: auto; background: none; border: 0; padding: 2px 4px;
+  font-size: 11.5px; color: var(--text-3); cursor: pointer; transition: color .12s;
+}
+.approval-gate-dismiss:hover { color: var(--text-1); }
+
+@media (max-width: 620px) {
+  .approval-gate-context { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .approval-gate-task-sep { display: none; }
+  .approval-gate-attribution { grid-template-columns: minmax(0, 1fr); }
+  .approval-gate-actions-hint { display: none; }
+}
+
+/* ─── Approval inbox (dashboard) ──────────────────────── */
+.approval-inbox {
+  border-color: var(--warning-border);
+  box-shadow: var(--shadow-sm), inset 3px 0 0 var(--warning);
+}
+.approval-inbox-count {
+  min-width: 22px; height: 22px; padding: 0 7px;
+  border-radius: 999px; display: grid; place-items: center;
+  font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--warning); background: var(--warning-soft);
+  border: 1px solid var(--warning-border); flex-shrink: 0;
+}
+.approval-inbox-list { padding: 6px 0; }
+.approval-inbox-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 20px; text-decoration: none; color: inherit;
+  transition: background .12s var(--ease-swift);
+}
+.approval-inbox-row:hover { background: var(--bg-hover); }
+.approval-inbox-row + .approval-inbox-row { border-top: 1px solid var(--border); }
+.approval-inbox-pip {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft);
+  animation: inbox-pip 2s var(--ease-swift) infinite;
+}
+.approval-inbox-body { flex: 1; min-width: 0; }
+.approval-inbox-name {
+  font-size: 13px; font-weight: 600; color: var(--text-1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.approval-inbox-meta {
+  font-size: 11.5px; color: var(--text-3); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.approval-inbox-cta {
+  flex-shrink: 0; font-size: 11px; font-weight: 600;
+  padding: 3px 8px; border-radius: var(--r-xs);
+  color: var(--warning); background: var(--warning-soft);
+  border: 1px solid var(--warning-border);
+}
+.approval-inbox-row > svg { color: var(--text-3); flex-shrink: 0; }
+.approval-inbox-more { padding: 8px 20px; font-size: 11.5px; color: var(--text-3); }
+.approval-inbox-empty {
+  display: flex; align-items: center; gap: 8px;
+  padding: 16px 20px; font-size: 12.5px; color: var(--text-3);
+}
+.approval-inbox-empty > svg { color: var(--success); flex-shrink: 0; }
+
+/* ═══ Resume dialog ═════════════════════════════════════
+   "Resume ≠ Retry" is the whole teaching job of this
+   modal, so the two comparison cards must differ at a
+   glance, and every re-run reason carries its own tone. */
+.resume-body {
+  display: flex; flex-direction: column; gap: 16px;
+  max-height: 70vh; overflow-y: auto;
+}
+.resume-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.resume-compare-card {
+  padding: 11px 13px; border-radius: var(--r-md);
+  border: 1px solid var(--border); background: var(--bg-hover);
+}
+.resume-compare-card b {
+  display: inline-flex; align-items: center; gap: 6px; margin-bottom: 4px;
+  font-size: 12.5px; font-weight: 700; color: var(--text-2);
+}
+.resume-compare-card span { display: block; font-size: 11.5px; color: var(--text-3); line-height: 1.55; }
+.resume-compare-card code, .resume-compare-card em {
+  font-family: var(--font-mono); font-style: normal; color: var(--text-2);
+}
+.resume-compare-card.is-chosen { border-color: var(--accent-border); background: var(--accent-soft); }
+.resume-compare-card.is-chosen b { color: var(--accent); }
+
+.resume-loading {
+  display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 32px 0;
+}
+.resume-loading p { font-size: 12.5px; color: var(--text-3); }
+
+.resume-blocked {
+  display: flex; gap: 12px; padding: 14px; border-radius: var(--r-md);
+  background: var(--warning-soft); border: 1px solid var(--warning-border);
+}
+.resume-blocked > svg { color: var(--warning); flex-shrink: 0; margin-top: 1px; }
+.resume-blocked b { font-size: 13px; font-weight: 700; color: var(--text-1); }
+.resume-blocked p { font-size: 12.5px; color: var(--text-2); line-height: 1.55; margin-top: 5px; }
+.resume-blocked .btn { margin-top: 10px; }
+.resume-blocked--graph { background: var(--danger-soft); border-color: var(--danger-border); }
+.resume-blocked--graph > svg { color: var(--danger); }
+.resume-blocked--graph pre {
+  margin: 8px 0; padding: 9px 11px; border-radius: var(--r-sm);
+  background: var(--bg-code); border: 1px solid var(--border);
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-1);
+  white-space: pre-wrap; overflow-x: auto;
+}
+
+.resume-savings {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-radius: var(--r-md);
+  background: var(--success-soft); border: 1px solid var(--success-border);
+  font-size: 13px; line-height: 1.55; color: var(--text-1);
+}
+.resume-savings > svg { color: var(--success); flex-shrink: 0; }
+.resume-savings b { color: var(--success); font-variant-numeric: tabular-nums; }
+/* Nothing reusable is information, not an alarm. */
+.resume-savings--none { background: var(--bg-hover); border-color: var(--border-strong); }
+.resume-savings--none > svg, .resume-savings--none b { color: var(--text-2); }
+
+.resume-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.resume-columns.is-reloading {
+  opacity: .55; pointer-events: none; transition: opacity .12s var(--ease-swift);
+}
+.resume-col {
+  padding: 12px; border-radius: var(--r-md);
+  border: 1px solid var(--border); background: var(--bg-card); min-width: 0;
+}
+.resume-col--reuse { border-color: var(--success-border); }
+.resume-col--reuse h4 > svg { color: var(--success); }
+.resume-col--rerun { border-color: var(--warning-border); }
+.resume-col--rerun h4 > svg { color: var(--warning); }
+.resume-col h4 {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 700; color: var(--text-1);
+}
+.resume-count {
+  margin-left: auto; min-width: 20px; padding: 1px 7px; text-align: center;
+  border-radius: 999px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+  background: var(--bg-hover); border: 1px solid var(--border-strong); color: var(--text-2);
+}
+.resume-col-sub { font-size: 11.5px; color: var(--text-3); margin: 4px 0 8px; line-height: 1.45; }
+.resume-col-empty { font-size: 12px; color: var(--text-3); font-style: italic; padding: 6px 0; }
+.resume-rows {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 240px; overflow-y: auto;
+}
+.resume-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 8px; border-radius: var(--r-sm);
+  background: var(--bg-hover); min-width: 0;
+}
+.resume-row.is-forced {
+  background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent);
+  animation: forced-in .28s var(--ease-out);
+}
+.resume-row-icon { flex-shrink: 0; }
+.tone-danger  { color: var(--danger); }
+.tone-warning { color: var(--warning); }
+.tone-accent  { color: var(--accent); }
+.tone-queued  { color: var(--text-3); }
+.resume-row-name {
+  flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; color: var(--text-1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.resume-row-dur { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.resume-reason {
+  font-size: 10.5px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+  white-space: nowrap; flex-shrink: 0;
+  background: var(--bg-card);
+  /* Tinted from the tone, not full-strength — the label carries the meaning. */
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+}
+.resume-row-action {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; border-radius: var(--r-xs);
+  border: 1px solid var(--border-strong); background: var(--bg-card);
+  font-size: 10.5px; color: var(--text-2); cursor: pointer; flex-shrink: 0;
+  transition: opacity .12s, color .12s, border-color .12s;
+}
+.resume-row-action:hover { color: var(--accent); border-color: var(--accent-border); }
+/* Revealed on hover, but never keyboard- or touch-invisible. */
+.resume-row--reuse .resume-row-action { opacity: 0; }
+.resume-row--reuse:hover .resume-row-action,
+.resume-row--reuse .resume-row-action:focus-visible { opacity: 1; }
+@media (hover: none) { .resume-row--reuse .resume-row-action { opacity: 1; } }
+
+.resume-hint {
+  display: flex; align-items: flex-start; gap: 7px;
+  font-size: 11.5px; color: var(--text-3); line-height: 1.5;
+}
+.resume-hint > svg { margin-top: 2px; flex-shrink: 0; }
+.resume-note { font-size: 11.5px; }
+.resume-error {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--danger-soft); border: 1px solid var(--danger-border);
+  font-size: 12.5px; color: var(--text-1);
+}
+.resume-error > svg { color: var(--danger); flex-shrink: 0; }
+
+@media (max-width: 560px) {
+  .resume-compare, .resume-columns { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ═══ Snooze ════════════════════════════════════════════
+   Muting alerts is one click. Also pausing runs is an
+   escalation, so it is armed (dashed → solid danger) and
+   then confirmed, and its chip is a different colour from
+   a plain mute. */
+.snooze-anchor { display: inline-flex; }
+/* position/top/left/z-index are owned by the placement code (inline). */
+.snooze-pop {
+  width: 340px; padding: 14px;
+  display: flex; flex-direction: column; gap: 12px;
+  background: var(--bg-modal);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  animation: pop-in .16s var(--ease-out) both;
+}
+.snooze-pop-state {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--warning-soft); border: 1px solid var(--warning-border);
+}
+.snooze-pop-state strong { display: block; font-size: 13px; font-weight: 650; color: var(--warning); }
+.snooze-pop-state span { display: block; font-size: 11.5px; color: var(--text-2); }
+.snooze-pop-head h4 { font-size: 13.5px; font-weight: 650; color: var(--text-1); }
+.snooze-pop-head p { font-size: 11.5px; color: var(--text-2); line-height: 1.5; margin-top: 3px; }
+
+.snooze-presets { display: flex; flex-direction: column; gap: 4px; }
+.snooze-preset {
+  display: flex; align-items: center; gap: 8px;
+  height: 32px; padding: 0 10px;
+  border-radius: var(--r-sm); border: 1px solid transparent; background: none;
+  color: var(--text-2); font-size: 12.5px; cursor: pointer;
+  transition: background .15s var(--ease-swift), color .15s var(--ease-swift),
+              border-color .15s var(--ease-swift), transform .15s var(--ease-out);
+}
+.snooze-preset:hover { background: var(--bg-hover); color: var(--text-1); border-color: var(--border); }
+.snooze-preset:active { transform: scale(.98); }
+.snooze-preset:disabled { opacity: .5; cursor: not-allowed; }
+/* Armed escalation: the picked duration is what is about to be paused. */
+.snooze-preset.is-picked {
+  border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger);
+}
+.snooze-preset-label { flex: 1; text-align: left; }
+.snooze-preset-when { color: var(--text-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.snooze-custom { padding-top: 10px; border-top: 1px solid var(--border); }
+
+.snooze-escalation {
+  border: 1px dashed var(--border-strong); border-radius: var(--r-md); padding: 10px;
+  transition: border-color .18s var(--ease-swift), background .18s var(--ease-swift);
+}
+.snooze-escalation.is-armed {
+  border-style: solid; border-color: var(--danger-border); background: var(--danger-soft);
+}
+/* The house toggle turns green when on. Inside an armed escalation that reads
+   as reassurance, which is the opposite of what this switch just did. */
+.snooze-escalation.is-armed .toggle input:checked + span {
+  background: var(--danger-soft); border-color: var(--danger-border);
+}
+.snooze-escalation.is-armed .toggle input:checked + span::before { background: var(--danger); }
+/* Flex, not a nested <label>: .toggle only gets its box once blockified. */
+.snooze-escalation-row { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.snooze-escalation-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.snooze-escalation-text strong {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12.5px; font-weight: 650; color: var(--text-1);
+}
+.snooze-escalation-text small { font-size: 11.5px; color: var(--text-3); line-height: 1.5; }
+.snooze-confirm {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--danger-border);
+}
+.snooze-confirm span {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--danger);
+}
+.snooze-confirm span svg { flex-shrink: 0; }
+.snooze-confirm-hint { color: var(--text-3) !important; font-size: 11.5px; }
+.snooze-error {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--danger);
+}
+
+.snooze-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 650;
+  padding: 3.5px 9px; border-radius: 20px; line-height: 1; white-space: nowrap;
+  color: var(--warning); border: 1px solid var(--warning-border); background: var(--warning-soft);
+  animation: snooze-breathe 3s ease infinite;
+}
+/* Pausing runs is materially louder than muting alerts. */
+.snooze-chip--paused { color: var(--danger); border-color: var(--danger-border); background: var(--danger-soft); }
+.snooze-chip-tag {
+  font-size: 10px; opacity: .85;
+  display: inline-flex; align-items: center; gap: 3px;
+  padding-left: 6px; border-left: 1px solid var(--border);
+}
+.snooze-chip-undo {
+  width: 16px; height: 16px; flex-shrink: 0;
+  border: none; background: none; color: inherit; opacity: .6;
+  border-radius: 50%; display: grid; place-items: center; cursor: pointer;
+  transition: opacity .15s var(--ease-swift), background .15s var(--ease-swift);
+}
+.snooze-chip-undo:hover { opacity: 1; background: var(--bg-hover); }
+.snooze-chip-undo:disabled { opacity: .3; cursor: not-allowed; }
+.snooze-chip-undo:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.snooze-count { font-variant-numeric: tabular-nums; }
+.snooze-trigger.is-muted {
+  color: var(--warning); border-color: var(--warning-border); background: var(--warning-soft);
+}
+.snooze-trigger.is-muted:hover:not(:disabled) {
+  color: var(--warning); border-color: var(--warning); background: var(--warning-soft);
+}
+
+/* ═══ Watchdog fields (workflow modals) ═════════════════
+   Opt-in alarms: a toggle states the choice, and only
+   then is there a number to argue with. */
+.watchdogs {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px; border: 1px solid var(--border);
+  border-radius: var(--r-md); background: var(--bg-card);
+}
+.watchdogs-label { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.watchdogs-foot { font-size: 11.5px; color: var(--text-3); line-height: 1.5; }
+.watchdog {
+  display: flex; flex-direction: column;
+  border-radius: var(--r-sm);
+  transition: background .18s var(--ease-swift);
+}
+.watchdog.is-on { background: var(--bg-hover); }
+/* Flex, for the same blockify reason as .snooze-escalation-row. */
+.watchdog-head { display: flex; align-items: center; gap: 10px; padding: 8px; cursor: pointer; }
+.watchdog-glyph {
+  width: 26px; height: 26px; flex-shrink: 0;
+  display: grid; place-items: center; border-radius: var(--r-sm);
+  background: var(--accent-soft); border: 1px solid var(--accent-border); color: var(--accent);
+}
+.watchdog:not(.is-on) .watchdog-glyph {
+  background: var(--bg-card-r); border-color: var(--border); color: var(--text-3);
+}
+.watchdog-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.watchdog-text strong { font-size: 12.5px; font-weight: 650; color: var(--text-1); }
+.watchdog-text small { font-size: 11.5px; color: var(--text-2); line-height: 1.45; }
+.watchdog-body {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 0 8px 10px 44px;
+  animation: reveal-down .18s var(--ease-out) both;
+}
+.watchdog-duration { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* These inputs are not inside a .field, so the geometry is restated here. */
+.watchdog-duration input, .watchdog-duration select {
+  height: 34px; padding: 0 10px;
+  border-radius: var(--r-sm); border: 1px solid var(--border-strong);
+  background-color: var(--bg-input); color: var(--text-1); outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.watchdog-duration input:focus, .watchdog-duration select:focus {
+  border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.watchdog-duration input[type="number"] { width: 90px; }
+.watchdog-duration select { max-width: 120px; }
+.watchdog-summary { flex: 1; min-width: 170px; font-size: 11.5px; color: var(--text-2); }
+.watchdog-warn {
+  display: flex; align-items: flex-start; gap: 6px;
+  font-size: 11.5px; color: var(--warning); line-height: 1.5;
+}
+.watchdog-warn svg { flex-shrink: 0; margin-top: 2px; }
+.watchdog-note { font-size: 11.5px; color: var(--text-3); line-height: 1.55; }
+.watchdog-note em { font-style: italic; color: var(--text-2); }
+
+/* ═══ Notebook reports ══════════════════════════════════ */
+.report-panel { display: flex; flex-direction: column; }
+/* Above sidebar (40) and topbar (30), below .modal-shade (100),
+   .cmdk-shade (120) and .toaster (200). Opaque: the page behind
+   must not bleed through a white report. */
+.report-panel--fullscreen {
+  position: fixed; inset: 0; z-index: 90;
+  margin: 0; border: none; border-radius: 0;
+  background: var(--bg-base); box-shadow: none;
+  animation: fade-in .16s var(--ease-swift) both;
+}
+.report-panel--fullscreen .report-body { flex: 1; min-height: 0; padding: 0; }
+.report-actions {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
+}
+.report-tabstrip { padding: 12px 20px 0; overflow-x: auto; scrollbar-width: thin; }
+.report-tabstrip .segmented { display: inline-flex; min-width: min-content; }
+.report-tabstrip .segmented button { flex: 0 0 auto; padding: 0 12px; white-space: nowrap; }
+.report-body { padding: 16px 20px 20px; min-height: 220px; }
+/* Literal white, on purpose and only here: an nbconvert "lab" document ships
+   its own light stylesheet, so painting the gap with --bg-card would ring a
+   white page with a dark seam in dark theme. The ring keeps it a surface. */
+.report-frame {
+  display: block; width: 100%; border: 0;
+  border-radius: var(--r-md); background: #fff;
+  box-shadow: 0 0 0 1px var(--border);
+  opacity: 0;
+}
+.report-frame--in { opacity: 1; animation: fade-in .28s var(--ease-swift) both; }
+.report-rendering {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: 48px 24px; text-align: center;
+}
+.report-rendering .dot-loader { max-width: 240px; }
+.report-rendering p { font-size: 12.5px; color: var(--text-3); max-width: 42ch; line-height: 1.55; }
+.report-problem-actions { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.report-problem-buttons { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.report-problem-detail {
+  display: block; max-width: 60ch; text-align: left; word-break: break-word;
+  font-family: var(--font-mono); font-size: 11.5px;
+  color: var(--danger); background: var(--danger-soft);
+  border: 1px solid var(--danger-border); border-radius: var(--r-sm); padding: 8px 12px;
+}
+.report-copy-cmd {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: var(--r-sm);
+  border: 1px solid var(--border-strong); background: var(--bg-code); color: var(--text-2);
+  cursor: pointer; transition: border-color .15s, color .15s, transform .15s var(--ease-out);
+}
+.report-copy-cmd code { font-family: var(--font-mono); font-size: 12px; color: var(--text-1); }
+.report-copy-cmd:hover { border-color: var(--accent-border); color: var(--text-1); }
+.report-copy-cmd:active { transform: scale(0.98); }
+
+/* The /latest freshness strip — .summary-strip's look, flush inside a panel. */
+.report-freshness {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 1px; background: var(--border); border-bottom: 1px solid var(--border);
+}
+.report-freshness > div {
+  padding: 12px 18px; background: var(--bg-card);
+  display: flex; flex-direction: column; gap: 5px; min-width: 0;
+}
+/* :first-child guard — a StatusBadge is also a <span> in here. */
+.report-freshness > div > span:first-child {
+  font-size: 11.5px; font-weight: 600; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.report-freshness > div > strong {
+  font-size: 14px; font-weight: 600; color: var(--text-1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.report-freshness .status-badge, .report-freshness .run-id { align-self: flex-start; }
+/* No pulse: a permanent warning that flashes is noise. The colour is the signal. */
+.report-stale {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 20px;
+  background: var(--warning-soft); border-bottom: 1px solid var(--warning-border);
+  color: var(--warning);
+}
+.report-stale > svg { flex-shrink: 0; margin-top: 1px; }
+.report-stale > div { flex: 1; min-width: 0; }
+.report-stale strong { display: block; font-size: 13px; color: var(--text-1); }
+.report-stale p { font-size: 12.5px; color: var(--text-2); margin-top: 3px; line-height: 1.5; }
+.report-stale .btn { flex-shrink: 0; align-self: center; }
+
+/* ═══ Share this run (export) ═══════════════════════════ */
+.share-size {
+  display: grid; grid-template-columns: auto 1fr; column-gap: 14px; row-gap: 4px;
+  align-items: baseline; padding: 12px 14px;
+  border-radius: var(--r-md); border: 1px solid;
+  transition: background .25s var(--ease-swift), border-color .25s var(--ease-swift),
+              color .25s var(--ease-swift);
+}
+.share-size strong { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.share-size p { font-size: 12.5px; line-height: 1.5; color: var(--text-2); }
+.share-size-parts {
+  grid-column: 1 / -1; font-size: 11.5px; color: var(--text-3); font-family: var(--font-mono);
+}
+.share-size--ok   { background: var(--bg-card);      border-color: var(--border);         color: var(--text-1); }
+.share-size--warn { background: var(--warning-soft); border-color: var(--warning-border);  color: var(--warning); }
+.share-size--over { background: var(--danger-soft);  border-color: var(--danger-border);   color: var(--danger); }
+/* The only thing between a user and mailing an API token — it must not read
+   as a neighbouring .callout. */
+.share-warning {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px; border-radius: var(--r-md);
+  background: var(--warning-soft); border: 1px solid var(--warning-border);
+  color: var(--warning); box-shadow: inset 3px 0 0 var(--warning);
+}
+.share-warning > svg { flex-shrink: 0; margin-top: 1px; }
+.share-warning strong { display: block; font-size: 13px; color: var(--text-1); }
+.share-warning p { font-size: 12.5px; line-height: 1.55; color: var(--text-2); margin-top: 3px; }
+.share-note { display: flex; align-items: flex-start; gap: 8px; }
+.share-note > svg { flex-shrink: 0; margin-top: 2px; color: var(--text-3); }
+.share-progress { display: flex; flex-direction: column; gap: 8px; }
+.share-progress span { font-size: 12px; color: var(--text-3); }
+
+/* ═══ Log search page ═══════════════════════════════════
+   The banner is load-bearing: a truncated scan must never
+   read calmer than a complete one. */
+.logsearch-form { margin-bottom: 20px; }
+.logsearch-filters {
+  padding: 0 20px 16px; margin-bottom: 0; border: none; align-items: flex-end;
+}
+.logsearch-query { flex: 2; max-width: 420px; }
+.logsearch-taskname {
+  height: 34px; padding: 0 10px; max-width: 190px;
+  border-radius: var(--r-sm); border: 1px solid var(--border-strong);
+  background-color: var(--bg-input); color: var(--text-1); outline: none;
+  font-size: 13px; text-overflow: ellipsis;
+  transition: border-color .15s, box-shadow .15s;
+}
+.logsearch-taskname:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-soft); }
+.logsearch-taskname::placeholder { color: var(--text-3); }
+.logsearch-stream-pick { height: 34px; flex: 0 0 auto; align-items: center; }
+.logsearch-stream-pick button { min-width: 52px; }
+.logsearch-date { display: flex; flex-direction: column; gap: 3px; }
+.logsearch-date > span {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3);
+}
+.logsearch-date input {
+  height: 34px; padding: 0 10px;
+  border-radius: var(--r-sm); border: 1px solid var(--border-strong);
+  background-color: var(--bg-input); color: var(--text-1); outline: none; font-size: 13px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.logsearch-date input:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-soft); }
+.logsearch-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.logsearch-hint { padding: 0 20px 14px; font-size: 12px; color: var(--text-3); line-height: 1.6; }
+.logsearch-hint b { color: var(--text-2); font-weight: 600; }
+.logsearch-advanced {
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
+  padding: 14px 20px; border-top: 1px solid var(--border); background: var(--bg-hover);
+  animation: reveal-down .18s var(--ease-out) both;
+}
+.logsearch-advanced .field { min-width: 120px; }
+.logsearch-advanced .field input, .logsearch-advanced .field select { height: 32px; }
+.logsearch-check {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; color: var(--text-2); cursor: pointer;
+}
+.logsearch-check input[type="checkbox"] { accent-color: var(--accent); }
+.logsearch-advanced-note { flex-basis: 100%; font-size: 11.5px; color: var(--text-3); line-height: 1.55; }
+
+.logsearch-banner {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 14px 18px; border-radius: var(--r-lg); border: 1px solid;
+  margin-bottom: 18px; font-size: 12.5px; line-height: 1.6;
+}
+.logsearch-banner > svg { flex: 0 0 auto; margin-top: 1px; }
+.logsearch-banner b { display: block; font-size: 13px; color: var(--text-1); }
+.logsearch-banner p { color: var(--text-2); margin-top: 4px; }
+.logsearch-banner--complete { background: var(--success-soft); border-color: var(--success-border); }
+.logsearch-banner--complete > svg, .logsearch-banner--complete b { color: var(--success); }
+/* Heavier than --complete on purpose. */
+.logsearch-banner--partial {
+  background: var(--warning-soft); border-color: var(--warning-border);
+  box-shadow: 0 0 0 1px var(--warning-border);
+}
+.logsearch-banner--partial > svg, .logsearch-banner--partial b { color: var(--warning); }
+.logsearch-banner--error { background: var(--danger-soft); border-color: var(--danger-border); }
+.logsearch-banner--error > svg, .logsearch-banner--error b { color: var(--danger); }
+.logsearch-caveat {
+  margin-top: 6px; font-size: 11.5px; color: var(--text-3);
+  padding-left: 10px; border-left: 2px solid var(--border-strong);
+}
+.logsearch-progress { display: flex; align-items: center; gap: 16px; padding: 20px; }
+.logsearch-progress p { font-size: 12.5px; color: var(--text-3); }
+
+.logsearch-results { display: flex; flex-direction: column; gap: 16px; }
+.logsearch-run { margin-bottom: 0; }
+.logsearch-run-head { padding: 14px 18px 12px; }
+.logsearch-run-head h2 { display: flex; align-items: center; gap: 10px; }
+.logsearch-run-flow {
+  font-size: 13.5px; font-weight: 600; color: var(--text-1);
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.logsearch-run-meta { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.logsearch-hits { display: flex; flex-direction: column; }
+.logsearch-hit { padding: 10px 18px 14px; }
+.logsearch-hit + .logsearch-hit { border-top: 1px solid var(--border); }
+.logsearch-hit-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.logsearch-hit-task {
+  font-size: 12.5px; font-weight: 600; color: var(--text-1);
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.logsearch-hit-meta { font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.logsearch-stream {
+  font-family: var(--font-mono); font-size: 11px; padding: 1px 6px;
+  border-radius: var(--r-xs); border: 1px solid var(--border); background: var(--bg-card-r);
+  color: var(--text-2);
+}
+.logsearch-stream--stdout { color: var(--text-2); }
+.logsearch-stream--stderr { color: var(--danger); border-color: var(--danger-border); background: var(--danger-soft); }
+.logsearch-open {
+  margin-left: auto; font-size: 12px; color: var(--text-3);
+  display: inline-flex; align-items: center; gap: 2px;
+}
+.logsearch-open:hover { color: var(--accent); }
+.logsearch-open svg { transition: transform .15s var(--ease-out); }
+.logsearch-open:hover svg { transform: translateX(2px); }
+/* Scrolls on its own — a 2000-char log line must never widen the page. */
+.logsearch-lines {
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+  background: var(--bg-code); border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 8px 0; overflow-x: auto; white-space: pre;
+}
+.logsearch-line { display: block; padding: 0 12px; min-height: 1.6em; }
+.logsearch-line--context { color: var(--text-3); opacity: .8; }
+.logsearch-line--match { color: var(--text-1); background: var(--bg-hover); box-shadow: inset 2px 0 0 var(--accent); }
+.logsearch-gutter {
+  display: inline-block; width: 52px; text-align: right; padding-right: 12px;
+  color: var(--text-3); opacity: .6; user-select: none; font-variant-numeric: tabular-nums;
+}
+.logsearch-text { white-space: pre; }
+
+/* ═══ Run notes ═════════════════════════════════════════
+   A pending write looks pending, a failed write looks
+   failed, and nothing here ever looks saved when it is
+   not. */
+.run-notes-count { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Quiet, but always present: the only thing stopping "author" reading as identity. */
+.run-notes-disclaimer {
+  margin: 12px 20px 4px; padding: 8px 12px;
+  border-radius: var(--r-sm); background: var(--bg-hover); border: 1px solid var(--border);
+  font-size: 11.5px; color: var(--text-3); line-height: 1.55;
+}
+.run-notes-thread { display: flex; flex-direction: column; padding: 8px 0; }
+.run-note {
+  padding: 10px 20px; border-bottom: 1px solid var(--border);
+  animation: rise-in .2s var(--ease-out) both;
+}
+.run-note:last-child { border-bottom: none; }
+.run-note--draft { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent-border); }
+.run-note--leaving { opacity: .45; pointer-events: none; transition: opacity .15s var(--ease-swift); }
+/* Overrides --draft: a failed write must never look pending or saved. */
+.run-note--failed { background: var(--danger-soft); box-shadow: inset 2px 0 0 var(--danger); }
+.run-note-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.run-note-author { font-size: 12.5px; font-weight: 600; color: var(--text-1); cursor: help; }
+.run-note-author--unsigned { font-weight: 500; font-style: italic; color: var(--text-3); }
+.run-note-time { font-size: 11.5px; color: var(--text-3); }
+.run-note-edited {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-3);
+  padding: 1px 5px; border-radius: var(--r-xs); border: 1px solid var(--border);
+}
+.run-note-state { font-size: 11px; color: var(--text-2); font-style: italic; }
+.run-note--failed .run-note-state { color: var(--danger); font-weight: 600; }
+.run-note-actions { display: flex; gap: 2px; margin-left: auto; opacity: 0; transition: opacity .12s; }
+.run-note:hover .run-note-actions, .run-note:focus-within .run-note-actions { opacity: 1; }
+@media (hover: none) { .run-note-actions { opacity: 1; } }
+.run-note-body {
+  font-size: 13px; color: var(--text-1); line-height: 1.6;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.run-note-edit { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 2px; }
+.run-note-edit textarea, .run-note-edit input {
+  padding: 10px 12px; border-radius: var(--r-sm); border: 1px solid var(--border-strong);
+  background-color: var(--bg-input); color: var(--text-1); outline: none;
+  font-size: 13px; resize: vertical;
+  transition: border-color .15s, box-shadow .15s;
+}
+.run-note-edit input { height: 34px; padding: 0 12px; resize: none; }
+.run-note-edit textarea:focus, .run-note-edit input:focus {
+  border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.run-note-edit-actions { display: flex; gap: 8px; }
+.run-note-error {
+  display: flex; align-items: flex-start; gap: 6px; margin-top: 6px;
+  font-size: 11.5px; color: var(--danger); line-height: 1.5;
+}
+.run-note-error svg { flex-shrink: 0; margin-top: 2px; }
+.run-notes-error--panel {
+  align-items: center; padding: 10px 20px; margin: 0;
+}
+.run-notes-form {
+  padding: 14px 20px 18px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.run-notes-form-foot { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.run-notes-author-field { flex: 1; min-width: 200px; max-width: 320px; }
+.run-notes-counter {
+  margin-left: auto; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums;
+}
+/* Neutral on purpose: it marks "annotated", not "problem". */
+.run-note-flag {
+  display: inline-flex; align-items: center; gap: 3px; margin-left: 6px;
+  font-size: 11px; font-weight: 600; padding: 1px 6px;
+  border-radius: var(--r-xs); background: var(--bg-card-r);
+  border: 1px solid var(--border); color: var(--text-2);
+  cursor: help; font-variant-numeric: tabular-nums; vertical-align: middle;
+  transition: color .12s, border-color .12s;
+}
+.run-note-flag:hover { border-color: var(--border-strong); color: var(--text-1); }
+
+/* ═══ Duration trend sparkline ══════════════════════════
+   The verdict is the server's; this only draws it. Too
+   little history renders as an explicit blank rail —
+   never as a suspicion. */
+.trend-spark { display: inline-flex; align-items: center; gap: 8px; vertical-align: middle; cursor: help; }
+.trend-spark-svg { display: block; overflow: visible; }
+.trend-spark-line {
+  fill: none; stroke: var(--text-3); stroke-width: 1.5;
+  stroke-linejoin: round; stroke-linecap: round;
+}
+.trend-spark-area { fill: var(--text-3); opacity: .10; stroke: none; }
+[data-theme="light"] .trend-spark-area { opacity: .16; }
+.trend-spark-median { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 2 3; }
+.trend-spark-last { fill: var(--text-2); stroke: var(--bg-base); stroke-width: 1; }
+.trend-spark-mark { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.trend-spark-band { fill: var(--warning); opacity: .08; }
+[data-theme="light"] .trend-spark-band { opacity: .12; }
+.trend-spark--slow .trend-spark-line { stroke: var(--warning); }
+.trend-spark--slow .trend-spark-area { fill: var(--warning); opacity: .14; }
+[data-theme="light"] .trend-spark--slow .trend-spark-area { opacity: .20; }
+.trend-spark--slow .trend-spark-last { fill: var(--warning); animation: spark-land .6s var(--ease-out) 1; }
+/* Absence, never a value. */
+.trend-spark-rail { stroke: var(--border-strong); stroke-width: 1.5; stroke-dasharray: 2 4; opacity: .7; }
+.trend-spark-dot { fill: var(--text-3); }
+.trend-spark-label {
+  font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.trend-spark--md .trend-spark-label { font-size: 12px; }
+.trend-spark-label em { font-style: normal; color: var(--text-3); }
+.trend-spark-label--muted { color: var(--text-3); font-style: italic; }
+.trend-spark-flag {
+  font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: var(--r-xs);
+  background: var(--warning-soft); border: 1px solid var(--warning-border);
+  color: var(--warning); white-space: nowrap;
+}
+
+/* ═══ Host surfaces this pass touches ═══════════════════ */
+/* Workflow card: the snooze chip sits beside the enabled badge. */
+.workflow-top-tags { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+/* Same rhythm as the other dashboard-column panels. */
+.approval-inbox { margin-bottom: 16px; }
+/* A snooze chip in a .summary-strip cell behaves like a .status-badge there. */
+.summary-strip .snooze-chip { align-self: flex-start; }
+/* Sparklines are fixed-width figures — they never absorb the name's overflow. */
+.run-task-head h3 .trend-spark, .task-card-top .trend-spark { flex-shrink: 0; }
+.run-task-head h3 > span:not(.task-type-badge) { min-width: 0; }
+@media (max-width: 700px) {
+  /* On a narrow card the name needs the whole row back. */
+  .task-card-top .trend-spark, .run-task-head h3 .trend-spark { display: none; }
+}
+/* Run detail: one "shape of the run" panel with a Graph/Timeline switch,
+   instead of two panels stacked. */
+.run-shape-pick { flex-shrink: 0; align-self: center; }
+/* Run detail action row: the report link is a destination, not a command. */
+.detail-actions .snooze-anchor { display: inline-flex; }
+/* Wallboard: a run parked on a person is triage, not idle. */
+.wb-waiting { border-color: var(--warning-border); background: rgba(251,191,36,0.06); }
+.wb-waiting .wallboard-tile-status { color: var(--warning); }
+.wb-bloom-waiting { --bloom: rgba(251,191,36,0.45); --bloom-soft: rgba(251,191,36,0.14); }
+/* Dashboard headline stat for open gates. */
+.dash-stat.stat-approval { color: var(--warning); font-weight: 600; }
+/* Gantt lanes: a gate is a TaskRun too, and .tl-bar without a matching status
+   class has no background at all — an invisible bar, not a neutral one. */
+.tl-bar.awaiting_approval { background: var(--warning); }
+.tl-bar.approved          { background: var(--success); opacity: .5; }
+.tl-bar.rejected          { background: var(--danger); }
+
+/* ─── Reduced motion for this pass ─────────────────────
+   Every STATE survives — the aura's tint, the settled
+   background, the dimmed reloading columns, the pending
+   note. Only the movement goes. */
+@media (prefers-reduced-motion: reduce) {
+  .approval-gate, .approval-gate-item--settled, .approval-gate-confirm,
+  .resume-row.is-forced, .snooze-pop, .watchdog-body, .logsearch-advanced,
+  .run-note, .report-frame--in { animation: none !important; }
+  .approval-gate-aura { animation: none; opacity: .7; }
+  .approval-gate-glyph, .approval-inbox-pip, .snooze-chip,
+  .trend-spark--slow .trend-spark-last { animation: none; }
+  /* Keep the state, drop the tween. */
+  .resume-columns.is-reloading, .run-note--leaving { transition: none; }
+  .resume-row-action, .approval-gate-note-toggle, .snooze-chip-undo,
+  .run-note-actions, .logsearch-open svg, .watchdog, .snooze-escalation { transition: none; }
+  .snooze-preset:active, .report-copy-cmd:active { transform: none !important; }
+  .logsearch-open:hover svg { transform: none; }
+  /* .report-frame's base opacity is 0 and the fade is what reveals it, so the
+     global `animation: none` above would leave it invisible. */
+  .report-frame { opacity: 1 !important; }
+}

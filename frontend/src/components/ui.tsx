@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { attachComet, CometKind } from '../comet';
 import {
   CheckCircle2, XCircle, Loader2, Clock, CircleDot,
-  MinusCircle, AlertCircle, AlertTriangle, X
+  MinusCircle, AlertCircle, AlertTriangle, X, ShieldAlert, ShieldCheck, CircleSlash
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -85,6 +85,12 @@ const STATUS_MAP: Record<string, {
   error:    { cls: 'status-danger',   icon: AlertCircle,   label: 'Error' },
   skipped:  { cls: 'status-muted',    icon: MinusCircle,   label: 'Skipped' },
   cancelled:{ cls: 'status-muted',    icon: MinusCircle,   label: 'Cancelled' },
+  // Approval gates. A run parked on one is warning-toned, never danger: it is
+  // waiting on a person, not broken.
+  waiting_approval:  { cls: 'status-warning', icon: ShieldAlert, label: 'Waiting approval' },
+  awaiting_approval: { cls: 'status-warning', icon: ShieldAlert, label: 'Awaiting approval' },
+  approved:          { cls: 'status-success', icon: ShieldCheck, label: 'Approved' },
+  rejected:          { cls: 'status-danger',  icon: CircleSlash, label: 'Rejected' },
 };
 
 export function StatusBadge({ value }: { value: string }) {
