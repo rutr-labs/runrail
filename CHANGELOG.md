@@ -5,6 +5,9 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 ## [Unreleased]
 
 ### Fixed
+- Progress-bar comets animate correctly in Chromium-based browsers (Edge, Chrome), where they could appear to shift without animating. Two independent causes, both fixed:
+  - **Blanked frames.** Resizing a canvas clears it, and per the HTML spec ResizeObserver callbacks run *after* `requestAnimationFrame` but *before* paint — so on a bar whose width animates every frame (wallboard fills, growing Gantt bars) the observer wiped the frame that had just been drawn, before it was ever shown. Measured at 86% blank frames in Chromium; every resize now repaints immediately, measured at 0%.
+  - **Reduced motion drew moving particles.** With the OS motion preference on — which on Windows is the general Settings → Accessibility → Visual effects → "Animation effects" toggle, not a motion-specific one — the engine parks on a static frame. But embers are stored as a fraction of the bar's width, so re-laying that frozen field on a widening bar slid and stretched the whole cloud: maximum apparent movement in the mode that asks for none. The static frame is now anchored to the frontier in absolute pixels, and the engine reacts to the preference being toggled instead of requiring a reload.
 - Notebook kernels no longer warn "running over TCP without encryption": the worker launches papermill through a small shim that puts the Jupyter kernel on IPC transport (Unix domain sockets, protected by file permissions) instead of loopback TCP. Besides silencing ipykernel's warning, this closes the kernel's TCP ports entirely on shared machines. Windows keeps TCP-on-loopback (ZeroMQ has no ipc:// there).
 
 ## [0.4.0] — 2026-08-04

@@ -165,14 +165,28 @@ let pollId = 0;
 let lastT = 0;
 let themeMo: MutationObserver | null = null;
 
+/* Resizing a canvas CLEARS it, and per the HTML spec's "update the rendering"
+   steps ResizeObserver callbacks run AFTER requestAnimationFrame callbacks but
+   BEFORE paint. A host whose width animates every frame (.wb-progress-fill has
+   `transition: width .9s linear`; Gantt bars grow against the wall clock) would
+   therefore have the frame we just drew wiped before it was ever painted —
+   measured at ~86% blank frames in Chromium, which reads as a bar that shifts
+   without animating. So every resize must be followed immediately by a redraw,
+   in the same callback. */
 const ro = typeof ResizeObserver === 'function'
   ? new ResizeObserver(entries => {
+      let C: FrameCtx | null = null;   // computed at most once, only if needed
       for (const e of entries) {
         const bar = bars.find(b => b.host === e.target)
           ?? stills.find(b => b.host === e.target);
         if (!bar) continue;
-        setSize(bar, e.contentRect.width, e.contentRect.height);
+        const resized = setSize(bar, e.contentRect.width, e.contentRect.height);
         if (bar.kind === 'still') renderStill(bar);
+        else if (resized && bar.w >= 2 && bar.h >= 2) {
+          // Repaint this frame's content at the new size. dt=0: advance nothing,
+          // just re-render — the rAF loop still owns the simulation.
+          renderBar(bar, lastT / 1000, 0, (C ??= frameCtx()));
+        }
       }
       if (reduced()) renderAll(STATIC_T, 0);
     })
@@ -189,17 +203,22 @@ function ensureThemeWatch() {
   });
 }
 
-function setSize(bar: CometBar, w: number, h: number) {
+/** Returns true when the backing store was reallocated — which blanks it, so
+ *  the caller owes the canvas an immediate redraw. */
+function setSize(bar: CometBar, w: number, h: number): boolean {
   const dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
   const pw = Math.max(1, Math.round(w * dpr));
   const ph = Math.max(1, Math.round(h * dpr));
+  let resized = false;
   if (bar.canvas.width !== pw || bar.canvas.height !== ph) {
     bar.canvas.width = pw;
     bar.canvas.height = ph;
+    resized = true;
   }
   bar.w = w;
   bar.h = h;
   bar.dpr = dpr;
+  return resized;
 }
 
 function makePool<T>(n: number, maker: () => T): T[] {
@@ -270,6 +289,27 @@ function renderFill(
   const n = Math.max(8, Math.min(MAX_BODY, Math.round(w * 0.55)));
   const ps = sprite(bodyCol, C.bodyWhite);
   const body = bar.body!;
+
+  if (reduced()) {
+    /* Static frame anchored to the frontier in ABSOLUTE px. The animated path
+       stores embers as a fraction of the bar (p.x in 0..1), so a frozen field
+       re-laid on a widening bar slides and stretches bodily — under reduced
+       motion that made the comet look like it was shifting rather than still,
+       which is the opposite of the intent. Spacing keys off height, not width,
+       so growth moves only the head and its tail.
+       Gate on reduced(), never on dt === 0: the resize repaint above renders a
+       legitimate frame with dt = 0 while the rAF loop owns the simulation. */
+    for (let i = 0; i < 26; i++) {
+      const k = 1 - i / 26;
+      const sx = hx - 4 - i * Math.max(3, h * 0.55);
+      if (sx < 1) break;
+      ctx.globalAlpha = k * k * 0.7 * C.aMul;
+      const d = (3 + k * 5) * sc;
+      ctx.drawImage(ps, sx - d / 2, hy - d / 2 + Math.sin(i * 1.7) * 2 * sc, d, d);
+    }
+    drawHead(ctx, hx, hy, h, 0, C, headCol);
+    return;
+  }
   for (let i = 0; i < n; i++) {
     const p = body[i];
     /* accelerate toward the frontier */
@@ -486,6 +526,23 @@ function ensureLoop() {
     rafId = window.requestAnimationFrame(frame);
   }
 }
+
+/* The OS motion preference can flip while the app is open (and on Windows it
+   is the general "Animation effects" toggle, not a motion-specific one, so it
+   flips more often than you would think). Without this the engine stays parked
+   on its frozen frame — or keeps animating — until a full reload.
+   Optional-call: older WebKit MediaQueryList only has addListener. */
+reducedMq?.addEventListener?.('change', () => {
+  if (rafId) {
+    window.cancelAnimationFrame(rafId);
+    document.removeEventListener('visibilitychange', resetClock);
+    rafId = 0;
+  }
+  if (pollId) { window.clearInterval(pollId); pollId = 0; }
+  lastT = 0;
+  if (bars.length) ensureLoop();
+  for (const s of stills) renderStill(s);
+});
 
 function stopLoopIfIdle() {
   if (bars.length) return;

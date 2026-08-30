@@ -2113,7 +2113,6 @@ html.vt-active main :is(tbody tr, .panel, .list-panel > .list-item,
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
   .wallboard-tile-status { animation: fade-in .18s var(--ease-swift) both; }
-  .wb-progress-fill { transition: none; }
   /* tile-bloom stays: a one-shot box-shadow fade is status feedback, not movement */
 }
 
@@ -2161,6 +2160,11 @@ html.vt-active main :is(tbody tr, .panel, .list-panel > .list-item,
   position: relative;
   overflow: hidden;
   transition: width .9s linear;
+}
+/* Must follow the rule above — same specificity, so source order decides.
+   (The earlier reduced-motion block sat before it and never applied.) */
+@media (prefers-reduced-motion: reduce) {
+  .wb-progress-fill { transition: none; }
 }
 
 /* ── Substrate: knobs + the tint the canvas layers over ── */
