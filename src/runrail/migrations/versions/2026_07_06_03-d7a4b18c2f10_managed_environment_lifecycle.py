@@ -27,12 +27,16 @@ def upgrade():
         sa.column("status", sa.String()),
         sa.column("last_error", sa.Text()),
     )
+    # On PostgreSQL env_type is a native enum, and this table stub types it as
+    # String, so a bare comparison binds a VARCHAR — an operator PostgreSQL
+    # does not have. Comparing through a text cast works on every backend.
+    env_type = sa.cast(environments.c.env_type, sa.Text())
     op.execute(
         environments.update()
         .where(
             sa.or_(
-                sa.and_(environments.c.env_type == "conda", environments.c.conda_env.is_(None)),
-                sa.and_(environments.c.env_type != "conda", environments.c.executable.is_(None)),
+                sa.and_(env_type == "conda", environments.c.conda_env.is_(None)),
+                sa.and_(env_type != "conda", environments.c.executable.is_(None)),
             )
         )
         .values(status="failed", last_error="Legacy environment configuration is incomplete; edit and validate it")
