@@ -1,11 +1,15 @@
 # RunRail
 
-A scheduler with a web UI for the scripts, notebooks and queries you already have.
+Give the scripts, notebooks and queries you already have schedules, retries, approvals and a full run history. One process, one SQLite file, no rewrites.
 
 [![CI](https://github.com/rutr-labs/runrail/actions/workflows/ci.yml/badge.svg)](https://github.com/rutr-labs/runrail/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/runrail.svg)](https://pypi.org/project/runrail/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+
+![Live wallboard](docs/img/demo.gif)
+
+*The wallboard. Each bar runs against that workflow's own median duration and turns amber when a run goes over.*
 
 A task in RunRail is a command:
 
@@ -15,11 +19,33 @@ python scripts/refresh_sales.py --date {{ ds }}
 
 That is the whole configuration. Nothing is imported into your code, and there is no DAG file to keep in sync with it. RunRail runs that command on a schedule, in a Python environment you declare, and keeps the logs, the timings and the history.
 
-It installs as one process with one SQLite file behind it:
+## Sixty seconds to a first run
 
 ```bash
-pipx install runrail && runrail serve
+pipx install runrail     # or: pip install runrail
+runrail serve            # first launch asks about importing; press Enter to start fresh
 ```
+
+Then, in a second terminal:
+
+```bash
+cat > hello.yml <<'YAML'
+workflows:
+  - name: hello
+    schedule_cron: "*/5 * * * *"
+    tasks:
+      - name: say-hello
+        task_type: shell
+        command: echo "hello from RunRail at {{ ts }}"
+YAML
+
+runrail apply hello.yml
+runrail run hello
+```
+
+Open [http://127.0.0.1:8080](http://127.0.0.1:8080). The run is in the history with its logs, and the schedule fires again inside five minutes. The YAML is optional, by the way: everything in that file can be done in the UI, and most things are easier there.
+
+A few workflows later, the dashboard looks like this:
 
 ![RunRail dashboard](docs/img/01-dashboard.png)
 
@@ -47,22 +73,9 @@ A run waiting on approval, showing the prompt from whoever built the workflow an
 
 ![Approval gate](docs/img/05-approval.png)
 
-The wallboard, for a screen on the wall. Progress runs against each workflow's own median duration and turns amber when a run goes over.
-
-![Live wallboard](docs/img/demo.gif)
-
 ## Install
 
-One package, with the web UI already built into it. Python 3.11 or newer, nothing else.
-
-```bash
-pipx install runrail    # isolated, recommended. Or: pip install runrail
-runrail serve
-```
-
-The first launch offers to import an existing setup. Press Enter to start fresh, then open **http://127.0.0.1:8080**.
-
-Startup takes about 0.6 seconds, including creating the database and applying migrations. It settles at roughly 96 MB as a single process and stays there.
+One package with the web UI already built into it. Python 3.11 or newer, nothing else. Startup takes about 0.6 seconds, including creating the database and applying migrations, and the whole thing settles at roughly 96 MB as a single process.
 
 Data lives in a per-user directory:
 
