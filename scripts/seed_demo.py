@@ -192,6 +192,27 @@ def outage_spans(rng: random.Random, since: datetime,
     return spans
 
 
+
+def _incident_days(rng: random.Random, first, last) -> dict:
+    """Failure gets a calendar, not a coin.
+
+    Real failures arrive as incidents — a bad deploy, a warehouse outage — so
+    most days are clean and a few are ugly. It is also the only shape the
+    dashboard heatmap can say anything about: sprinkle failures uniformly and
+    every cell reads "mixed", which tells the viewer nothing at all.
+    """
+    days, day = {}, first
+    while day <= last:
+        roll = rng.random()
+        days[day] = 0.0 if roll < 0.62 else 1.0 if roll < 0.92 else 3.0
+        day += timedelta(days=1)
+    # History ends on a quiet stretch. A fresh demo that opens mid-incident
+    # reads as a broken install, and the states that need trailing failures
+    # are arranged deliberately by apply_operator_state, not left to the dice.
+    days[last] = days[last - timedelta(days=1)] = 0.0
+    return days
+
+
 def plan_runs(args: argparse.Namespace, rng: random.Random, specs: list[dict]) -> list[dict]:
     """One dict per run: the row to insert plus the shape of its task runs.
 
@@ -203,6 +224,7 @@ def plan_runs(args: argparse.Namespace, rng: random.Random, specs: list[dict]) -
 
     current = datetime.now(timezone.utc)
     since = current - timedelta(days=args.days)
+    incidents = _incident_days(rng, since.date(), current.date())
     plans: list[dict] = []
     for spec in specs:
         fires = (cron_fires(spec["schedule_cron"], spec["schedule_timezone"], since, current,
@@ -217,10 +239,12 @@ def plan_runs(args: argparse.Namespace, rng: random.Random, specs: list[dict]) -
                                        + [(at, TriggerType.manual) for at in manual]):
             if any(start <= created <= end for start, end in outages):
                 continue  # the run that never happened: no row, by definition
-            # Failures cluster: once something is broken it usually stays broken
-            # for a few fires. A uniform sprinkle would make every failure a
-            # transition and turn the activity feed into a wall of red.
-            failing = rng.random() < (0.55 if streak else spec["failure_rate"])
+            # Failures cluster twice over: on incident days at all, and once
+            # something is broken it usually stays broken for a few fires. A
+            # clean day ends a streak — the overnight fix is a real thing.
+            factor = incidents[created.date()]
+            failing = rng.random() < ((0.55 if factor else 0.0) if streak
+                                      else spec["failure_rate"] * factor)
             streak = streak + 1 if failing else 0
             status = RunStatus.failed if failing else RunStatus.success
             if not failing and rng.random() < 0.02:
@@ -254,27 +278,47 @@ def plan_runs(args: argparse.Namespace, rng: random.Random, specs: list[dict]) -
 def _live_plans(rng: random.Random, specs: list[dict], current: datetime) -> list[dict]:
     """The tail of unfinished runs the dashboard and wallboard are built around.
     Appended last so they are the newest rows whatever order the workflows came
-    in, and the approval gate is put on a workflow that actually has one."""
+    in, and the approval gate is put on a workflow that actually has one.
+
+    Running runs start at a fraction of their own typical duration. The
+    wallboard draws progress as elapsed over the median of recent runs, so a
+    tail that started a uniform "few minutes ago" sits past 100% on every bar
+    and paints the whole strip amber — a board that cries wolf about every run
+    at once. One overrun is kept on purpose: past-median is a state the
+    wallboard has a treatment for, and the demo should show it. Once.
+    """
     from runrail.models import RunStatus, TriggerType
 
-    gated = [spec for spec in specs if spec["gated"]]
-    live = [(spec, RunStatus.running) for spec in rng.sample(specs, min(4, len(specs)))]
-    live += [(spec, RunStatus.queued) for spec in rng.sample(specs, min(3, len(specs)))]
-    live += [(spec, RunStatus.waiting_approval) for spec in rng.sample(gated, min(2, len(gated)))]
-    plans = []
-    for spec, status in live:
-        created = current - timedelta(minutes=rng.randint(1, 20))
-        plans.append({
-            "spec": spec, "status": status, "started": created, "duration": 0.0,
+    def row(spec: dict, status, created: datetime, started: datetime | None) -> dict:
+        return {
+            "spec": spec, "status": status, "started": started or created, "duration": 0.0,
             "row": {
                 "workflow_id": spec["id"], "status": status,
                 "trigger_type": TriggerType.schedule, "run_key": None,
                 "parameters_json": {"ds": created.date().isoformat()},
-                "started_at": None if status == RunStatus.queued else created,
-                "finished_at": None, "duration_seconds": None, "created_at": created,
-                "resume_count": 0, "sla_breached_at": None,
+                "started_at": started, "finished_at": None, "duration_seconds": None,
+                "created_at": created, "resume_count": 0, "sla_breached_at": None,
             },
-        })
+        }
+
+    plans = []
+    # Readable bars need runs that last: draw the running tail from the slower
+    # half of the fleet, at spread-out points of their typical duration.
+    slow = sorted(specs, key=lambda spec: spec["base_seconds"])[len(specs) // 2:]
+    for spec, fraction in zip(rng.sample(slow, min(4, len(slow))), (0.35, 0.55, 0.8, 1.2),
+                              strict=False):  # a tiny fleet seeds fewer than four
+        started = current - timedelta(seconds=spec["base_seconds"] * fraction)
+        plans.append(row(spec, RunStatus.running, started - timedelta(seconds=2), started))
+    # Queued means "a worker will take this within seconds", not minutes: a
+    # queued run that is minutes old says the workers are wedged.
+    for spec in rng.sample(specs, min(3, len(specs))):
+        created = current - timedelta(seconds=rng.randint(4, 75))
+        plans.append(row(spec, RunStatus.queued, created, None))
+    # People are slower than workers; a gate open for many minutes is honest.
+    gated = [spec for spec in specs if spec["gated"]]
+    for spec in rng.sample(gated, min(2, len(gated))):
+        created = current - timedelta(minutes=rng.randint(2, 25))
+        plans.append(row(spec, RunStatus.waiting_approval, created, created))
     return plans
 
 
