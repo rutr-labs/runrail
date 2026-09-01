@@ -308,3 +308,39 @@ def test_sla_late_message_measures_from_creation_not_claim(client, monkeypatch):
     assert late, posts
     # 101 min from creation against a 1 min SLA = 100 min over, never negative.
     assert "100 min past" in late[0]["text"]
+
+
+def test_version_matches_pyproject_not_a_stale_install():
+    """The version is stamped into every exported run and into the OpenAPI
+    schema, and it has now drifted twice for different reasons.
+
+    First it was three hardcoded copies (0.1.0 / 0.3.1 / 0.4.0). Replacing them
+    with importlib.metadata fixed that and introduced the opposite failure: an
+    editable install records the version at install time and never refreshes,
+    so a checkout installed months ago reported that old number — which is how
+    exports came out saying 0.1.0 while pyproject said 0.5.0.
+    """
+    import tomllib
+    from pathlib import Path
+
+    import runrail
+
+    pyproject = Path(runrail.__file__).resolve().parents[2] / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+    assert runrail.__version__ == declared, (
+        f"__version__ is {runrail.__version__} but pyproject declares {declared}"
+    )
+
+
+def test_readme_images_are_absolute_so_pypi_can_render_them():
+    """PyPI has no repository context, so a relative path renders as a broken
+    image on the project page — which is exactly what it did."""
+    import re
+    from pathlib import Path
+
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    relative = [
+        target for target in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", readme)
+        if not target.startswith("http")
+    ]
+    assert not relative, f"relative images break on PyPI: {relative}"
