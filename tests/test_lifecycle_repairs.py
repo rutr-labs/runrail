@@ -12,6 +12,17 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select, text
 
+# Bare module name, like test_run_export imports test_reports: pytest puts the
+# test directory on sys.path, while `tests.` only resolves when the runner
+# happens to add the repository root — which `python -m pytest` does and the
+# bare `pytest` CI runs does not.
+from test_interactions import (
+    backfill,
+    make_shell_task,
+    make_workflow,
+    start_run,
+)
+
 from runrail.db import SessionLocal
 from runrail.models import RunStatus, TaskRun, TaskRunStatus, TriggerType, WorkflowRun
 from runrail.scheduler.service import enqueue_scheduled
@@ -19,12 +30,6 @@ from runrail.worker.service import (
     claim_runnable_run,
     execute_workflow_run,
     recover_interrupted_runs,
-)
-from tests.test_interactions import (
-    backfill,
-    make_shell_task,
-    make_workflow,
-    start_run,
 )
 
 
