@@ -2,6 +2,115 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] — 2026-09-01
+
+A repair release. Almost everything here is a defect in 0.5.0, and two of them
+are serious enough to be the reason to upgrade: deleting an environment made
+every workflow that used it permanently unrunnable, and editing a task in the
+UI silently removed its approval gate.
+
+### Changed
+- **Days are now the viewer's calendar days, not UTC.** A run at 9pm in Toronto
+  is 1am UTC the next day, so the activity heatmap filed it under tomorrow —
+  and every count on that heatmap was drawn on a boundary nobody outside UTC
+  recognises. The heatmap, the missed-run marks drawn on it and the run list a
+  square opens all bucket by the browser's zone now, exactly and including DST.
+  **Existing daily counts will shift on upgrade** if you are not in UTC; they
+  are moving to the days you would have said they happened. The API keeps its
+  old behaviour when the new `tz` parameter is omitted.
+
+### Fixed
+- **Deleting an environment made every workflow that used it unrunnable, and
+  deleting a project silently moved where tasks executed.** `workflows.project_id`
+  and `workflows.default_environment_id` never had foreign keys: the migration
+  that added the columns used a bare `add_column`, so the `ON DELETE SET NULL`
+  the model declares existed only in Python, on SQLite and PostgreSQL alike. A
+  deleted environment left the workflow pointing at a dead id, and `/run`,
+  `/backfill` and `/resume` all answered 404 "Environment not found" while the
+  scheduler and worker — which never re-validate — carried on enqueueing and
+  executing it. A deleted project was quieter and worse: tasks stopped resolving
+  against the project root and started running in whatever directory RunRail
+  was launched from, so every relative path read and wrote the wrong tree. This
+  release adds the constraints and clears ids that are already dangling, which
+  rebuilds the `workflows` table on SQLite.
+- **Editing a task in the UI removed its approval gate, without saying so.**
+  Every update endpoint wrote pydantic's defaults for fields the client left
+  out, so a form that did not know about a field reset it — and the task modal
+  did not know about approval. Changing a retry count on a gated task turned a
+  task that waits for a person into one that runs unattended. An omitted field
+  is now left alone; only an explicit value changes anything.
+- **Deleting a task a run was parked on wedged that run forever.** The gate row
+  cascaded away with the task while the run stayed `waiting_approval` — a state
+  whose only exits were approve and reject, both now impossible — holding its
+  concurrency slot and its resource lock. The held slot then made every later
+  scheduled fire coalesce into nothing, so the workflow's schedule died
+  silently and the watchdog stayed quiet because a parked run reads as
+  in-flight. Deleting the task now releases the run first.
+- A queued backfill suppressed the workflow's schedule entirely until it
+  drained: coalescing counted every queued run, so scheduled fires were dropped
+  rather than deferred, with no alert and no record. Backfilling a month of an
+  hourly workflow lost every hourly fire in the meantime.
+- `/retry` skipped the runnable check that `/run` and `/resume` both apply, so
+  retrying a workflow whose tasks or environment had since gone produced a run
+  that failed with no task rows — and that phantom failure counted toward
+  auto-pause, disabling the schedule off one click.
+- Opening the notification panel put the API into an unthrottled request loop,
+  measured at roughly nineteen requests a second for as long as it stayed open,
+  each one five database scans. The panel stamps itself read with the feed's
+  own timestamp, which is different in every response, and that stamp triggered
+  a reload.
+- A notebook report grew a few pixels at a time, forever, after it had finished
+  rendering. The frame asked the document for its height, and a document inside
+  a frame reports at least the frame's own height — so past a certain point it
+  was measuring the frame, which the parent then grew.
+- Sharing a run showed "Building the file" for a fixed eight seconds however
+  long the export took, which is normally about seven milliseconds. The
+  transfer is tracked properly now, with a real percentage.
+- An approval gate drew at the very start of its task's lane on the run
+  timeline, because a gate row has no start time. It now spans from parked to
+  decided, which fills the gap where the waiting actually happened.
+- Switching a task's type left the previous file path behind.
+- A resource lock could be silently cleared by an unrelated workflow update,
+  and a lock mode could survive without a resource to apply to.
+- Skips, cancellations and executor failures in a resumed run were filed under
+  the original attempt rather than the segment that produced them.
+- A run cancelled while a task was executing could keep that task row `running`
+  forever if the worker was killed before it could settle it.
+- Log tabs fetched the same log twice per click with no guard against a slow
+  response overwriting a newer one, and following a running task's output
+  stopped permanently after any burst longer than about six lines.
+- The dashboard scrolled sideways between 1101px and roughly 1350px, and the
+  metric cards were clipped at the right edge from 1101px up. Both were a `1fr`
+  grid track refusing to shrink below its content.
+- The activity heatmap keyed its own cells by UTC date while drawing them on
+  local-midnight boundaries, and stepped the grid by a fixed 24 hours — which
+  drifts at every DST change and, on a 25-hour day, repeats one date and skips
+  another.
+- Metric counters jumped back to their starting value when they changed twice
+  inside one animation, and the notification bell's arrival nudge played once
+  per session and then never again.
+- `runrail` reported the version recorded when it was installed rather than the
+  version it is, so a source checkout stamped a stale number into every
+  exported run and into the OpenAPI schema. Exports were saying 0.1.0.
+- The screenshots and demo in this README did not render on PyPI, which has no
+  repository context for a relative path.
+
+### Added
+- Approval gates can be created and edited from the UI. The gate columns, the
+  worker parking on them and the approve/reject card all shipped in 0.5.0, but
+  no control anywhere in the app could switch one on — every gate that existed
+  was made through the YAML file or the API. There is now a "Wait for approval"
+  toggle with its prompt on both the create-task and edit-task forms, and a
+  test that fails if any other configurable field ever becomes unreachable the
+  same way.
+- Clicking a day on the activity heatmap opens that day's runs. `GET /api/runs`
+  takes a `day` filter, and `/stats/daily`, `/schedule-gaps` and `/runs` all
+  take an optional `tz`.
+- The timeline shows how long a run waited for approval, rather than leaving a
+  gap.
+- RunRail has a logo. It appears in the sidebar, on the wallboard, as the
+  browser tab icon — there was none before — and on shared run exports.
+
 ## [0.5.0] — 2026-08-31
 
 ### Added
