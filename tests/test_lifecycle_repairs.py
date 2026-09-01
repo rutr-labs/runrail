@@ -10,7 +10,7 @@ down, so none of them could see a collision between two of those worlds.
 
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select
 
 # Bare module name, like test_run_export imports test_reports: pytest puts the
 # test directory on sys.path, while `tests.` only resolves when the runner
@@ -94,9 +94,15 @@ def test_deleting_a_workflows_environment_does_not_brick_it(client, tmp_path):
     assert client.post(f"/api/workflows/{workflow['id']}/run",
                        json={"parameters": {}}).status_code == 201
 
+    # Through the inspector, not PRAGMA: this suite also runs against PostgreSQL,
+    # where PRAGMA is a syntax error.
     with SessionLocal() as db:
-        names = {row[3] for row in db.execute(text("PRAGMA foreign_key_list(workflows)"))}
-    assert {"project_id", "default_environment_id"} <= names
+        constrained = {
+            column
+            for key in inspect(db.bind).get_foreign_keys("workflows")
+            for column in key["constrained_columns"]
+        }
+    assert {"project_id", "default_environment_id"} <= constrained
 
 
 def test_a_queued_backfill_does_not_suppress_the_schedule(client):
