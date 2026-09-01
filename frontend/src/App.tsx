@@ -1,6 +1,7 @@
 import { CSSProperties, FormEvent, ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
-import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import clsx from 'clsx';
 import {
   LayoutDashboard, GitBranch, History, FolderOpen,
   Cpu, Package, Play, Plus, Search, ChevronRight,
@@ -12,7 +13,7 @@ import {
 } from 'lucide-react';
 import { api, del, post, put } from './api';
 import { rrws } from './ws';
-import { formatBytes, formatDate, formatDuration, timeAgo } from './format';
+import { formatBytes, formatDate, formatDuration, localDateKey, timeAgo, viewerZone } from './format';
 import { FilePicker } from './components/FilePicker';
 import { DagGraph } from './components/DagGraph';
 import { RunHeatmap } from './components/Heatmap';
@@ -27,6 +28,8 @@ import { SnoozeBadge, SnoozeControl } from './components/SnoozeControl';
 import { WatchdogFields, watchdogValues } from './components/WatchdogFields';
 import { NotificationBell } from './components/NotificationCenter';
 import { ScheduleGapsPanel, useScheduleGaps, heatmapGapFeed } from './components/ScheduleGaps';
+import { ApprovalField, approvalValues } from './components/ApprovalField';
+import { RunRailMark } from './components/Brand';
 import { LockField, LockBadge, lockValues } from './components/LockField';
 import { LatestReportPanel, ReportPanel } from './components/ReportPanel';
 import type { LatestReportMeta } from './components/ReportPanel';
@@ -362,7 +365,7 @@ function Shell() {
       {mobileOpen && <div className="sidebar-overlay" onClick={() => setMobileOpen(false)} />}
       <aside className={`sidebar${mobileOpen ? ' open' : ''}`}>
         <Link to="/" className="sidebar-brand">
-          <span className="sidebar-logo"><span className="sidebar-logo-inner"><span /><span /><span /></span></span>
+          <span className="sidebar-logo"><RunRailMark size={30} title="" /></span>
           <span className="sidebar-wordmark"><b>RunRail</b><span>Control plane</span></span>
         </Link>
         <nav className="sidebar-nav" ref={navRef}>
@@ -749,16 +752,19 @@ function WeeklyChart() {
   // a day holds (a client-side bucket of a capped /runs fetch under-counts).
   const [stats, setStats] = useState<Record<string, DailyStat>>({});
   useEffect(() => {
-    api<DailyStat[]>('/stats/daily?days=7')
+    api<DailyStat[]>(`/stats/daily?days=7&tz=${encodeURIComponent(viewerZone())}`)
       .then(rows => setStats(Object.fromEntries(rows.map(r => [r.date, r])))).catch(() => {});
   }, []);
   const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  // Local days, matching the buckets the server just counted. setDate rather
+  // than setUTCDate, so "today" is the operator's today.
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 6 + i);
-    const key = d.toISOString().slice(0, 10);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - 6 + i);
+    const key = localDateKey(d);
     const s = stats[key] ?? { success: 0, failed: 0, other: 0 };
-    return { label: names[d.getUTCDay()], key, ...s, total: s.success + s.failed + s.other };
+    return { label: names[d.getDay()], key, ...s, total: s.success + s.failed + s.other };
   });
   const max = Math.max(...days.map(d => d.total), 1);
   return (
@@ -1012,17 +1018,33 @@ function Runs() {
   const [workflowId, setWorkflowId] = useState('');
   const [trigger, setTrigger] = useState('');
   const [query, setQuery] = useState('');
+  // Arrived from a heatmap cell. The day has to be a server-side filter, not
+  // another client-side one: the page holds the newest 500 runs, and any day
+  // older than those would filter down to nothing on a busy install.
+  const [params, setParams] = useSearchParams();
+  const day = params.get('day') ?? '';
+
+  const runsPath = useMemo(() => {
+    const query = new URLSearchParams({ limit: '500' });
+    if (day) query.set('day', day);
+    return `/runs?${query}`;
+  }, [day]);
 
   const loadStats = () => {
-    void api<Run[]>('/runs?limit=500').then(setRuns).catch(() => {});
+    void api<Run[]>(runsPath).then(setRuns).catch(() => {});
     void api<Summary>('/stats/summary').then(setSummary).catch(() => {});
   };
   const load = () => {
-    api<Run[]>('/runs?limit=500').then(setRuns).catch(() => setRuns([]));
+    api<Run[]>(runsPath).then(setRuns).catch(() => setRuns([]));
     api<Workflow[]>('/workflows').then(setFlows).catch(() => {});
     api<Summary>('/stats/summary').then(setSummary).catch(() => {});
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [runsPath]);
+  // A workflow named in the link preselects the existing dropdown.
+  useEffect(() => {
+    const linked = params.get('workflow');
+    if (linked) setWorkflowId(linked);
+  }, [params]);
   useEffect(() => {
     const u1 = rrws.on('run_created', loadStats);
     const u2 = rrws.on('run_updated', loadStats);
@@ -1050,7 +1072,7 @@ function Runs() {
   const liveRuns = runs.filter(r => LIVE(r.status)).slice(0, 6);
   const parked = summary?.waiting ?? runs.filter(r => r.status === 'waiting_approval').length;
   const avgDuration = summary?.avg_duration_24h ?? null;
-  const filtersActive = Boolean(status || workflowId || trigger || query);
+  const filtersActive = Boolean(status || workflowId || trigger || query || day);
 
   return (
     <>
@@ -1071,11 +1093,31 @@ function Runs() {
             <div className="panel-head">
               <div><h2>Run history</h2><p>Filter and inspect every execution in one place</p></div>
               {filtersActive && (
-                <button className="edit-link" onClick={() => { setStatus(''); setWorkflowId(''); setTrigger(''); setQuery(''); }}>
+                <button className="edit-link" onClick={() => {
+                  setStatus(''); setWorkflowId(''); setTrigger(''); setQuery('');
+                  setParams({}, { replace: true });
+                }}>
                   Clear filters
                 </button>
               )}
             </div>
+            {day && (
+              <div className="filterbar" style={{ marginBottom: 0, border: 'none', padding: '0 20px 0' }}>
+                <span className="pill">
+                  {new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, {
+                    weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' })}
+                  {' · '}
+                  <button className="edit-link"
+                          onClick={() => setParams(previous => {
+                            const next = new URLSearchParams(previous);
+                            next.delete('day');
+                            return next;
+                          }, { replace: true })}>
+                    show all days
+                  </button>
+                </span>
+              </div>
+            )}
             <div className="filterbar" style={{ marginBottom: 0, border: 'none', padding: '0 20px 18px' }}>
               <div className="filterbar-search">
                 <Search size={14} color="var(--text-3)" />
@@ -1540,23 +1582,39 @@ function RunDetail() {
 
 function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runStart: string; now: number }) {
   const origin = new Date(runStart).getTime();
-  const withTimes = taskRuns.filter(t => t.started_at);
-  if (!withTimes.length) return null;
-  const startMs = (t: TaskRun) => (t.started_at ? new Date(t.started_at).getTime() : origin);
+  /* An approval gate is a task row that never executed: it has no started_at,
+     only a created_at (when the run parked) and a finished_at (when someone
+     decided). Treating it like a task put every gate at left: 0 — which is why
+     a gated task showed a stray mark at the very start of the run — and left an
+     unexplained gap where the waiting actually happened. It gets its own span
+     instead, from parked to decided. */
+  const GATE = new Set(['awaiting_approval', 'approved', 'rejected']);
+  const isGate = (t: TaskRun) => GATE.has(t.status);
   const isLive = (t: TaskRun) => Boolean(t.started_at) && !t.finished_at && t.status === 'running';
-  // A running task has no duration yet: measure it against the wall clock so its
-  // bar grows every tick, and extend the axis to "now" so the whole chart moves.
+  const isWaiting = (t: TaskRun) => t.status === 'awaiting_approval';
+
+  const startMs = (t: TaskRun) =>
+    t.started_at ? new Date(t.started_at).getTime()
+    : isGate(t) && t.created_at ? new Date(t.created_at).getTime()
+    : origin;
+  const endMs = (t: TaskRun) =>
+    t.finished_at ? new Date(t.finished_at).getTime()
+    : isLive(t) || isWaiting(t) ? now
+    : startMs(t);
+
+  const placeable = taskRuns.filter(t => t.started_at || (isGate(t) && t.created_at));
+  if (!placeable.length) return null;
+
+  // A running task or an open gate has no duration yet: measure against the
+  // wall clock so the bar grows every tick, and extend the axis to "now".
   const spanMs = (t: TaskRun) =>
-    t.duration_seconds != null ? t.duration_seconds * 1000
+    isGate(t) ? Math.max(0, endMs(t) - startMs(t))
+    : t.duration_seconds != null ? t.duration_seconds * 1000
     : t.finished_at ? new Date(t.finished_at).getTime() - startMs(t)
     : isLive(t) ? Math.max(0, now - startMs(t))
     : 0;
   const totalMs = Math.max(
-    ...taskRuns.map(t => t.finished_at
-      ? new Date(t.finished_at).getTime() - origin
-      : isLive(t) ? now - origin
-      : t.started_at ? new Date(t.started_at).getTime() - origin + 1000 : 0
-    ), 1000
+    ...placeable.map(t => Math.max(endMs(t) - origin, startMs(t) - origin + 1000)), 1000
   );
   // One lane per task; retry attempts render as separate bars on the same lane.
   const lanes = new Map<string, TaskRun[]>();
@@ -1574,23 +1632,31 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
             <span className="tl-name" title={name}>{name}</span>
             <div className="tl-track">
               {ticks.map(f => <span key={f} className="tl-tick" style={{ left: `${f * 100}%` }} />)}
-              {attempts.map(t => {
-                const start = t.started_at ? (startMs(t) - origin) / totalMs * 100 : 0;
-                const width = t.started_at ? Math.max(spanMs(t) / totalMs * 100, 1.2) : 2;
+              {attempts.filter(t => t.started_at || (isGate(t) && t.created_at)).map(t => {
+                const gate = isGate(t);
+                const start = (startMs(t) - origin) / totalMs * 100;
+                const width = Math.max(spanMs(t) / totalMs * 100, gate ? 0.8 : 1.2);
                 const left = Math.min(Math.max(start, 0), 98);
-                const tip = [
+                const waited = formatDuration(spanMs(t) / 1000);
+                const tip = gate ? [
+                  `${name} · approval gate · ${t.status.replace(/_/g, ' ')}`,
+                  `parked +${formatDuration((startMs(t) - origin) / 1000)}`,
+                  isWaiting(t) ? `waiting ${waited}` : `waited ${waited} for a decision`,
+                ].filter(Boolean).join('\n') : [
                   `${name} · attempt ${t.attempt} · ${t.status}`,
-                  t.started_at ? `started +${formatDuration((startMs(t) - origin) / 1000)}` : null,
+                  `started +${formatDuration((startMs(t) - origin) / 1000)}`,
                   t.duration_seconds != null ? `took ${formatDuration(t.duration_seconds)}`
                     : isLive(t) ? `running ${formatDuration(spanMs(t) / 1000)}` : null,
                   t.exit_code != null ? `exit ${t.exit_code}` : null,
                 ].filter(Boolean).join('\n');
                 return (
-                  <div key={t.id} className={`tl-bar ${t.status}`}
+                  <div key={t.id}
+                       className={clsx('tl-bar', t.status, gate && 'tl-bar--gate',
+                                       isWaiting(t) && 'tl-bar--gate-open')}
                        style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%`, animationDelay: `${Math.min(laneIndex * 30, 240)}ms` }} title={tip}>
-                    {t.status === 'running' ? <CometCanvas kind="fill" />
-                      : (t.status === 'success' || t.status === 'failed') && <CometCanvas kind="still" />}
-                    {t.attempt > 1 && <span className="tl-attempt">A{t.attempt}</span>}
+                    {!gate && (t.status === 'running' ? <CometCanvas kind="fill" />
+                      : (t.status === 'success' || t.status === 'failed') && <CometCanvas kind="still" />)}
+                    {!gate && t.attempt > 1 && <span className="tl-attempt">A{t.attempt}</span>}
                   </div>
                 );
               })}
@@ -2671,7 +2737,6 @@ function TaskModal({ workflowId, tasks, project, defaultEnvironment, onClose, do
   const [path, setPath] = useState('');
   const [cwd, setCwd] = useState('');
   const [envs, setEnvs] = useState<Env[]>([]);
-  const fileKey = type === 'python' ? 'script_path' : type === 'notebook' ? 'notebook_path' : 'sql_path';
   useEffect(() => { api<Env[]>('/environments').then(setEnvs).catch(() => {}); }, []);
 
   async function submit(e: FormEvent<HTMLFormElement>) {
@@ -2684,12 +2749,18 @@ function TaskModal({ workflowId, tasks, project, defaultEnvironment, onClose, do
       await post(`/workflows/${workflowId}/tasks`, {
         name: f.get('name'), task_type: type,
         command: type === 'shell' ? f.get('command') || null : null,
-        [fileKey]: type !== 'shell' ? path || null : null,
+        // All three, explicitly: the server treats an omitted field as
+        // unchanged, so sending only the active one would leave the old
+        // path behind when the task type changes.
+        script_path: type === 'python' ? path || null : null,
+        notebook_path: type === 'notebook' ? path || null : null,
+        sql_path: type === 'sql' ? path || null : null,
         cwd: cwd || null, depends_on_json: f.getAll('dependencies'),
         parameters_json: parameters,
         retries: Number(f.get('retries')), retry_delay_seconds: Number(f.get('delay')),
         timeout_seconds: timeoutSeconds(f),
         environment_id: f.get('environment_id') ? Number(f.get('environment_id')) : null,
+        ...approvalValues(f),
       });
       toast('Task added');
       done();
@@ -2751,6 +2822,7 @@ function TaskModal({ workflowId, tasks, project, defaultEnvironment, onClose, do
           <label className="field"><span>Retry delay (sec)</span><input name="delay" type="number" min="0" defaultValue="0" /></label>
         </div>
         <TimeoutField />
+        <ApprovalField />
         <div className="modal-actions">
           <CancelButton />
           <Button type="submit" disabled={needsEnvironment}>Add task</Button>
@@ -2767,7 +2839,6 @@ function EditTaskModal({ task, tasks, project, onClose, done }: { task: Task; ta
   const [cwd, setCwd] = useState(task.cwd || '');
   const [envs, setEnvs] = useState<Env[]>([]);
   const [environmentId, setEnvironmentId] = useState(String(task.environment_id ?? ''));
-  const fileKey = type === 'python' ? 'script_path' : type === 'notebook' ? 'notebook_path' : 'sql_path';
   useEffect(() => { api<Env[]>('/environments').then(setEnvs).catch(() => {}); }, []);
 
   async function submit(e: FormEvent<HTMLFormElement>) {
@@ -2780,13 +2851,19 @@ function EditTaskModal({ task, tasks, project, onClose, done }: { task: Task; ta
       await put(`/tasks/${task.id}`, {
         name: f.get('name'), task_type: type,
         command: type === 'shell' ? f.get('command') || null : null,
-        [fileKey]: type !== 'shell' ? path || null : null,
+        // All three, explicitly: the server treats an omitted field as
+        // unchanged, so sending only the active one would leave the old
+        // path behind when the task type changes.
+        script_path: type === 'python' ? path || null : null,
+        notebook_path: type === 'notebook' ? path || null : null,
+        sql_path: type === 'sql' ? path || null : null,
         cwd: cwd || null, depends_on_json: f.getAll('dependencies'),
         parameters_json: parameters,
         retries: Number(f.get('retries')), retry_delay_seconds: Number(f.get('delay')),
         timeout_seconds: timeoutSeconds(f),
         project_id: task.project_id ?? null,
         environment_id: environmentId ? Number(environmentId) : null,
+        ...approvalValues(f),
       });
       toast('Task updated');
       done();
@@ -2834,6 +2911,8 @@ function EditTaskModal({ task, tasks, project, onClose, done }: { task: Task; ta
           <label className="field"><span>Retry delay (sec)</span><input name="delay" type="number" min="0" defaultValue={task.retry_delay_seconds} /></label>
         </div>
         <TimeoutField seconds={task.timeout_seconds} />
+        <ApprovalField defaultOn={task.requires_approval ?? false}
+                       defaultPrompt={task.approval_prompt ?? ''} />
         <div className="modal-actions">
           <CancelButton />
           <Button type="submit">Save changes</Button>
@@ -3080,7 +3159,7 @@ function Wallboard() {
       <div className="wallboard-aurora" aria-hidden />
       <header className="wallboard-head">
         <span className="wallboard-brand">
-          <span className="sidebar-logo"><span className="sidebar-logo-inner"><span /><span /><span /></span></span>
+          <span className="sidebar-logo"><RunRailMark size={30} title="" /></span>
           RunRail
         </span>
         <span className={`wallboard-health wallboard-health--${mood}`}>

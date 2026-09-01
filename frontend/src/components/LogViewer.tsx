@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Copy, Check, Search, ChevronUp, ChevronDown, X } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -82,28 +82,38 @@ export function LogViewer({ taskRunId, taskStatus, initialTab = 'stdout', errorM
   const preRef = useRef<HTMLPreElement>(null);
   const isRunning = taskStatus === 'running';
 
-  const loadLog = (t: 'stdout' | 'stderr') => {
-    setLoading(true);
-    setTab(t);
-    fetch(`/api/task-runs/${taskRunId}/${t}`)
-      .then(r => r.text())
-      .then(text => { setLog(text); setLoading(false); })
-      .catch(() => { setLog(''); setLoading(false); });
-  };
+  // The effect below owns fetching for a finished task; the tab buttons only
+  // change the tab. Fetching here as well downloaded every log twice per click,
+  // and with no stale guard a slow stdout response could land after a switch to
+  // stderr and overwrite it.
 
   // Follow the tail while streaming, but never fight the user: only stick to
   // the bottom if they were already reading the bottom.
-  useEffect(() => {
+  //
+  // Stickiness is measured on scroll, BEFORE new output arrives. Measuring it
+  // after the append (in an effect keyed on `log`) measures the chunk just
+  // added, so any burst taller than the threshold — about six lines, and the
+  // server batches 250ms of output per message — read as "the user scrolled
+  // away" and following died silently for the rest of the task.
+  const stuckToBottom = useRef(true);
+  const onLogScroll = useCallback(() => {
     const pre = preRef.current;
-    if (!pre || !isRunning) return;
-    const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 120;
-    if (nearBottom) pre.scrollTop = pre.scrollHeight;
+    if (pre) stuckToBottom.current = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 120;
+  }, []);
+  useLayoutEffect(() => {
+    const pre = preRef.current;
+    if (pre && isRunning && stuckToBottom.current) pre.scrollTop = pre.scrollHeight;
   }, [log, isRunning]);
 
   useEffect(() => {
     if (!isRunning) {
-      loadLog(tab);
-      return;
+      let stale = false;
+      setLoading(true);
+      fetch(`/api/task-runs/${taskRunId}/${tab}`)
+        .then(r => r.text())
+        .then(text => { if (!stale) { setLog(text); setLoading(false); } })
+        .catch(() => { if (!stale) { setLog(''); setLoading(false); } });
+      return () => { stale = true; };
     }
     // Streaming mode: open a WebSocket that tails the log file until the task finishes.
     setLog('');
@@ -121,7 +131,13 @@ export function LogViewer({ taskRunId, taskStatus, initialTab = 'stdout', errorM
         .then(text => setLog(text))
         .catch(() => { /* keep whatever was streamed */ });
     };
-    ws.onerror = () => loadLog(tab); // fall back to HTTP on WS error
+    ws.onerror = () => {  // fall back to HTTP on WS error
+      setLoading(true);
+      fetch(`/api/task-runs/${taskRunId}/${tab}`)
+        .then(r => r.text())
+        .then(text => { setLog(text); setLoading(false); })
+        .catch(() => { setLog(''); setLoading(false); });
+    };
     return () => {
       ws.onclose = null; // prevent the final fetch when we close intentionally
       ws.close();
@@ -192,13 +208,13 @@ export function LogViewer({ taskRunId, taskStatus, initialTab = 'stdout', errorM
         <div className="log-tabs">
           <button
             className={clsx('log-tab', tab === 'stdout' && 'log-tab--active')}
-            onClick={() => isRunning ? setTab('stdout') : loadLog('stdout')}
+            onClick={() => setTab('stdout')}
           >
             stdout
           </button>
           <button
             className={clsx('log-tab', tab === 'stderr' && 'log-tab--active')}
-            onClick={() => isRunning ? setTab('stderr') : loadLog('stderr')}
+            onClick={() => setTab('stderr')}
           >
             stderr
           </button>
@@ -236,7 +252,8 @@ export function LogViewer({ taskRunId, taskStatus, initialTab = 'stdout', errorM
           {errorMessage}
         </div>
       )}
-      <pre ref={preRef} className={clsx('log-content', loading && 'log-loading')}>
+      <pre ref={preRef} onScroll={onLogScroll}
+           className={clsx('log-content', loading && 'log-loading')}>
         {loading
           ? 'Loading…'
           : log.trim()

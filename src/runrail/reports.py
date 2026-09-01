@@ -78,12 +78,42 @@ REPORT_HEADERS = {
 
 #: Appended after nbconvert so a notebook cannot suppress it; an opaque-origin
 #: frame cannot be measured by its parent, so it has to volunteer its height.
+#:
+#: It must measure the CONTENT, never the document element. Inside a frame,
+#: documentElement.scrollHeight is at least the viewport height, so a frame
+#: taller than its notebook measures its own height back: the parent sizes to
+#: that, the observer sees the taller viewport, reports it again, and the frame
+#: creeps upward a few pixels at a time forever. A zero-height sentinel at the
+#: end of the body is placed by content flow alone and cannot see the viewport.
+#: The parent keeps an echo guard of its own, because reports rendered before
+#: this fix are cached on disk and still carry the old script.
 _HEIGHT_REPORTER = (
-    '<script>(function(){var s=function(){parent.postMessage('
-    '{runrailReportHeight:document.documentElement.scrollHeight},"*")};'
-    'addEventListener("load",s);addEventListener("resize",s);'
-    'new ResizeObserver(s).observe(document.documentElement)})()</script>'
+    '<script>(function(){'
+    'var end=document.createElement("div");'
+    'end.setAttribute("aria-hidden","true");'
+    'end.style.cssText="height:0;margin:0;padding:0;border:0;clear:both";'
+    'var last=-1;'
+    'var measure=function(){'
+    'var cs=getComputedStyle(document.body);'
+    'return Math.ceil(end.getBoundingClientRect().top+(window.scrollY||0)'
+    '+(parseFloat(cs.paddingBottom)||0)+(parseFloat(cs.marginBottom)||0))};'
+    # Post only real changes, so frame and document cannot trade rounding
+    # errors back and forth.
+    'var send=function(){var h=measure();'
+    'if(h>0&&Math.abs(h-last)>1){last=h;'
+    'parent.postMessage({runrailReportHeight:h},"*")}};'
+    'var start=function(){document.body.appendChild(end);send();'
+    'addEventListener("resize",send);'
+    'var obs=new ResizeObserver(send);'
+    'obs.observe(document.body);obs.observe(document.documentElement);'
+    # Plotly, MathJax and late images settle after load. Re-measuring is cheap,
+    # and a measurement that has not moved posts nothing.
+    '[60,250,800,2000].forEach(function(t){setTimeout(send,t)})};'
+    'if(document.readyState==="loading")addEventListener("DOMContentLoaded",start);'
+    'else start();'
+    'addEventListener("load",send)})()</script>'
 )
+
 
 _LOCKS: dict[int, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()

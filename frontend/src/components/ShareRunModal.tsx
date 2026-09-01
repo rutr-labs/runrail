@@ -3,7 +3,7 @@ import { Download, Info, ShieldAlert } from 'lucide-react';
 import clsx from 'clsx';
 import { api } from '../api';
 import { formatBytes } from '../format';
-import { Button, CancelButton, LoadingBar, Modal } from './ui';
+import { Button, CancelButton, CometCanvas, LoadingBar, Modal } from './ui';
 import type { RunOutputs } from './ReportPanel';
 
 /* ─── Budget constants ────────────────────────────────────
@@ -53,6 +53,9 @@ export function ShareRunModal({ runId, runStatus, workflowName, onClose }: Share
   const [logs, setLogs] = useState<LogMode>('tail');
   const [includeReport, setIncludeReport] = useState(true);
   const [started, setStarted] = useState(false);
+  const [transferred, setTransferred] = useState(0);
+  const [expected, setExpected] = useState(0);
+  const abort = useRef<AbortController | null>(null);
   const timer = useRef<number>(0);
 
   useEffect(() => {
@@ -69,7 +72,10 @@ export function ShareRunModal({ runId, runStatus, workflowName, onClose }: Share
     return () => { cancelled = true; };
   }, [runId]);
 
-  useEffect(() => () => window.clearTimeout(timer.current), []);
+  useEffect(() => () => {
+    window.clearTimeout(timer.current);
+    abort.current?.abort();   // closing the modal must not leave a transfer running
+  }, []);
 
   const status = runStatus ?? outputs?.status;
   const live = status != null && IN_PROGRESS.has(status);
@@ -90,13 +96,71 @@ export function ShareRunModal({ runId, runStatus, workflowName, onClose }: Share
   const href = `/api/runs/${runId}/export`
     + `?logs=${logs}&report=${reportOn}&max_bytes=${EXPORT_MAX_BYTES}`;
 
-  const begin = () => {
+  /* The transfer is driven here rather than handed to a plain <a download>.
+     An anchor gives the browser the file but gives us no events at all, so the
+     old code guessed with an eight-second timer: an export that takes 7ms — the
+     normal case, since the report is already rendered — left "Building the
+     file" on screen for eight seconds after the download had finished.
+
+     Reading the body ourselves costs one copy of a file the route already caps
+     at 25MB, and buys an accurate finish plus a real percentage, because
+     /export sends Content-Length. */
+  const begin = async () => {
+    if (started) return;
+    const controller = new AbortController();
+    abort.current = controller;
     setStarted(true);
-    window.clearTimeout(timer.current);
-    // The request renders the notebook if it was never viewed, so the browser
-    // shows nothing for several seconds. This is the only honest feedback
-    // available — there is no progress to report.
-    timer.current = window.setTimeout(() => setStarted(false), 8000);
+    setTransferred(0);
+    setExpected(0);
+    setError(null);
+    try {
+      const response = await fetch(href, { signal: controller.signal });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        throw new Error(detail?.detail || `The server answered ${response.status}.`);
+      }
+      const total = Number(response.headers.get('Content-Length') || 0);
+      setExpected(total);
+
+      let blob: Blob;
+      if (response.body) {
+        const reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let seen = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          seen += value.length;
+          setTransferred(seen);
+        }
+        blob = new Blob(chunks as BlobPart[], { type: 'text/html' });
+      } else {
+        blob = await response.blob();   // no streaming: still correct, just no bar
+      }
+
+      // Filename from the route's own Content-Disposition, so the two cannot
+      // drift; the header is already sanitised server-side.
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const named = /filename="([^"]+)"/.exec(disposition)?.[1];
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = named || `runrail-run-${runId}.html`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Revoked on the next frame: revoking synchronously can cancel the save
+      // in some browsers before they have read the blob.
+      timer.current = window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (failure) {
+      if (!controller.signal.aborted) {
+        setError(failure instanceof Error ? failure.message : 'The download failed.');
+      }
+    } finally {
+      if (abort.current === controller) abort.current = null;
+      setStarted(false);
+    }
   };
 
   return (
@@ -211,8 +275,19 @@ export function ShareRunModal({ runId, runStatus, workflowName, onClose }: Share
 
             {started && (
               <div className="share-progress">
-                <LoadingBar size="sm" />
-                <span>Building the file. Your browser starts the download when it is ready.</span>
+                {expected > 0 ? (
+                  <div className="wb-progress">
+                    <div className="wb-progress-fill"
+                         style={{ width: `${Math.min(100, (transferred / expected) * 100)}%` }}>
+                      <CometCanvas kind="fill" />
+                    </div>
+                  </div>
+                ) : <LoadingBar size="sm" />}
+                <span>
+                  {expected > 0
+                    ? `${formatBytes(transferred)} of ${formatBytes(expected)}`
+                    : 'Building the file. Large notebooks take a few seconds to render.'}
+                </span>
               </div>
             )}
           </>
@@ -226,12 +301,9 @@ export function ShareRunModal({ runId, runStatus, workflowName, onClose }: Share
             <Download size={14} /> Download
           </Button>
         ) : (
-          /* A plain anchor, not fetch+blob: /export already sets
-             Content-Disposition with a safe filename, and letting the browser
-             own the transfer keeps a 25 MB file out of JS memory. */
-          <a className="btn btn-primary btn-md" href={href} download onClick={begin}>
-            <Download size={14} /> Download HTML
-          </a>
+          <Button onClick={begin} disabled={started}>
+            <Download size={14} /> {started ? 'Preparing…' : 'Download HTML'}
+          </Button>
         )}
       </div>
     </Modal>

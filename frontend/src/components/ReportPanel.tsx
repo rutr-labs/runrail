@@ -100,6 +100,11 @@ const MIN_FRAME_HEIGHT = 320;
 const MAX_FRAME_HEIGHT = 24_000;
 /** Shown until the document volunteers its height, which is one paint away. */
 const DEFAULT_FRAME_HEIGHT = 640;
+/** A report that measures its own document element reports the frame's height
+ *  rather than the notebook's, and the +4 below would then ratchet the frame
+ *  upward forever. Reports rendered before that was fixed are cached on disk,
+ *  so a height that merely echoes the frame's own is ignored here too. */
+const ECHO_SLACK = 8;
 
 const INSTALL_COMMAND = "pip install 'runrail[notebook]'";
 
@@ -209,7 +214,14 @@ function ReportFrame({ src, title, fullscreen }: {
       if (typeof reported !== 'number' || !Number.isFinite(reported) || reported <= 0) return;
       // +4px absorbs sub-pixel rounding that would otherwise leave the frame
       // one pixel short and give the report a scrollbar of its own.
-      setHeight(Math.min(Math.max(Math.round(reported) + 4, MIN_FRAME_HEIGHT), MAX_FRAME_HEIGHT));
+      const next = Math.min(
+        Math.max(Math.round(reported) + 4, MIN_FRAME_HEIGHT), MAX_FRAME_HEIGHT,
+      );
+      // Functional, because this listener is installed once and would otherwise
+      // compare against the height from first render forever.
+      setHeight(current => (Math.abs(Math.round(reported) - current) <= ECHO_SLACK
+        ? current      // the document is describing the frame back to us
+        : next));
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);

@@ -42,6 +42,9 @@
 
   /* Brand accent — sky blue, used sparingly */
   --accent:        #38bdf8;
+  /* The logo's accent rail. Deliberately NOT --danger: it is brand, not a
+     status, and it only ever appears on the mark. */
+  --brand:         #ec3013;
   --accent-hover:  #7dd3fc;
   --accent-active: #0ea5e9;
   --accent-soft:   rgba(56,189,248,0.07);
@@ -208,41 +211,18 @@ body::before {
   border-bottom: 1px solid var(--border);
   margin-bottom: 10px;
 }
+/* Was a gradient chip around three placeholder bars. The real mark is a
+   distinctive shape in its own right, so the chip only added weight — the ink
+   comes from the surrounding text colour, which is what makes one component
+   serve both themes. */
 .sidebar-logo {
   width: 32px;
   height: 32px;
-  border-radius: var(--r-md);
-  background: linear-gradient(145deg, #1e293b, #0f172a);
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.12), 0 4px 12px rgba(0,0,0,0.5), var(--shadow-inner);
-  position: relative;
-  overflow: hidden;
+  color: var(--text-1);
 }
-.sidebar-logo::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0; height: 50%;
-  background: rgba(255,255,255,0.12);
-  border-radius: inherit;
-}
-.sidebar-logo-inner {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  position: relative;
-  z-index: 1;
-}
-.sidebar-logo-inner span {
-  display: block;
-  width: 16px;
-  height: 2px;
-  background: white;
-  border-radius: 1px;
-  opacity: 0.9;
-}
-.sidebar-logo-inner span:nth-child(2) { width: 11px; opacity: 0.65; }
 .sidebar-wordmark b {
   display: block;
   font-size: 15px;
@@ -1020,7 +1000,12 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .dashboard-title { font-size: 32px; font-weight: 800; letter-spacing: -0.8px; color: var(--text-1); line-height: 1.1; margin-bottom: 8px; }
 .dashboard-sub   { font-size: 15px; color: var(--text-2); margin-bottom: 20px; line-height: 1.5; }
 .dashboard-cta-row { display: flex; align-items: center; gap: 10px; }
-.dashboard-panels { display: grid; grid-template-columns: 1fr 340px; gap: 16px; margin-bottom: 20px; }
+/* minmax(0, …) not 1fr: a bare 1fr keeps an automatic minimum of the column's
+   min-content, so the wide panel (the run table) pushes the track past the
+   space available and the whole page scrolls sideways between the 1100px
+   breakpoint and roughly 1350px. Zero lets the track shrink; the table inside
+   already scrolls on its own. */
+.dashboard-panels { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; margin-bottom: 20px; }
 .dashboard-panels-v2 { align-items: start; }
 .dashboard-panels-v2 > div { display: flex; flex-direction: column; gap: 16px; }
 .dashboard-metric-grid { margin-bottom: 0; }
@@ -1029,7 +1014,7 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
   padding: 32px; border-radius: var(--r-xl);
   border: 1px solid var(--border); background: var(--bg-card);
   box-shadow: var(--shadow-md), var(--shadow-inner);
-  display: grid; grid-template-columns: 1fr 280px; gap: 40px;
+  display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 40px;
   align-items: start; margin-bottom: 20px;
 }
 .welcome-copy .pill {
@@ -1527,9 +1512,18 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 td .cancel-run-btn { margin-right: 8px; }
 
 /* ─── Round 2: spacing & padding polish ───────────────── */
-/* 5 dashboard metrics fit one row on desktop instead of orphaning the fifth card. */
-@media (min-width: 1101px) {
-  .dashboard-metric-grid { grid-template-columns: repeat(5, 1fr); }
+/* 5 dashboard metrics fit one row on desktop instead of orphaning the fifth card.
+   minmax(0, …) because a bare 1fr keeps each card's min-content as its floor:
+   five cards then demand ~900px inside an 856px column and the last one hangs
+   off the right edge of the page. The breakpoint is the width where five
+   actually fit — below it, four across and one wrapped beats a clipped row. */
+@media (min-width: 1280px) {
+  .dashboard-metric-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+/* Between the sidebar appearing and five fitting, three-and-two reads as a
+   deliberate arrangement where four-and-one reads as a card that fell off. */
+@media (min-width: 1101px) and (max-width: 1279px) {
+  .dashboard-metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 .dashboard-metric-grid { margin-bottom: 20px; }
 /* The status bar is the hero's last child — its bottom margin created dead space. */
@@ -1787,7 +1781,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
   .icon-spin { animation: spin 1.4s linear infinite !important; }
   /* Arrival choreography (Polish Pass II, end of file) is decoration
      on surfaces whose information is static — off wholesale. */
-  .sidebar-logo-inner span, .sidebar-nav-item, tbody tr,
+  .sidebar-logo path, .sidebar-nav-item, tbody tr,
   .panel, .list-panel > .list-item,
   .cmdk-list.cmdk-fresh .cmdk-item,
   .run-heatmap-col, .mini-dot, .dag-enter, .dag-edge-enter,
@@ -1898,6 +1892,13 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
   transition: transform .1s var(--ease-out);
 }
 .run-heatmap-cell:hover { transform: scale(1.3); }
+/* Only the days that lead somewhere say so — a cell with no runs stays a
+   plain square rather than inviting a click onto an empty table. */
+.run-heatmap-cell--link { cursor: pointer; display: block; }
+.run-heatmap-cell--link:hover { transform: scale(1.45); box-shadow: 0 0 0 1.5px var(--border-strong); }
+.run-heatmap-cell--link:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; transform: scale(1.45);
+}
 [data-theme="light"] .run-heatmap { --hm-empty: rgba(0,0,0,0.06); }
 .run-heatmap-legend {
   display: flex; align-items: center; gap: 5px; margin-top: 10px;
@@ -2289,9 +2290,10 @@ html.vt-active main :is(tbody tr, .panel, .list-panel > .list-item,
    finished entrance never pins transform/opacity against later states
    (e.g. .cmdk-item.selected's nudge). */
 @keyframes crumb-in   { from { opacity: 0; transform: translateY(4px); } }
-/* No 'to' opacity: each rail settles at its own resting opacity
-   (.9 / .65), and nothing persists past the animation. */
-@keyframes logo-rail-in { from { opacity: .35; } }
+/* The mark draws itself: each rail runs in from the bottom edge, which is the
+   same idea as the comet on a progress bar. 150 is comfortably longer than
+   either path, so neither is clipped. */
+@keyframes logo-rail-in { from { stroke-dashoffset: 150; opacity: .3; } }
 /* Arrival: the host rises; a pre-painted glow overlay fades on the
    compositor. (Animating box-shadow itself repaints the card per frame.) */
 @keyframes arrive-rise { from { transform: translateY(4px); } }
@@ -2301,9 +2303,8 @@ html.vt-active main :is(tbody tr, .panel, .list-panel > .list-item,
    Logo rails light up top-down, then the nav follows. Sections are
    wrapper divs (label = child 1, items from child 2), so item delays
    compose a per-section base with an in-section step. */
-.sidebar-logo-inner span { animation: logo-rail-in .28s var(--ease-out) both; }
-.sidebar-logo-inner span:nth-child(2) { animation-delay: .08s; }
-.sidebar-logo-inner span:nth-child(3) { animation-delay: .16s; }
+.sidebar-logo path { stroke-dasharray: 150; animation: logo-rail-in .55s var(--ease-out) both; }
+.sidebar-logo path:nth-child(2) { animation-delay: .1s; }
 .sidebar-nav-item {
   animation: rise-in .3s var(--ease-out) both;
   animation-delay: calc(var(--boot-sec, 0s) + var(--boot-row, 0s));
@@ -2474,9 +2475,9 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 
 /* ─── Keyframes for this pass ─────────────────────────── */
 @keyframes gate-arrive     { from { opacity: 0; transform: translateY(8px); } }
-@keyframes gate-breathe    { from { opacity: .5; } to { opacity: 1; } }
-@keyframes gate-glyph-pulse{ 0%,100% { box-shadow: 0 0 28px -8px var(--warning); }
-                             50%     { box-shadow: 0 0 34px -2px var(--warning); } }
+@keyframes gate-breathe    { from { opacity: .55; } to { opacity: .85; } }
+@keyframes gate-glyph-pulse{ 0%,100% { box-shadow: 0 0 16px -12px var(--warning); }
+                             50%     { box-shadow: 0 0 20px -8px var(--warning); } }
 @keyframes settle-flash    { from { background: var(--settle-tint); } to { background: var(--bg-hover); } }
 @keyframes confirm-slide   { from { opacity: 0; transform: translateY(-4px); } }
 @keyframes inbox-pip       { 0%,100% { box-shadow: 0 0 0 3px var(--warning-soft); }
@@ -2502,19 +2503,24 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   border-radius: var(--r-lg);
   border: 1px solid var(--warning-border);
   background: var(--bg-card);
-  box-shadow: var(--shadow-md), 0 0 60px -28px var(--warning), inset 3px 0 0 var(--warning);
+  /* The amber rail and border carry the state; the outer bloom was doing the
+     same job three times over and read as a halo around the whole card. */
+  box-shadow: var(--shadow-md), inset 3px 0 0 var(--warning);
   animation: gate-arrive .5s var(--ease-out) both;
 }
 .approval-gate--settled {
   border-color: var(--success-border);
-  box-shadow: var(--shadow-md), 0 0 60px -28px var(--success), inset 3px 0 0 var(--success);
+  box-shadow: var(--shadow-md), inset 3px 0 0 var(--success);
 }
 .approval-gate-aura {
   position: absolute;
-  inset: -40% -10% auto -10%;
-  height: 220px;
+  inset: -30% -10% auto -10%;
+  height: 130px;
   pointer-events: none;
-  background: radial-gradient(60% 100% at 20% 0%, var(--warning-soft), transparent 70%);
+  /* Half the reach and a third of the strength: enough to warm the top of the
+     card, not enough to read as a glow in its own right. */
+  background: radial-gradient(55% 100% at 20% 0%,
+                              color-mix(in srgb, var(--warning) 7%, transparent), transparent 72%);
   animation: gate-breathe 6s var(--ease-swift) infinite alternate;
 }
 .approval-gate--settled .approval-gate-aura {
@@ -2536,14 +2542,14 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   color: var(--warning);
   background: var(--warning-soft);
   border: 1px solid var(--warning-border);
-  box-shadow: 0 0 28px -8px var(--warning);
+  box-shadow: 0 0 16px -12px var(--warning);
   animation: gate-glyph-pulse 2.6s var(--ease-swift) infinite;
 }
 .approval-gate--settled .approval-gate-glyph {
   color: var(--success);
   background: var(--success-soft);
   border-color: var(--success-border);
-  box-shadow: 0 0 28px -8px var(--success);
+  box-shadow: 0 0 16px -12px var(--success);
   animation: none;
 }
 .approval-gate-headtext { flex: 1; min-width: 0; }
@@ -3487,11 +3493,25 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 .wb-bloom-waiting { --bloom: rgba(251,191,36,0.45); --bloom-soft: rgba(251,191,36,0.14); }
 /* Dashboard headline stat for open gates. */
 .dash-stat.stat-approval { color: var(--warning); font-weight: 600; }
-/* Gantt lanes: a gate is a TaskRun too, and .tl-bar without a matching status
-   class has no background at all — an invisible bar, not a neutral one. */
-.tl-bar.awaiting_approval { background: var(--warning); }
-.tl-bar.approved          { background: var(--success); opacity: .5; }
-.tl-bar.rejected          { background: var(--danger); }
+/* Gantt lanes: a gate is a TaskRun too, but it is time nobody spent working —
+   it must not look like a task bar. The span is drawn from parked to decided,
+   which is exactly the gap that used to sit unexplained between the upstream
+   task finishing and this one starting, and it is hatched so the eye reads
+   "held here" rather than "ran here". The tint carries the outcome, because a
+   rejected gate has no task bar after it to say what happened. */
+.tl-bar--gate {
+  --gate-tint: var(--warning);
+  background:
+    repeating-linear-gradient(-45deg,
+      color-mix(in srgb, var(--gate-tint) 34%, transparent) 0 4px,
+      transparent 4px 9px),
+    color-mix(in srgb, var(--gate-tint) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--gate-tint) 34%, transparent);
+}
+.tl-bar--gate.approved { --gate-tint: var(--success); }
+.tl-bar--gate.rejected { --gate-tint: var(--danger); }
+/* Still open, so still accruing. */
+.tl-bar--gate-open { animation: gate-breathe 2.4s var(--ease-swift) infinite alternate; }
 
 /* ─── Reduced motion for this pass ─────────────────────
    Every STATE survives — the aura's tint, the settled
@@ -3668,7 +3688,7 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 .notif-item {
   position: relative;
   display: flex; align-items: flex-start; gap: 10px;
-  padding: 9px 10px 9px 11px;
+  padding: 10px 12px;
   border-radius: var(--r-md);
   border: 1px solid transparent;
   text-decoration: none;
@@ -3692,7 +3712,7 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   color: var(--sev); background: var(--sev-soft); border: 1px solid var(--sev-border);
 }
 .notif-item:not(.is-unread) .notif-item-disc { opacity: .62; }
-.notif-item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.notif-item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .notif-item-top  { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .notif-item-kind {
   display: inline-flex; align-items: center; gap: 5px;
@@ -3707,7 +3727,7 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   white-space: nowrap; font-variant-numeric: tabular-nums; flex-shrink: 0;
 }
 .notif-item-title {
-  font-size: 12.5px; line-height: 1.45; color: var(--text-2);
+  font-size: 12.5px; line-height: 1.4; color: var(--text-2);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .notif-item.is-unread .notif-item-title { color: var(--text-1); font-weight: 550; }

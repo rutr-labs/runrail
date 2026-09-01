@@ -193,6 +193,12 @@ function eventHref(event: ActivityEvent): string {
   return `/workflows/${event.workflow_id}`;
 }
 
+/** Whether the title already names where the row goes. */
+function titleNames(event: ActivityEvent): boolean {
+  const destination = destinationLabel(event);
+  return Boolean(destination) && event.title.toLowerCase().includes(destination.toLowerCase());
+}
+
 function destinationLabel(event: ActivityEvent): string {
   const meta = metaFor(event.kind);
   return meta.target === 'run' && event.run_id != null
@@ -302,11 +308,28 @@ export function useActivityFeed(options: ActivityFeedOptions = {}): ActivityFeed
     };
   }, [load, pollMs]);
 
-  // A new read stamp changes what `unread` means, so re-ask immediately. On
-  // mount this coincides with the interval effect's first load; the inflight
-  // guard collapses the two into one request.
+  // A new read stamp changes what `unread` means, so re-ask immediately — but
+  // only when the stamp changes for a reason other than a poll landing.
+  //
+  // Re-asking on every `readAt` change is a loop: the panel stamps itself read
+  // with the feed's generated_at, which is now() to the microsecond and so is
+  // different in every response. Response → new stamp → reload → response.
+  // Measured at ~19 requests a second, each one five database scans, for as
+  // long as the panel stayed open.
+  const lastAsked = useRef<string | null>(null);
+  // Read inside an effect that must not re-run when the feed changes.
+  const feedRef = useRef<ActivityFeed | null>(null);
+  feedRef.current = feed;
+
   useEffect(() => {
-    if (!document.hidden) load();
+    if (document.hidden || !readAt) return;
+    if (lastAsked.current === readAt) return;
+    const known = feedRef.current?.generated_at;
+    lastAsked.current = readAt;
+    // A stamp the server just handed us adds nothing; only a stamp restored
+    // from storage or set by "mark all read" is worth a fresh ask.
+    if (readAt === known) return;
+    load();
   }, [readAt, load]);
 
   return { feed, loading, error, reload: load };
@@ -415,7 +438,10 @@ function NotificationRow({
           </time>
         </span>
         <span className="notif-item-title">{event.title}</span>
-        <span className="notif-item-go">{destinationLabel(event)}</span>
+        {/* Only when it adds something. Every run-targeted title already ends
+            in "(run #N)", so this line was repeating the line above it and
+            making a two-line row occupy three. */}
+        {!titleNames(event) && <span className="notif-item-go">{destinationLabel(event)}</span>}
       </span>
       <ChevronRight className="notif-item-chevron" size={14} aria-hidden="true" />
       {unread && <span className="notif-sr">Unread</span>}
@@ -484,6 +510,7 @@ export function NotificationBell({
   /* A nudge when the count grows, never as the only carrier of the state — the
      badge itself is. Cleared by a timer so it can replay on the next arrival. */
   const [ringing, setRinging] = useState(false);
+  const ringTimer = useRef<number | undefined>(undefined);
   const previousUnread = useRef(unread);
   const seeded = useRef(false);
   useEffect(() => {
@@ -495,9 +522,14 @@ export function NotificationBell({
     seeded.current = true;
     if (!grew) return;
     setRinging(true);
-    const timer = window.setTimeout(() => setRinging(false), 700);
-    return () => window.clearTimeout(timer);
+    // The timer lives in a ref, not in the effect's cleanup: `unread` drops to
+    // zero on the very next render while the panel is open, and a cleanup-owned
+    // timer would be cancelled there, leaving `ringing` true forever and the
+    // one-shot animation unable to replay.
+    window.clearTimeout(ringTimer.current);
+    ringTimer.current = window.setTimeout(() => setRinging(false), 700);
   }, [unread, feed]);
+  useEffect(() => () => window.clearTimeout(ringTimer.current), []);
 
   const close = useCallback((restoreFocus = false) => {
     setOpen(false);

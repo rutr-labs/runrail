@@ -25,16 +25,24 @@ function useCountUp(target: number, duration = 600): number {
       return;
     }
     let raf = 0;
+    let shown = from;
     const start = performance.now();
     const tick = (now: number) => {
       const progress = Math.min(1, (now - start) / duration);
       const eased = 1 - Math.pow(1 - progress, 3);
-      setValue(Math.round(from + (target - from) * eased));
+      shown = Math.round(from + (target - from) * eased);
+      setValue(shown);
       if (progress < 1) raf = requestAnimationFrame(tick);
       else { fromRef.current = target; setValue(target); }
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      // Resume from what is on screen. Without this a second change mid-flight
+      // restarts from the value this animation began at, so a counter easing
+      // 10 → 20 that is updated to 25 halfway visibly snaps back to 10 first.
+      fromRef.current = shown;
+    };
   }, [target, duration]);
   return value;
 }
