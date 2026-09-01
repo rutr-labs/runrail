@@ -12,7 +12,19 @@ from runrail.api.crud import (
 )
 from runrail.api.ws import manager as ws_manager
 from runrail.db import get_db
-from runrail.models import Project, Task, TaskType, TriggerType, Workflow
+from runrail.models import (
+    LockMode,
+    Project,
+    RunStatus,
+    Task,
+    TaskRun,
+    TaskRunStatus,
+    TaskType,
+    TriggerType,
+    Workflow,
+    WorkflowRun,
+    now,
+)
 from runrail.schemas import (
     BackfillCreate,
     RunCreate,
@@ -90,7 +102,15 @@ def get_workflow(object_id: int, db: Session = Depends(get_db)):
 @router.put("/workflows/{object_id}", response_model=WorkflowOut)
 def update_workflow(object_id: int, data: WorkflowIn, db: Session = Depends(get_db)):
     ensure_environment_ready(db, data.default_environment_id)
-    return save(db, apply_update(get_or_404(db, Workflow, object_id), data.model_dump()))
+    workflow = apply_update(get_or_404(db, Workflow, object_id),
+                            data.model_dump(exclude_unset=True))
+    # The invariant belongs to the stored row, not to one payload: a partial
+    # update that clears the resource while saying nothing about the mode would
+    # otherwise leave `exclusive` behind, claiming a rule with nothing to apply
+    # it to.
+    if not workflow.lock_resource:
+        workflow.lock_mode = LockMode.shared
+    return save(db, workflow)
 
 
 @router.delete("/workflows/{object_id}", status_code=204)
@@ -153,16 +173,41 @@ def update_task(object_id: int, data: TaskIn, db: Session = Depends(get_db)):
                     sibling.depends_on_json = [
                         data.name if dep == old_name else dep for dep in sibling.depends_on_json
                     ]
-    return save(db, apply_update(task, data.model_dump()))
+    return save(db, apply_update(task, data.model_dump(exclude_unset=True)))
 
 
 @router.delete("/tasks/{object_id}", status_code=204)
 def delete_task(object_id: int, db: Session = Depends(get_db)):
     task = get_or_404(db, Task, object_id)
+    # A run parked on this task's gate has to be released BEFORE the row goes.
+    # TaskRun.task_id cascades on delete, so the gate row disappears with the
+    # task while the run stays waiting_approval — a state whose only exits were
+    # approve and reject, both now impossible. That run would hold its
+    # concurrency slot and its resource lock forever; worse, the held slot makes
+    # every later scheduled fire coalesce into nothing, so the workflow's
+    # schedule dies silently and the watchdog stays quiet because
+    # waiting_approval reads as in-flight.
+    parked = db.scalars(
+        select(WorkflowRun)
+        .join(TaskRun, TaskRun.workflow_run_id == WorkflowRun.id)
+        .where(TaskRun.task_id == task.id,
+               TaskRun.status == TaskRunStatus.awaiting_approval,
+               WorkflowRun.status == RunStatus.waiting_approval)).unique().all()
+    for run in parked:
+        run.status = RunStatus.cancelled
+        run.finished_at = now()
+        for row in db.scalars(select(TaskRun).where(
+                TaskRun.workflow_run_id == run.id,
+                TaskRun.status.in_((TaskRunStatus.queued, TaskRunStatus.awaiting_approval)))):
+            row.status = TaskRunStatus.cancelled
+            row.error_message = "The task this run was waiting on was deleted"
+
     if task.workflow_id is not None:  # drop the deleted task from sibling dependency lists
         for sibling in db.scalars(select(Task).where(Task.workflow_id == task.workflow_id,
                                                      Task.id != task.id)):
             if task.name in (sibling.depends_on_json or []):
                 sibling.depends_on_json = [d for d in sibling.depends_on_json if d != task.name]
     db.delete(task); db.commit()
+    for run in parked:
+        ws_manager.notify({"type": "run_updated", "id": run.id})
     return Response(status_code=204)

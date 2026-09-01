@@ -80,7 +80,8 @@ def get_project(object_id: int, db: Session = Depends(get_db)):
 @router.put("/projects/{object_id}", response_model=ProjectOut)
 def update_project(object_id: int, data: ProjectIn, db: Session = Depends(get_db)):
     ensure_environment_ready(db, data.default_environment_id)
-    return save(db, apply_update(get_or_404(db, Project, object_id), data.model_dump()))
+    return save(db, apply_update(get_or_404(db, Project, object_id),
+                                 data.model_dump(exclude_unset=True)))
 
 
 @router.delete("/projects/{object_id}", status_code=204)

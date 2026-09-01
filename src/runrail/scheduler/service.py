@@ -26,8 +26,14 @@ def enqueue_scheduled(workflow_id: int) -> None:
         # Coalesce instead of skip: while a run is executing, keep exactly one queued
         # iteration waiting. The worker enforces max_concurrent_runs when claiming, so
         # a slow run delays — never silently drops — the next scheduled iteration.
+        #
+        # Scheduled runs only. Counting every queued run meant a backfill of a
+        # month sitting in the queue suppressed the live schedule for as long as
+        # it took to drain: the fires were dropped, not deferred, and the missed
+        # watchdog stayed quiet because a queued run reads as in-flight.
         queued = db.scalar(select(func.count()).select_from(WorkflowRun).where(
             WorkflowRun.workflow_id == workflow_id,
+            WorkflowRun.trigger_type == TriggerType.schedule,
             WorkflowRun.status == RunStatus.queued)) or 0
         if queued >= 1: return
         minute = datetime.now(timezone.utc).replace(second=0, microsecond=0)

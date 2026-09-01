@@ -28,6 +28,14 @@ def get_or_404(db: Session, model, object_id: int):
 
 
 def apply_update(obj, data: dict[str, Any]):
+    """Write the given keys onto the row, and only those keys.
+
+    Callers must pass ``model_dump(exclude_unset=True)``. A full dump carries
+    pydantic's DEFAULTS for every field the client left out, so a form that
+    forgets one field silently resets it — that is how an edit in the task
+    modal used to strip a task's approval gate, turning a task that waits for a
+    human into one that runs unattended. Omitted means unchanged.
+    """
     for key, value in data.items():
         setattr(obj, key, value)
     return obj

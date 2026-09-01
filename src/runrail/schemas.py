@@ -115,13 +115,21 @@ class WorkflowIn(BaseModel):
     lock_resource: str | None = Field(default=None, max_length=255)
     lock_mode: LockMode = LockMode.shared
 
+    @field_validator("lock_resource")
+    @classmethod
+    def _blank_resource_is_no_lock(cls, value: str | None) -> str | None:
+        # An empty box in the edit modal means "no lock". Normalising here
+        # rather than in a model validator matters: assigning to self inside an
+        # `after` validator marks the field as *set*, and PUT now writes only
+        # the fields a client actually sent — so every workflow update would
+        # carry a lock_resource nobody mentioned, wiping a lock set elsewhere.
+        return (value or "").strip() or None
+
     @model_validator(mode="after")
     def _mode_needs_a_resource(self) -> "WorkflowIn":
-        # An empty box in the edit modal means "no lock", and a mode stored
-        # without a resource is configuration that claims a rule it never applies.
-        resource = (self.lock_resource or "").strip()
-        self.lock_resource = resource or None
-        if not resource:
+        # A mode stored without a resource claims a rule it never applies. Only
+        # assign when it is actually wrong, so an untouched mode stays unset.
+        if not self.lock_resource and self.lock_mode is not LockMode.shared:
             self.lock_mode = LockMode.shared
         return self
 

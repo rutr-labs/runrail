@@ -391,11 +391,13 @@ def _execute_task_graph(db: Session, run: WorkflowRun, workflow: Workflow,
                 del remaining[task.name]
                 if cancelled:
                     db.add(TaskRun(workflow_run_id=run.id, task_id=task.id,
-                                   status=TaskRunStatus.cancelled, error_message="Run was cancelled"))
+                                   status=TaskRunStatus.cancelled, error_message="Run was cancelled",
+                                   resume_index=run.resume_count))
                     outcomes[task.name] = False; db.commit()
                 elif any(not outcomes.get(dep, False) for dep in task.depends_on_json or []):
                     db.add(TaskRun(workflow_run_id=run.id, task_id=task.id,
-                                   status=TaskRunStatus.skipped, error_message="A dependency did not succeed"))
+                                   status=TaskRunStatus.skipped, error_message="A dependency did not succeed",
+                                   resume_index=run.resume_count))
                     outcomes[task.name] = False; db.commit()
                 elif (task.requires_approval
                       and (gate := _gate_decision(db, run, task)) != TaskRunStatus.approved):
@@ -421,7 +423,8 @@ def _execute_task_graph(db: Session, run: WorkflowRun, workflow: Workflow,
                 error = future.exception()
                 if error is not None:
                     db.add(TaskRun(workflow_run_id=run.id, task_id=task_ids[name],
-                                   status=TaskRunStatus.failed, error_message=str(error)))
+                                   status=TaskRunStatus.failed, error_message=str(error),
+                                   resume_index=run.resume_count))
                     db.commit()
                     outcomes[name] = False
                 else:
@@ -456,8 +459,13 @@ def execute_workflow_run(db: Session, run: WorkflowRun) -> None:
         final = _final_status(db, run, outcomes)
     except Exception as exc:
         final = RunStatus.failed
+        # resume_index on every row a segment writes, like _run_task and
+        # open_gate: a row defaulting to 0 files a resumed segment's skips and
+        # failures under the original attempt, so the API reports four rows for
+        # a two-task workflow and the segment filters read an incomplete set.
         db.add(TaskRun(workflow_run_id=run.id, task_id=workflow.tasks[0].id,
-                       status=TaskRunStatus.failed, error_message=str(exc))) if workflow.tasks else None
+                       status=TaskRunStatus.failed, error_message=str(exc),
+                       resume_index=run.resume_count)) if workflow.tasks else None
     if pending:
         # Release the run AND the worker slot: the pool is bounded, so a gate
         # that held a slot would deadlock the whole instance, not just this
@@ -558,6 +566,11 @@ def claim_runnable_run(db: Session) -> WorkflowRun | None:
     return None
 
 
+#: Statuses a run never leaves. A `running` task row under one of these is
+#: debris, not work in progress.
+_TERMINAL = (RunStatus.success, RunStatus.failed, RunStatus.cancelled)
+
+
 def recover_interrupted_runs(db: Session) -> int:
     """Mark runs left 'running' by a killed worker as failed.
 
@@ -570,14 +583,25 @@ def recover_interrupted_runs(db: Session) -> int:
     would strand every workflow sharing that resource, not just the crashed one.
     """
     stale = db.scalars(select(WorkflowRun).where(WorkflowRun.status == RunStatus.running)).all()
-    if not stale:
+    # A run cancelled while a task was executing keeps that task row `running`:
+    # cancel settles only the queued and awaiting_approval rows, because the
+    # worker is expected to finish the live one. If the worker is killed before
+    # it can, nothing ever repairs the row and the run page shows a task
+    # spinning forever on a run that ended. Sweep those here too, where the
+    # process is known to have died.
+    orphaned = db.scalars(
+        select(TaskRun.workflow_run_id)
+        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+        .where(TaskRun.status == TaskRunStatus.running,
+               WorkflowRun.status.in_(_TERMINAL))).all()
+    if not stale and not orphaned:
         return 0
     finished = now()
     for run in stale:
         run.status = RunStatus.failed
         run.finished_at = finished
         run.duration_seconds = _duration(run.started_at or run.created_at)
-    stale_ids = [run.id for run in stale]
+    stale_ids = [run.id for run in stale] + list(orphaned)
     db.execute(update(TaskRun)
                .where(TaskRun.workflow_run_id.in_(stale_ids),
                       TaskRun.status == TaskRunStatus.running)

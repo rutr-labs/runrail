@@ -262,3 +262,38 @@ def test_an_approved_task_that_succeeded_is_reused_by_a_later_resume(client, tmp
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "success"
     assert gates(client, run_id) == []   # never asked twice
     assert ran.read_text() == "p"        # and the publish did not repeat
+
+
+def test_editing_a_task_does_not_silently_remove_its_gate(client):
+    """A form that forgets a field must not reset it.
+
+    The task modal sends the fields it knows about; when it did not know about
+    approval, saving an unrelated change turned a task that waits for a person
+    into one that runs unattended, with no warning and no trace. Omitted now
+    means unchanged, so only an explicit `false` can remove a gate.
+    """
+    workflow = make_workflow(client, "editable")
+    task = make_shell_task(client, workflow["id"], "publish", "printf p",
+                           requires_approval=True)
+    assert task["requires_approval"] is True
+
+    # Exactly the body the edit modal sent before this was fixed: every field
+    # it knew about, and nothing about approval.
+    unrelated_edit = client.put(f"/api/tasks/{task['id']}", json={
+        "name": "publish", "task_type": "shell", "command": "printf p",
+        "cwd": None, "depends_on_json": [], "parameters_json": None,
+        "retries": 2, "retry_delay_seconds": 0, "timeout_seconds": None,
+        "project_id": None, "environment_id": None,
+    })
+    assert unrelated_edit.status_code == 200
+    kept = unrelated_edit.json()
+    assert kept["requires_approval"] is True, "an unrelated edit removed the gate"
+    assert kept["retries"] == 2, "the edit itself must still apply"
+
+    # Removing a gate stays possible — it just has to be asked for.
+    removed = client.put(f"/api/tasks/{task['id']}", json={
+        "name": "publish", "task_type": "shell", "command": "printf p",
+        "requires_approval": False, "approval_prompt": None,
+    })
+    assert removed.status_code == 200
+    assert removed.json()["requires_approval"] is False
