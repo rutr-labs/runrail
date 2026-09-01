@@ -126,7 +126,8 @@ export function useScheduleGaps(
     let stale = false; // widening the window mid-flight must not resurrect the old scan
     setLoading(true);
     const window = Math.min(365, Math.max(1, Math.round(days)));
-    api<ScheduleGapsData>(`/workflows/${workflowId}/schedule-gaps?days=${window}`)
+    api<ScheduleGapsData>(
+      `/workflows/${workflowId}/schedule-gaps?days=${window}&tz=${encodeURIComponent(viewerZone())}`)
       .then(payload => { if (!stale) { setData(payload); setError(null); } })
       .catch(err => { if (!stale) setError(err?.message || 'Could not read the schedule history'); })
       .finally(() => { if (!stale) setLoading(false); });

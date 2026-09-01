@@ -199,7 +199,11 @@ export function zoneTag(tz: string): string {
   }
 }
 
-export const viewerZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
+/* One definition, in format.ts, because the day-bucket helpers and the cron
+   labels have to agree about which zone the viewer is in. Re-exported here so
+   this module's existing callers are untouched. */
+export { viewerZone } from './format';
+import { viewerZone } from './format';
 
 /** Human label for a cron. Fixed-time schedules read as wall-clock in the
  *  WORKFLOW's zone (that is what the author chose), tagged with the offset

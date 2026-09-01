@@ -49,3 +49,28 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 }
+
+/* ─── Calendar days ────────────────────────────────────────
+   Everything is stored in UTC, but "what ran on Tuesday" is a question about
+   the viewer's calendar. These two keep the client's idea of a day identical
+   to the server's: /stats/daily, /schedule-gaps and /runs?day= all bucket by
+   the zone reported here. */
+
+/** The viewer's IANA zone, or UTC where the browser will not say. */
+export function viewerZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/** YYYY-MM-DD for a local calendar date.
+ *
+ *  Not toISOString().slice(0, 10): that formats the UTC date, which for any
+ *  zone ahead of UTC names the previous day for most of the evening. */
+export function localDateKey(value: Date | number): string {
+  const at = typeof value === 'number' ? new Date(value) : value;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+}

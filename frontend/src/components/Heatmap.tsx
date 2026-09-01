@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import clsx from 'clsx';
+import { Link } from 'react-router-dom';
 import { api } from '../api';
+import { localDateKey, viewerZone } from '../format';
 import type { GapDay } from './ScheduleGaps';
 
 /** Activity grid: one cell per day, weeks as columns running Monday → Sunday.
@@ -105,7 +108,7 @@ export function RunHeatmap({
 
   useEffect(() => {
     let stale = false; // ignore out-of-order responses when switching ranges quickly
-    const params = new URLSearchParams({ days: String(weeks * 7) });
+    const params = new URLSearchParams({ days: String(weeks * 7), tz: viewerZone() });
     if (workflowId) params.set('workflow_id', String(workflowId));
     api<DayStat[]>(`/stats/daily?${params}`)
       .then(rows => { if (!stale) setStats(Object.fromEntries(rows.map(r => [r.date, r]))); })
@@ -119,34 +122,48 @@ export function RunHeatmap({
   // A day is inside the scan when any part of it is: the floor can land mid-day.
   const gapFloor = gapsSince ? new Date(gapsSince).getTime() : null;
 
+  /* Calendar arithmetic, not milliseconds. Stepping by a fixed 24h from local
+     midnight drifts an hour at every DST boundary, and one fall-back day later
+     lands back on the day it started — a duplicated square and a missing one,
+     twice a year. setDate() moves whole calendar days by definition. */
+  const addDays = (from: Date, count: number) => {
+    const next = new Date(from);
+    next.setDate(next.getDate() + count);
+    return next;
+  };
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   // Last cell is today; each column is one Monday → Sunday week.
-  const end = today.getTime();
-  const start = end - (weeks * 7 - 1) * DAY_MS;
-  const firstMonday = start - ((new Date(start).getDay() + 6) % 7) * DAY_MS;
+  const start = addDays(today, -(weeks * 7 - 1));
+  const firstMonday = addDays(start, -((start.getDay() + 6) % 7));
 
-  const columns: { key: number; days: (DayStat | undefined)[] }[] = [];
+  type Cell = { stat: DayStat | undefined; date: Date; key: string };
+  const columns: { key: number; days: Cell[] }[] = [];
   const monthLabels: { index: number; label: string }[] = [];
   let lastMonth = -1;
   for (let week = 0; ; week++) {
-    const weekStart = firstMonday + week * 7 * DAY_MS;
-    if (weekStart > end) break;
+    const weekStart = addDays(firstMonday, week * 7);
+    if (weekStart > today) break;
     const days = Array.from({ length: 7 }, (_, dow) => {
-      const t = weekStart + dow * DAY_MS;
-      if (t < start || t > end) return undefined;
-      return stats[new Date(t).toISOString().slice(0, 10)] ?? { date: '', success: 0, failed: 0, other: 0 };
+      const date = addDays(weekStart, dow);
+      const key = localDateKey(date);
+      const inRange = date >= start && date <= today;
+      return {
+        date, key,
+        stat: !inRange ? undefined
+          : stats[key] ?? { date: '', success: 0, failed: 0, other: 0 },
+      };
     });
-    const month = new Date(weekStart).getMonth();
+    const month = weekStart.getMonth();
     if (month !== lastMonth) {
-      monthLabels.push({ index: week, label: new Date(weekStart).toLocaleDateString(undefined, { month: 'short' }) });
+      monthLabels.push({ index: week, label: weekStart.toLocaleDateString(undefined, { month: 'short' }) });
       lastMonth = month;
     }
-    columns.push({ key: weekStart, days });
+    columns.push({ key: weekStart.getTime(), days });
   }
 
   // Only worth a footnote when the grid actually reaches past the scan.
-  const showGapFloor = Boolean(gaps) && gapFloor !== null && gapFloor > start;
+  const showGapFloor = Boolean(gaps) && gapFloor !== null && gapFloor > start.getTime();
 
   return (
     <div className="run-heatmap-wrap">
@@ -181,10 +198,8 @@ export function RunHeatmap({
             {columns.map((col, colIndex) => (
               <div key={col.key} className="run-heatmap-col"
                    style={{ gap: GAP, animationDelay: `${colIndex * 10}ms` }}>
-                {col.days.map((stat, dow) => {
-                  const t = col.key + dow * DAY_MS;
-                  const date = new Date(t);
-                  const key = date.toISOString().slice(0, 10);
+                {col.days.map(({ stat, date, key }, dow) => {
+                  const t = date.getTime();
                   const runs = stat ? stat.success + stat.failed + stat.other : 0;
 
                   // Gap state, only where the scan actually looked.
@@ -212,15 +227,29 @@ export function RunHeatmap({
                       (runs
                         ? ` · ${stat.success} ok${stat.failed ? ` · ${stat.failed} failed` : ''}${stat.other ? ` · ${stat.other} other` : ''}`
                         : ' · no runs') + gapTip;
+                  const style: CSSProperties = {
+                    width: CELL, height: CELL,
+                    visibility: stat === undefined ? 'hidden' : 'visible',
+                    background: cellColor(stat),
+                  };
+                  const className = clsx('run-heatmap-cell',
+                                         missed && 'run-heatmap-cell--missed',
+                                         pausedOnly && 'run-heatmap-cell--paused');
+                  // A day with runs links to exactly those runs. A day with
+                  // none has nothing to show, so it stays a plain square
+                  // rather than a link that lands on an empty table.
+                  if (stat === undefined || runs === 0) {
+                    return <span key={dow} className={className} title={tip} style={style} />;
+                  }
+                  const query = new URLSearchParams({ day: key, tz: viewerZone() });
+                  if (workflowId) query.set('workflow', String(workflowId));
                   return (
-                    <span key={dow}
-                          className={clsx('run-heatmap-cell',
-                                          missed && 'run-heatmap-cell--missed',
-                                          pausedOnly && 'run-heatmap-cell--paused')}
-                          title={tip}
-                          style={{ width: CELL, height: CELL,
-                                   visibility: stat === undefined ? 'hidden' : 'visible',
-                                   background: cellColor(stat) }} />
+                    <Link key={dow}
+                          to={`/runs?${query}`}
+                          className={clsx(className, 'run-heatmap-cell--link')}
+                          title={`${tip} · click to see these runs`}
+                          aria-label={tip}
+                          style={style} />
                   );
                 })}
               </div>

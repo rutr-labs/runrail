@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,7 +7,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from runrail.api.crud import create_run, get_or_404
+from runrail.api.routes_workflows import _ensure_workflow_runnable
 from runrail.api.ws import manager as ws_manager
+from runrail.daybuckets import day_bounds, local_date_expr, offset_segments, resolve_zone
 from runrail.db import get_db
 from runrail.models import (
     Artifact,
@@ -26,10 +28,23 @@ router = APIRouter(prefix="/api")
 
 @router.get("/runs", response_model=list[WorkflowRunOut])
 def list_runs(status: RunStatus | None = None, workflow_id: int | None = None,
+              day: date | None = None, tz: str | None = None,
               limit: int = Query(100, ge=1, le=1000), db: Session = Depends(get_db)):
+    """Recent runs, newest first.
+
+    `day` narrows to one calendar day in `tz` (the viewer's IANA zone, UTC when
+    unset) — the same buckets /stats/daily counts by, because a heatmap square
+    and the list it opens have to contain the same runs.
+    """
     stmt = select(WorkflowRun).order_by(WorkflowRun.created_at.desc()).limit(limit)
     if status: stmt = stmt.where(WorkflowRun.status == status)
     if workflow_id: stmt = stmt.where(WorkflowRun.workflow_id == workflow_id)
+    if day:
+        try:
+            start, end = day_bounds(day, resolve_zone(tz))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        stmt = stmt.where(WorkflowRun.created_at >= start, WorkflowRun.created_at < end)
     return db.scalars(stmt).all()
 
 
@@ -80,9 +95,14 @@ def retry_run(object_id: int, db: Session = Depends(get_db)):
     gates the scheduler, and retrying is how you verify a fix before unpausing.
     """
     source = get_or_404(db, WorkflowRun, object_id)
-    if source.status in (RunStatus.queued, RunStatus.running):
+    if source.status in (RunStatus.queued, RunStatus.running, RunStatus.waiting_approval):
         raise HTTPException(409, "Run is still in progress")
     workflow = get_or_404(db, Workflow, source.workflow_id)
+    # The same gate /run and /resume apply. Without it, retrying a workflow
+    # whose tasks or environment have since gone produces a run that fails with
+    # no task rows at all, and that phantom failure counts toward the
+    # auto-pause streak — one click silently disabling the schedule.
+    _ensure_workflow_runnable(db, workflow)
     run = create_run(db, workflow, TriggerType.manual, dict(source.parameters_json or {}))
     ws_manager.notify({"type": "run_created", "id": run.id, "workflow_id": run.workflow_id})
     return run
@@ -169,25 +189,40 @@ def stats_summary(db: Session = Depends(get_db)):
 
 @router.get("/stats/daily")
 def daily_stats(days: int = Query(112, ge=1, le=366), workflow_id: int | None = None,
-                db: Session = Depends(get_db)):
-    """Per-day run counts by outcome, for activity heatmaps."""
-    since = now() - timedelta(days=days)
-    # date() exists on both; on PostgreSQL it truncates in the session timezone,
-    # which db._make_engine pins to UTC so the buckets match SQLite's.
-    day = func.date(WorkflowRun.created_at)
-    stmt = (select(day.label("day"), WorkflowRun.status, func.count())
-            .where(WorkflowRun.created_at >= since)
-            .group_by(day, WorkflowRun.status))
-    if workflow_id:
-        stmt = stmt.where(WorkflowRun.workflow_id == workflow_id)
+                tz: str | None = None, db: Session = Depends(get_db)):
+    """Per-day run counts by outcome, for activity heatmaps.
+
+    `tz` is the viewer's IANA zone; days are that zone's calendar days, so a
+    9pm run lands on the evening the operator remembers rather than on the next
+    UTC date. Omitted means UTC, which is what the endpoint always did.
+    """
+    try:
+        zone = resolve_zone(tz)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    until = now()
+    since = until - timedelta(days=days)
+    dialect = db.bind.dialect.name if db.bind is not None else "sqlite"
+
     buckets: dict[str, dict] = {}
-    for value, status, count in db.execute(stmt):
-        entry = buckets.setdefault(str(value), {"date": str(value), "success": 0, "failed": 0, "other": 0})
-        key = getattr(status, "value", str(status))
-        if key in ("success", "failed"):
-            entry[key] += count
-        else:
-            entry["other"] += count
+    # One query per span of constant offset. A window without a DST transition
+    # is a single query, exactly as before.
+    for start, end, offset in offset_segments(since, until, zone):
+        day = local_date_expr(WorkflowRun.created_at, offset, dialect)
+        stmt = (select(day.label("day"), WorkflowRun.status, func.count())
+                .where(WorkflowRun.created_at >= start, WorkflowRun.created_at < end)
+                .group_by(day, WorkflowRun.status))
+        if workflow_id:
+            stmt = stmt.where(WorkflowRun.workflow_id == workflow_id)
+        for value, status, count in db.execute(stmt):
+            key = str(value)[:10]
+            entry = buckets.setdefault(
+                key, {"date": key, "success": 0, "failed": 0, "other": 0})
+            name = getattr(status, "value", str(status))
+            if name in ("success", "failed"):
+                entry[name] += count
+            else:
+                entry["other"] += count
     return sorted(buckets.values(), key=lambda item: item["date"])
 
 

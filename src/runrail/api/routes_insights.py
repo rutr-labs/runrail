@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from runrail.api.crud import apply_update, get_or_404, save
 from runrail.api.ws import manager as ws_manager
+from runrail.daybuckets import resolve_zone
 from runrail.db import get_db
 from runrail.logsearch import search_logs
 from runrail.models import (
@@ -115,7 +116,8 @@ def create_note(run_id: int, payload: RunNoteIn, db: Session = Depends(get_db)):
 
 @router.put("/run-notes/{note_id}", response_model=RunNoteOut)
 def update_note(note_id: int, payload: RunNoteIn, db: Session = Depends(get_db)):
-    note = save(db, apply_update(get_or_404(db, RunNote, note_id), payload.model_dump()))
+    note = save(db, apply_update(get_or_404(db, RunNote, note_id),
+                            payload.model_dump(exclude_unset=True)))
     ws_manager.notify({"type": "run_notes_changed", "run_id": note.workflow_run_id})
     return note
 
@@ -210,12 +212,16 @@ def task_durations(workflow_id: int, window: int = Query(20, ge=5, le=100),
 def schedule_gaps(workflow_id: int, days: int = Query(DEFAULT_DAYS, ge=1, le=365),
                   max_fires: int = Query(DEFAULT_FIRES, ge=10, le=MAX_FIRES),
                   limit: int = Query(DEFAULT_MISSED, ge=1, le=MAX_FIRES),
-                  db: Session = Depends(get_db)):
+                  tz: str | None = None, db: Session = Depends(get_db)):
     """The fires this workflow's schedule owed and what became of each one:
     `missed` for the run list, `daily` for the heatmap, `totals` for the header.
 
     Computed on read and never written — see schedule_gaps for why a placeholder
     run row would be a lie, and for the bound `stopped_by` reports.
     """
+    try:
+        zone = resolve_zone(tz)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     return find_gaps(db, get_or_404(db, Workflow, workflow_id),
-                     days=days, max_fires=max_fires, limit=limit)
+                     days=days, max_fires=max_fires, limit=limit, zone=zone)

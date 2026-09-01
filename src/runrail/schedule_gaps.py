@@ -18,12 +18,14 @@ at.
 """
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from runrail.crontab import cron_trigger
+from runrail.daybuckets import local_day_key
 from runrail.models import TriggerType, Workflow, WorkflowRun, _aware, now
 
 #: How far from its expected instant a scheduled run may land and still answer
@@ -181,8 +183,15 @@ def _bucket(day: str) -> dict:
 
 
 def find_gaps(db: Session, workflow: Workflow, *, days: int = DEFAULT_DAYS,
-              max_fires: int = DEFAULT_FIRES, limit: int = DEFAULT_MISSED) -> dict:
-    """Expected fires in the window and what became of each one."""
+              max_fires: int = DEFAULT_FIRES, limit: int = DEFAULT_MISSED,
+              zone: ZoneInfo | None = None) -> dict:
+    """Expected fires in the window and what became of each one.
+
+    `zone` buckets the daily counts by the viewer's calendar day, matching
+    /stats/daily — these marks are drawn on that heatmap's squares, so the two
+    have to agree about where a day begins.
+    """
+    zone = zone or ZoneInfo("UTC")
     current = now()
     # A fire younger than the match tolerance is not history yet — misfire grace
     # means its run is still allowed to arrive — so the window stops short of it.
@@ -219,11 +228,11 @@ def find_gaps(db: Session, workflow: Workflow, *, days: int = DEFAULT_DAYS,
             state = "blocked"
         else:
             state = "missed"
-        # UTC, like every other timestamp the API returns and like the day
-        # buckets in /stats/daily — a missed cell has to land on the same column
-        # of the same heatmap as the runs beside it.
+        # The viewer's calendar day, like the run counts in /stats/daily — a
+        # missed cell has to land on the same column of the same heatmap as the
+        # runs beside it.
         stamp = fire.astimezone(timezone.utc)
-        key = stamp.date().isoformat()
+        key = local_day_key(stamp, zone)
         day = daily.setdefault(key, _bucket(key))
         day["expected"] += 1
         day[state] += 1
