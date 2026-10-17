@@ -55,8 +55,23 @@ def test_export_is_a_single_self_contained_file(client):
     assert "<link rel=\"stylesheet\"" not in body
     assert "<script src=" not in body
     assert body.count('src="http') == 0
-    # The one deliberate exception: the footer's link back to the live run.
+    # No link back either: without RUNRAIL_PUBLIC_URL the run's address is a
+    # loopback one, which on the recipient's machine points at themselves.
+    assert body.count('href="http') == 0
+    assert "no public URL configured" in body
+
+
+def test_the_footer_links_to_the_run_only_when_it_has_a_public_address(client, monkeypatch):
+    from runrail.config import get_settings
+    _, run_id = run_workflow(client, "sales")
+    monkeypatch.setenv("RUNRAIL_PUBLIC_URL", "https://runrail.example.net")
+    get_settings.cache_clear()
+    try:
+        body = client.get(f"/api/runs/{run_id}/export").text
+    finally:
+        get_settings.cache_clear()
     assert body.count('href="http') == 1
+    assert f'href="https://runrail.example.net/runs/{run_id}"' in body
     assert "@font-face" not in body and "fonts.googleapis" not in body
 
 

@@ -1,4 +1,5 @@
-from pathlib import Path
+import os
+from pathlib import Path, PureWindowsPath
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
@@ -26,6 +27,19 @@ from runrail.schemas import (
 router = APIRouter(prefix="/api")
 
 
+def _reaches_out(path: str, root: Path) -> bool:
+    """A path that names a network share, a device, or another drive than the
+    browse root — anything that must not even be looked at."""
+    text = path.strip()
+    if text.startswith(("\\\\", "//")):
+        return True
+    if os.name == "nt":
+        anchor = PureWindowsPath(text).anchor
+        if anchor and anchor.lower() != PureWindowsPath(str(root)).anchor.lower():
+            return True
+    return False
+
+
 @router.get("/filesystem")
 def browse_filesystem(
     path: str | None = None,
@@ -33,6 +47,11 @@ def browse_filesystem(
 ):
     """Browse the configured local root for project and task path selection."""
     root = get_settings().browse_root.expanduser().resolve()
+    if path and _reaches_out(path, root):
+        # Refused before the path touches the filesystem: on Windows,
+        # resolving a UNC path opens it, which sends the user's credentials to
+        # whatever host it names — and any web page can make this request.
+        raise HTTPException(403, f"Path must be inside {root}")
     target = Path(path).expanduser().resolve() if path else root
     if target != root and root not in target.parents:
         raise HTTPException(403, f"Path must be inside {root}")

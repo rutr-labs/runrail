@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from runrail.api.crud import create_run, get_or_404
 from runrail.api.routes_workflows import _ensure_workflow_runnable
 from runrail.api.ws import manager as ws_manager
+from runrail.config import get_settings
 from runrail.daybuckets import day_bounds, local_date_expr, offset_segments, resolve_zone
 from runrail.db import get_db
 from runrail.models import (
@@ -21,6 +22,7 @@ from runrail.models import (
     WorkflowRun,
     now,
 )
+from runrail.paths import confined
 from runrail.schemas import TaskRunOut, WorkflowRunDetail, WorkflowRunOut
 
 router = APIRouter(prefix="/api")
@@ -118,7 +120,8 @@ def log_response(task_run: TaskRun, attr: str, tail_bytes: int | None = None):
     path = getattr(task_run, attr)
     if not path: return PlainTextResponse("", status_code=200)
     file = Path(path)
-    if not file.is_file(): raise HTTPException(404, "Log file not found")
+    if not confined(file, get_settings().logs_dir) or not file.is_file():
+        raise HTTPException(404, "Log file not found")
     if tail_bytes is not None:
         # Serve only the end of the file so huge logs never sit in API memory.
         size = file.stat().st_size
@@ -127,7 +130,10 @@ def log_response(task_run: TaskRun, attr: str, tail_bytes: int | None = None):
                 handle.seek(size - tail_bytes)
             data = handle.read()
         return PlainTextResponse(data.decode("utf-8", errors="replace"))
-    return PlainTextResponse(file.read_text(errors="replace"))
+    # Streamed from disk, never read whole: a multi-gigabyte log of a finished
+    # task used to land in memory three times over on the way to the browser,
+    # decoded in the platform's default encoding (cp1252 on Windows) at that.
+    return FileResponse(file, media_type="text/plain; charset=utf-8")
 
 
 @router.get("/task-runs/{object_id}/stdout")
@@ -245,5 +251,6 @@ def get_artifact(object_id: int, db: Session = Depends(get_db)):
 def download_artifact(object_id: int, db: Session = Depends(get_db)):
     artifact = get_or_404(db, Artifact, object_id)
     path = Path(artifact.path)
-    if not path.is_file(): raise HTTPException(404, "Artifact file not found")
+    if not confined(path, get_settings().artifacts_dir) or not path.is_file():
+        raise HTTPException(404, "Artifact file not found")
     return FileResponse(path, filename=artifact.name)

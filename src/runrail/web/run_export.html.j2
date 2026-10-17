@@ -12,7 +12,9 @@
    CSP by spec — only a real header carries them. So the iframe's sandbox
    ATTRIBUTE below is the actual isolation for the embedded report; this meta
    only contributes connect-src, img-src and form-action. #}
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+{# The same policy the live report is served under, so a notebook that renders
+   there (blob images, data fonts, workers) renders here too. #}
+<meta http-equiv="Content-Security-Policy" content="{{ report_csp }}">
 <title>{{ workflow.name if workflow else 'RunRail' }} · run {{ run.id }}</title>
 <style>
 :root { color-scheme: light; }
@@ -148,8 +150,12 @@ svg { width: 100%; height: auto; }
 {% endif %}
 
 <footer>
-  Exported from RunRail {{ version }}. The original run is at
-  <a href="{{ run_url }}">{{ run_url }}</a>, which only resolves from inside that network.
+  Exported from RunRail {{ version }}.
+  {% if run_url_reachable %}
+  The original run is at <a href="{{ run_url }}">{{ run_url }}</a>, which only resolves from inside that network.
+  {% else %}
+  The original run is run {{ run.id }} on the machine this was exported from (it has no public URL configured).
+  {% endif %}
 </footer>
 
 </main>

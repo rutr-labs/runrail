@@ -7,6 +7,7 @@ reports about itself (state, detail, retry time) is what the supervisor last
 wrote, so the UI shows the supervisor's view, not a guess.
 """
 
+import shutil
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -30,6 +31,7 @@ from runrail.models import (
     now,
 )
 from runrail.schemas import ServiceIn, ServiceOut, ServiceSessionOut
+from runrail.services.process import log_directory
 from runrail.services.supervisor import (
     LEASE_NAME,
     LEASE_STALE_AFTER,
@@ -148,6 +150,8 @@ def delete_service(service_id: int, db: Session = Depends(get_db)):
     its stop timeout like any stop."""
     db.delete(get_or_404(db, Service, service_id))
     db.commit()
+    # Its logs go with it; nothing else would ever clean them up.
+    shutil.rmtree(log_directory(service_id), ignore_errors=True)
     return Response(status_code=204)
 
 
@@ -208,5 +212,6 @@ def service_log(service_id: int, session_id: int | None = None,
         query = query.where(ServiceSession.id == session_id)
     session = db.scalar(query.order_by(ServiceSession.id.desc()).limit(1))
     if session is None:
-        raise HTTPException(404, "This service has not run yet")
+        raise HTTPException(404, "Session not found" if session_id is not None
+                            else "This service has not run yet")
     return log_tail(session.log_path, tail_bytes)

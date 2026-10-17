@@ -33,10 +33,20 @@ from runrail.models import (
     WorkflowRun,
     _aware,
 )
+from runrail.paths import confined
 
 MAX_PATTERN_LENGTH = 200
 # One minified-JSON log line must not be able to blow up the response.
 MAX_LINE_CHARS = 2000
+#: Bytes of a line a pattern is matched against. A regex that backtracks costs
+#: a high power of the line length — `.*.*.*=` took a second on 400 characters
+#: and would take hours on a 100 KB minified line — and Python holds the GIL
+#: while it matches, so every other request waited with it.
+MAX_MATCH_BYTES = 8192
+#: Lines between checks of the time budget inside one file.
+_DEADLINE_EVERY = 256
+#: Most bytes one search may read across all files.
+MAX_TOTAL_BYTES = 200_000_000
 
 # CSI sequences (colour, cursor moves); results render in a plain table.
 _ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -52,21 +62,31 @@ def _matcher(q: str, regex: bool, case_sensitive: bool):
     Matching on bytes rather than str means only the lines that actually hit
     are ever decoded.
     """
+    # bytes.lower() and a bytes IGNORECASE pattern fold ASCII only, so a
+    # query with a non-ASCII letter in it is matched on decoded text instead.
+    folded_text = not case_sensitive and not q.isascii()
     if regex:
         if len(q) > MAX_PATTERN_LENGTH:
             raise ValueError(f"Pattern is longer than {MAX_PATTERN_LENGTH} characters")
         if _NESTED_QUANTIFIER.search(q):
             raise ValueError("Pattern nests quantifiers and could backtrack forever")
         try:
+            if folded_text:
+                text_pattern = re.compile(q, re.IGNORECASE)
+                return lambda line: text_pattern.search(
+                    line[:MAX_MATCH_BYTES].decode("utf-8", errors="replace")) is not None
             pattern = re.compile(q.encode(), 0 if case_sensitive else re.IGNORECASE)
         except re.error as exc:
             raise ValueError(f"Invalid regular expression: {exc}") from exc
-        return lambda line: pattern.search(line) is not None
+        return lambda line: pattern.search(line[:MAX_MATCH_BYTES]) is not None
     if case_sensitive:
         needle = q.encode()
-        return lambda line: needle in line
+        return lambda line: needle in line[:MAX_MATCH_BYTES]
+    if folded_text:
+        lowered_text = q.lower()
+        return lambda line: lowered_text in line[:MAX_MATCH_BYTES].decode("utf-8", errors="replace").lower()
     lowered = q.lower().encode()
-    return lambda line: lowered in line.lower()
+    return lambda line: lowered in line[:MAX_MATCH_BYTES].lower()
 
 
 def _utc(value: datetime) -> datetime:
@@ -82,15 +102,6 @@ def _decode(raw: bytes) -> str:
     return _ANSI.sub(b"", raw).decode("utf-8", errors="replace").rstrip("\r")[:MAX_LINE_CHARS]
 
 
-def _confined(path: Path, root: Path) -> bool:
-    """Only DB-sourced paths are ever opened, but a hand-edited or imported row
-    must not turn this endpoint into an arbitrary-file reader."""
-    try:
-        return path.resolve().is_relative_to(root)
-    except OSError:
-        return False
-
-
 def search_logs(
     db: Session, *, q: str, regex: bool = False, case_sensitive: bool = False,
     workflow_id: int | None = None, task_id: int | None = None, task_name: str | None = None,
@@ -98,9 +109,12 @@ def search_logs(
     stream: str = "both", since: datetime | None = None, until: datetime | None = None,
     limit: int = 50, context: int = 2, max_files: int = 2000,
     max_bytes_per_file: int = 5_000_000, timeout_ms: int = 5000,
+    max_total_bytes: int | None = None,
 ) -> dict:
     """Grep the newest logs in scope. Raises ValueError on an unusable pattern."""
     match = _matcher(q, regex, case_sensitive)
+    if max_total_bytes is None:
+        max_total_bytes = MAX_TOTAL_BYTES
     started = time.monotonic()
     deadline = started + timeout_ms / 1000
     logs_root = get_settings().logs_dir.resolve()
@@ -126,18 +140,24 @@ def search_logs(
     streams = ("stderr", "stdout") if stream == "both" else (stream,)
     matches: list[dict] = []
     files_scanned = files_missing = bytes_scanned = truncated_files = rows_seen = 0
+    files_out_of_scope = 0
     stopped_by: str | None = None
 
     for task_run, run, workflow_name, name in db.execute(stmt):
-        # Bounds are checked between files, so a timeout never returns half of
-        # one file's hits.
         if len(matches) >= limit: stopped_by = "limit"; break
         if time.monotonic() > deadline: stopped_by = "timeout"; break
-        if files_scanned >= max_files: stopped_by = "max_files"; break
+        if rows_seen >= max_files: stopped_by = "max_files"; break
+        if bytes_scanned >= max_total_bytes: stopped_by = "max_bytes"; break
         rows_seen += 1
         for stream_name in streams:
             path = getattr(task_run, f"{stream_name}_log_path")
-            if not path or not _confined(Path(path), logs_root): continue
+            if not path: continue
+            if not confined(path, logs_root):
+                # Counted, so the answer never claims a complete scan of files
+                # it declined to open — which is what an imported history
+                # looked like: "complete scan, nothing found".
+                files_out_of_scope += 1
+                continue
             file = Path(path)
             try:
                 size = file.stat().st_size
@@ -146,17 +166,22 @@ def search_logs(
                 # first appear" lives at the head, and reading forwards keeps
                 # line numbers exact so the deep link still lands.
                 with file.open("rb") as handle:
-                    data = handle.read(max_bytes_per_file)
+                    data = handle.read(min(max_bytes_per_file, max_total_bytes - bytes_scanned))
             except OSError:
                 files_missing += 1
                 continue
             files_scanned += 1
             bytes_scanned += len(data)
-            truncated = size > max_bytes_per_file
+            truncated = size > len(data)
             if truncated: truncated_files += 1
             lines = data.split(b"\n")
             if truncated: lines.pop()  # the byte cap sliced the last line in half
             for index, raw in enumerate(lines):
+                # The budget is also checked inside a file: one pathological
+                # pattern on one long file used to run on for hours.
+                if index % _DEADLINE_EVERY == 0 and index and time.monotonic() > deadline:
+                    stopped_by = "timeout"
+                    break
                 if not match(raw): continue
                 matches.append({
                     "workflow_run_id": run.id, "workflow_id": run.workflow_id,
@@ -191,8 +216,8 @@ def search_logs(
             "bytes_scanned": bytes_scanned,
             "runs_matched": len({m["workflow_run_id"] for m in matches}),
             "elapsed_ms": round((time.monotonic() - started) * 1000),
-            "truncated_files": truncated_files,
-            "complete": stopped_by is None, "stopped_by": stopped_by,
+            "truncated_files": truncated_files, "files_out_of_scope": files_out_of_scope,
+            "complete": stopped_by is None and files_out_of_scope == 0, "stopped_by": stopped_by,
         },
         "oldest_match": None if oldest is None else {
             "workflow_run_id": oldest["workflow_run_id"],

@@ -55,7 +55,7 @@ def log_search(
     since: datetime | None = None, until: datetime | None = None,
     limit: int = Query(50, ge=1, le=500), context: int = Query(2, ge=0, le=10),
     max_files: int = Query(2000, ge=1, le=20000),
-    max_bytes_per_file: int = Query(5_000_000, ge=1024),
+    max_bytes_per_file: int = Query(5_000_000, ge=1024, le=50_000_000),
     timeout_ms: int = Query(5000, ge=100, le=30000),
     db: Session = Depends(get_db),
 ):
