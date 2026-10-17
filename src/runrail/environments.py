@@ -18,6 +18,7 @@ from runrail.models import (
     EnvironmentType,
     Project,
     RunStatus,
+    Service,
     Task,
     Workflow,
     WorkflowRun,
@@ -287,6 +288,11 @@ def environment_ids_in_use(db: Session) -> set[int]:
             )
             if environment_id is not None:
                 in_use.add(environment_id)
+    # A service holding its process runs from its environment too: rebuilding
+    # would swap the venv out from under it, so a rebuild waits for it to stop.
+    from runrail.services.locks import HOLDING
+    in_use.update(db.scalars(select(Service.environment_id).where(
+        Service.environment_id.is_not(None), Service.state.in_(HOLDING))))
     return in_use
 
 

@@ -12,6 +12,7 @@ from runrail.api.routes_reports import router as reports_router
 from runrail.api.routes_resources import router as resources_router
 from runrail.api.routes_runcontrol import router as runcontrol_router
 from runrail.api.routes_runs import router as runs_router
+from runrail.api.routes_services import router as services_router
 from runrail.api.routes_watchdog import router as watchdog_router
 from runrail.api.routes_workflows import router as workflows_router
 from runrail.api.routes_ws import router as ws_router
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
     app.include_router(runcontrol_router); app.include_router(watchdog_router)
     app.include_router(reports_router); app.include_router(insights_router)
     app.include_router(activity_router)
+    app.include_router(services_router)
 
     @app.get("/api/health")
     def health(): return {"status": "ok", "service": "runrail"}

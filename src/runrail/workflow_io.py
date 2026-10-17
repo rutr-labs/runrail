@@ -14,8 +14,18 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from runrail.models import Environment, LockMode, Project, Task, Workflow
-from runrail.schemas import TaskIn, WorkflowIn
+from runrail.models import (
+    Environment,
+    LockMode,
+    Project,
+    RestartPolicy,
+    Service,
+    ServiceStartMode,
+    ServiceState,
+    Task,
+    Workflow,
+)
+from runrail.schemas import ServiceIn, TaskIn, WorkflowIn
 
 # Configuration only. Operator state (snooze, notification markers, breach
 # markers) is deliberately absent: a file applied on another machine must not
@@ -79,7 +89,35 @@ def export_workflows(db: Session, name: str | None = None) -> dict[str, Any]:
             tasks.append(entry)
         item["tasks"] = tasks
         exported.append(item)
-    return {"workflows": exported}
+    data: dict[str, Any] = {"workflows": exported}
+    if not name:
+        services = [_export_service(service, projects, environments)
+                    for service in db.scalars(select(Service).order_by(Service.name))]
+        if services:
+            data["services"] = services
+    return data
+
+
+def _export_service(service: Service, projects: dict, environments: dict) -> dict[str, Any]:
+    item: dict[str, Any] = {"name": service.name, "key": service.key}
+    item.update(_compact({
+        "description": service.description, "command": service.command, "cwd": service.cwd,
+        "env_vars": service.env_vars_json, "timezone": service.timezone,
+        "notify_webhook_url": service.notify_webhook_url,
+    }))
+    item["start_mode"] = service.start_mode.value
+    if service.windows_json:
+        item["windows"] = [dict(window) for window in service.windows_json]
+    item["restart_policy"] = service.restart_policy.value
+    item["stop_timeout_seconds"] = service.stop_timeout_seconds
+    if service.lock_resource:
+        item["lock_resource"] = service.lock_resource
+        item["lock_mode"] = service.lock_mode.value
+    if service.project_id:
+        item["project"] = projects.get(service.project_id)
+    if service.environment_id:
+        item["environment"] = environments.get(service.environment_id)
+    return item
 
 
 def _resolve(db: Session, model, name: str | None, kind: str) -> int | None:
@@ -114,9 +152,10 @@ def _validate_graph(tasks: list[dict[str, Any]]) -> None:
 
 
 def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
-    entries = data.get("workflows")
-    if not isinstance(entries, list) or not entries:
-        raise ValueError("File must contain a top-level 'workflows' list")
+    entries = data.get("workflows") or []
+    services = data.get("services") or []
+    if not isinstance(entries, list) or not isinstance(services, list) or not (entries or services):
+        raise ValueError("File must contain a top-level 'workflows' or 'services' list")
     summary: dict[str, list[str]] = {"created": [], "updated": []}
     for entry in entries:
         wf_name = entry.get("name")
@@ -204,5 +243,58 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
             if name not in wanted:
                 db.delete(task)
         summary["created" if created else "updated"].append(wf_name)
+    for entry in services:
+        created, name = _apply_service(db, entry)
+        summary["created" if created else "updated"].append(f"service {name}")
     db.commit()
     return summary
+
+
+def _apply_service(db: Session, entry: dict[str, Any]) -> tuple[bool, str]:
+    """Upsert one service, by key then name, through the API's schema. Like a
+    workflow, the file is the source of truth for its configuration; what the
+    service is doing right now (its process, any Start/Stop override) is not
+    configuration and is left alone."""
+    if not isinstance(entry, dict) or not entry.get("name"):
+        raise ValueError("Every service needs a name")
+    name = entry["name"]
+    checked = ServiceIn(
+        name=name, description=entry.get("description"), command=entry.get("command") or "",
+        cwd=entry.get("cwd"), env_vars_json=entry.get("env_vars"),
+        start_mode=entry.get("start_mode") or ServiceStartMode.manual,
+        windows=entry.get("windows") or [], timezone=entry.get("timezone"),
+        restart_policy=entry.get("restart_policy"),
+        stop_timeout_seconds=entry.get("stop_timeout_seconds", 30),
+        lock_resource=entry.get("lock_resource"),
+        lock_mode=entry.get("lock_mode") or LockMode.exclusive,
+        notify_webhook_url=entry.get("notify_webhook_url"),
+    )
+    key = entry.get("key")
+    if key is not None and not (isinstance(key, str) and _KEY.fullmatch(key)):
+        raise ValueError(f"Service '{name}': key must be 1-32 letters, digits, - or _")
+    service = db.scalar(select(Service).where(Service.key == key)) if key else None
+    if service is None:
+        service = db.scalar(select(Service).where(Service.name == name))
+    created = service is None
+    if created:
+        service = Service(name=name, **({"key": key} if key else {}),
+                          state=ServiceState.stopped, restart_requested=False)
+        db.add(service)
+    elif service.name != name:
+        if db.scalar(select(Service.id).where(Service.name == name)) is not None:
+            raise ValueError(f"Service '{service.name}' is '{name}' in this file, "
+                             f"but another service already has that name")
+        service.name = name
+    for field in ("description", "command", "cwd", "env_vars_json", "start_mode", "timezone",
+                  "stop_timeout_seconds", "lock_resource", "lock_mode", "notify_webhook_url"):
+        setattr(service, field, getattr(checked, field))
+    service.windows_json = checked.windows
+    service.restart_policy = checked.restart_policy or (
+        RestartPolicy.never if checked.start_mode == ServiceStartMode.manual
+        else RestartPolicy.always)
+    if not service.lock_resource:
+        service.lock_mode = LockMode.exclusive
+    service.project_id = _resolve(db, Project, entry.get("project"), "project")
+    service.environment_id = _resolve(db, Environment, entry.get("environment"), "environment")
+    db.flush()
+    return created, name
