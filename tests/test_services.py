@@ -6,6 +6,7 @@ test's control, so windows, backoff and stop timeouts are exercised without
 waiting for them.
 """
 
+import re
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -42,10 +43,10 @@ def python(code: str) -> str:
 #: Prints, then stays up until stopped.
 STAYS_UP = python("import time; print('up', flush=True); time.sleep(600)")
 #: Ignores the polite stop, so only the forced kill ends it.
-STUBBORN = python("import signal, time; "
+STUBBORN = python("import os, signal, time; "
                   "[signal.signal(getattr(signal, n), signal.SIG_IGN) "
                   "for n in ('SIGTERM', 'SIGBREAK') if hasattr(signal, n)]; "
-                  "print('up', flush=True); time.sleep(600)")
+                  "print('up', os.getpid(), flush=True); time.sleep(600)")
 
 
 class Clock:
@@ -116,6 +117,16 @@ def logged(client, service_id, text: str, seconds=15) -> None:
         time.sleep(0.05)
 
 
+def stubborn_pid(client, service_id) -> int:
+    """The stubborn process's own pid, from its log. Not the session's: on
+    Linux /bin/sh is dash, which does not exec the last command, so the
+    session's pid is a shell that dies on the polite stop while the program
+    under it — correctly — keeps running until the timeout."""
+    logged(client, service_id, "up ")
+    text = client.get(f"/api/services/{service_id}/log").text
+    return int(re.search(r"up (\d+)", text).group(1))
+
+
 def sessions(client, service_id) -> list[dict]:
     return client.get(f"/api/services/{service_id}/sessions").json()
 
@@ -142,8 +153,8 @@ def test_a_manual_service_starts_and_stops_on_request(client, supervisor):
 def test_a_process_that_ignores_the_polite_stop_is_killed_at_the_timeout(client, supervisor, clock):
     sup = supervisor()
     svc = create(client, command=STUBBORN, start_mode="startup", stop_timeout_seconds=180)
-    pid = settle(sup, client, svc["id"], "running")["current_session"]["pid"]
-    logged(client, svc["id"], "up")
+    settle(sup, client, svc["id"], "running")
+    pid = stubborn_pid(client, svc["id"])
 
     client.post(f"/api/services/{svc['id']}/stop")
     sup.tick()
