@@ -101,7 +101,9 @@ def test_retention_cleanup_takes_the_notes_with_it(client):
     add_note(client, run_id, "ignored on purpose")
 
     with SessionLocal() as db:
-        db.get(WorkflowRun, run_id).created_at = (
+        run = db.get(WorkflowRun, run_id)
+        # Retention goes by when a run finished, not when it was created.
+        run.created_at = run.finished_at = (
             datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=40))
         db.commit()
     with SessionLocal() as db:

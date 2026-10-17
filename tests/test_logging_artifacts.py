@@ -163,7 +163,7 @@ def test_cleanup_deletes_old_runs_and_their_files(client):
         run = db.get(WorkflowRun, old_run_id)
         stdout_path = Path(run.task_runs[0].stdout_log_path)
         assert stdout_path.is_file()
-        run.created_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=40)
+        run.created_at = run.finished_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=40)
         db.commit()
 
     with SessionLocal() as db:
