@@ -3117,12 +3117,12 @@ function SettingsPage() {
 
       <div className="settings-grid">
         <div className="about-card">
-          <div className="about-logo">R</div>
+          <div className="about-logo"><RunRailMark size={52} title="" /></div>
           <div className="about-text">
             <h2>RunRail</h2>
             <p>A self-hosted workflow control plane for Python scripts, Jupyter notebooks, SQL tasks, shell commands, schedules, backfills, logs, artifacts, and workflow runs.</p>
             <div className="about-links">
-              <a className="btn btn-ghost btn-sm" href="https://github.com" target="_blank" rel="noreferrer">
+              <a className="btn btn-ghost btn-sm" href="https://github.com/rutr-labs/runrail" target="_blank" rel="noreferrer">
                 <Info size={13} /> GitHub
               </a>
             </div>
