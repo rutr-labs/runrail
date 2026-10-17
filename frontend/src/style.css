@@ -4639,10 +4639,23 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 /* ─── Services on the wallboard ─────────────────────────
    The wallboard is always dark and read from across a room: the same fixed
    palette as its workflow tiles, and the state as the biggest word. */
-.wb-services { display: flex; flex-direction: column; gap: 12px; }
-.wb-services-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
-.wb-services-title { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; color: #cbd5e1; }
-.wb-services-title em { font-style: normal; font-weight: 600; color: #64748b; }
+/* Each section of the board — Services, Workflows — opens with the same head:
+   what it is, how many, anything worth saying, and a hairline to the edge so
+   the sections read as separate blocks rather than one run of tiles. */
+.wb-section { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.wb-section + .wb-section { margin-top: 10px; }
+.wb-section-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-width: 0; }
+.wb-section-title {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #cbd5e1;
+}
+.wb-section-title svg { color: #64748b; }
+.wb-section-count { font-style: normal; font-size: 13px; font-weight: 600; color: #64748b; font-variant-numeric: tabular-nums; }
+.wb-section-note { font-size: 13px; font-weight: 650; }
+.wb-section-note--live { color: #38bdf8; }
+.wb-section-note--busy { color: #fbbf24; }
+.wb-section-note--bad { color: #f87171; }
+.wb-section-rule { flex: 1 1 40px; height: 1px; min-width: 40px; background: linear-gradient(90deg, rgba(255,255,255,0.12), rgba(255,255,255,0)); }
 .wb-handover {
   display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
   padding: 5px 12px; border-radius: 999px; font-size: 13px; color: #cbd5e1;
@@ -4655,24 +4668,27 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 .wb-handover-free { color: #64748b; }
 .wb-handover-arrow { color: #64748b; }
 .wb-service-grid {
-  display: grid; gap: 14px;
-  grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr));
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
 }
+/* Compact on purpose: services are the board's supporting row, and the
+   workflow tiles below are what the board is mostly for. */
 .wb-service {
-  display: flex; flex-direction: column; gap: 4px; min-width: 0;
-  padding: 18px 22px; border-radius: 18px; color: inherit; text-decoration: none;
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  padding: 11px 16px 12px; border-radius: 14px; color: inherit; text-decoration: none;
   border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03);
   transition: transform .2s var(--ease-out), border-color .2s;
 }
-.wb-service:hover { transform: translateY(-3px); border-color: rgba(255,255,255,0.18); }
-.wb-service-name { font-size: 16px; font-weight: 700; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wb-service-state { font-size: 26px; font-weight: 800; letter-spacing: -0.4px; line-height: 1.15; color: #64748b; }
-.wb-service-detail { font-size: 13px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-.wb-service--live { border-color: rgba(52,211,153,0.35); box-shadow: 0 0 60px -34px rgba(52,211,153,0.7); }
+.wb-service:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.18); }
+.wb-service-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.wb-service-name { font-size: 15px; font-weight: 700; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.wb-service-state { flex-shrink: 0; font-size: 15px; font-weight: 800; letter-spacing: -0.2px; color: #64748b; }
+.wb-service-detail { font-size: 12.5px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.wb-service--live { border-color: rgba(52,211,153,0.35); box-shadow: 0 0 50px -34px rgba(52,211,153,0.7); }
 .wb-service--live .wb-service-state { color: #34d399; }
 .wb-service--busy { border-color: rgba(251,191,36,0.35); }
 .wb-service--busy .wb-service-state { color: #fbbf24; }
 .wb-service--down { border-color: rgba(248,113,113,0.45); background: rgba(248,113,113,0.07); }
 .wb-service--down .wb-service-state { color: #f87171; animation: hm-pulse 2s ease infinite; }
-.today-bar--wb { margin-top: 8px; height: 6px; background: rgba(255,255,255,0.06); box-shadow: none; }
+.today-bar--wb { margin-top: 6px; height: 4px; background: rgba(255,255,255,0.06); box-shadow: none; }
 @media (prefers-reduced-motion: reduce) { .wb-service--down .wb-service-state { animation: none; } }

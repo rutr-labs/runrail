@@ -899,7 +899,7 @@ function Dashboard() {
       ) : (
         <>
           <div className="metric-grid dashboard-metric-grid">
-            <MetricCard icon={<Activity size={18} />} label="Live now" value={liveCount} tone={parked ? 'warning' : liveCount ? 'running' : 'default'} note={parked ? `${parked} waiting on a person` : 'Running and queued'} />
+            <MetricCard icon={<Activity size={18} />} label="Live runs" value={liveCount} tone={parked ? 'warning' : liveCount ? 'running' : 'default'} note={parked ? `${parked} waiting on a person` : 'Running and queued'} />
             <MetricCard icon={<Zap size={18} />} label="Runs · 24h" value={runs24h} note={`${succeeded24h} succeeded`} />
             <MetricCard icon={<CheckCircle2 size={18} />} label="Success rate · 7d" value={successRate != null ? `${successRate}%` : '—'} tone={successRate != null && successRate < 80 ? 'warning' : 'success'} note={`${done7d} completed runs`} />
             <MetricCard icon={<AlertTriangle size={18} />} label="Failures · 24h" value={failed24h} tone={failed24h ? 'danger' : 'default'} note={failed24h ? 'Needs attention' : 'All clear'} />
@@ -923,13 +923,16 @@ function Dashboard() {
               {/* Self-fetching and self-hiding — first in the column so a
                   paused run is the first thing the column says. */}
               <ApprovalInbox />
+              {/* Services before runs: they are what should always be up, and
+                  the panel leads with any that are not. "Live runs" says what
+                  the next panel holds, since a running service is live too. */}
+              <ServicesPanel items={services.items} onChanged={services.load} />
               <div className="panel" style={{ marginBottom: 16 }}>
-                <div className="panel-head"><div><h2>Live now</h2><p>Running, queued, and waiting on a person</p></div></div>
+                <div className="panel-head"><div><h2>Live runs</h2><p>Running, queued, and waiting on a person</p></div></div>
                 {liveRuns.length > 0
                   ? <div style={{ padding: '6px 0' }}>{liveRuns.map(r => <LiveRunRow key={r.id} run={r} flows={flows} />)}</div>
-                  : <EmptyState icon={<Activity size={22} />} title="Nothing live" text="Runs appear here the moment they queue or start." />}
+                  : <EmptyState icon={<Activity size={22} />} title="No runs live" text="Runs appear here the moment they queue or start." />}
               </div>
-              <ServicesPanel items={services.items} onChanged={services.load} />
               <WorkflowQuickList flows={flows} runs={runs} onRun={runNow} />
               <div className="panel" style={{ marginBottom: 16 }}>
                 <div className="panel-head"><div><h2>Upcoming</h2><p>Next scheduled executions</p></div></div>
@@ -1213,10 +1216,10 @@ function Runs() {
 
         <div>
           <div className="panel" style={{ marginBottom: 16 }}>
-            <div className="panel-head"><div><h2>Live now</h2><p>Running, queued, and waiting on a person</p></div></div>
+            <div className="panel-head"><div><h2>Live runs</h2><p>Running, queued, and waiting on a person</p></div></div>
             {liveRuns.length > 0
               ? <div style={{ padding: '6px 0' }}>{liveRuns.map(r => <LiveRunRow key={r.id} run={r} flows={flows} />)}</div>
-              : <EmptyState icon={<Activity size={22} />} title="Nothing live right now" text="Runs surface here as soon as they queue or start." />}
+              : <EmptyState icon={<Activity size={22} />} title="No runs live right now" text="Runs surface here as soon as they queue or start." />}
           </div>
           <div className="panel" style={{ marginBottom: 16 }}>
             <div className="panel-head"><div><h2>Upcoming</h2><p>Next scheduled executions</p></div></div>
@@ -3306,87 +3309,98 @@ function Wallboard() {
         <Link to="/" className="wallboard-exit" title="Back to the app"><X size={16} /></Link>
       </header>
 
-      {live.length > 0 && (
-        <div className="wallboard-strip">
-          {live.map(r => {
-            const expected = r.status === 'running' ? medianDuration(runs, r.workflow_id) : null;
-            const elapsed = r.started_at ? (now - new Date(r.started_at).getTime()) / 1000 : 0;
-            const pct = expected ? Math.min(100, elapsed / expected * 100) : null;
-            const over = expected != null && elapsed > expected * 1.15;
-            // 0 at/under median → 1 at 135% of median (fully amber)
-            const overRatio = expected ? Math.min(1, Math.max(0, (elapsed / expected - 1) / 0.35)) : 0;
-            const flowName = flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`;
-            return (
-              <div key={r.id} className={`wallboard-live-card ${r.status}`}>
-                <span className={`run-pulse ${r.status}`} />
-                <div className="wallboard-live-body">
-                  <b title={flowName}>{flowName}</b>
-                  <small>#{r.id} · {r.status.replace(/_/g, ' ')} · {liveDuration(r, now)}</small>
-                  {pct != null && (
-                    <div className="wb-progress" style={{ '--over-ratio': overRatio.toFixed(3) } as CSSProperties}>
-                      <div className="wb-progress-fill" style={{ width: `${pct}%` }}>
-                        <CometCanvas kind="fill" />
-                      </div>
-                    </div>
-                  )}
-                </div>
-                {expected != null && r.status === 'running' && (
-                  <span className={`wb-eta${over ? ' wb-eta--over' : ''}`}>
-                    {over ? 'running long' : `~${formatEta(Math.max(0, (expected - elapsed) * 1000))} left`}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       <WallboardServices items={services.items ?? []} now={clock.getTime()} />
 
-      <div className="wallboard-grid" ref={gridRef}>
-        {tiles.map(({ flow: w, last, streak, streakStart, rate7d, next, status }) => (
-          <Link key={w.id} to={`/workflows/${w.id}`} data-flip-id={String(w.id)}
-               className={`wallboard-tile wb-${status}${blooms[w.id] ? ` wb-bloom wb-bloom-${blooms[w.id]}` : ''}`}
-               onAnimationEnd={e => {
-                 if (e.animationName === 'tile-bloom') setBlooms(({ [w.id]: _, ...rest }) => rest);
-               }}>
-            <div className="wallboard-tile-top">
-              <div className="wallboard-tile-name" title={w.name}>{w.name}</div>
-              <ChevronRight className="wallboard-tile-arrow" size={20} />
-            </div>
-            <div className="wallboard-tile-status" key={status}>{status === 'never' ? 'no runs' : status}</div>
-            {status === 'failed' && streak > 0 && (
-              <div className="wallboard-tile-streak">
-                {streak} consecutive failure{streak === 1 ? '' : 's'}
-                {streakStart ? ` · red for ${formatEta(clock.getTime() - new Date(streakStart).getTime())}` : ''}
-              </div>
-            )}
-            <div className="wallboard-tile-meta">
-              {last ? `${timeAgo(last.finished_at || last.created_at)}` : '—'}
-              {w.schedule_cron ? ` · ${cronLabel(w.schedule_cron, w.schedule_timezone)}` : ' · manual'}
-              {next ? ` · next in ${formatEta(next.getTime() - clock.getTime())}` : ''}
-              {status !== 'failed' && rate7d != null ? ` · ${rate7d}% · 7d` : ''}
-              {!w.enabled ? ' · paused' : ''}
-            </div>
-            <WorkflowSparkline runs={runs.filter(r => r.workflow_id === w.id).slice(0, 16)} />
-          </Link>
-        ))}
-        {flows.length === 0 && <div className="wallboard-empty">No workflows yet.</div>}
-      </div>
-
-      {failures.length > 0 && (
-        <div className="wallboard-failures">
-          <span className="wallboard-failures-label"><AlertTriangle size={14} /> Failures · 24h</span>
-          {failures.map(r => {
-            const name = flows.find(w => w.id === r.workflow_id)?.name ?? String(r.workflow_id);
-            return (
-              <span key={r.id} className="wallboard-failure" title={`${name} #${r.id} · ${timeAgo(r.created_at)}`}>
-                {name} #{r.id} · {timeAgo(r.created_at)}
-              </span>
-            );
-          })}
+      <section className="wb-section" aria-label="Workflows">
+        <div className="wb-section-head">
+          <span className="wb-section-title"><GitBranch size={15} /> Workflows</span>
+          <em className="wb-section-count">{flows.length}</em>
+          {runningCount > 0 && <span className="wb-section-note wb-section-note--live">{runningCount} running</span>}
+          {waitingCount > 0 && <span className="wb-section-note wb-section-note--busy">{waitingCount} waiting for approval</span>}
+          {failing > 0 && <span className="wb-section-note wb-section-note--bad">{failing} failing</span>}
+          {overdueCount > 0 && <span className="wb-section-note wb-section-note--busy">{overdueCount} overdue</span>}
+          <span className="wb-section-rule" aria-hidden="true" />
         </div>
-      )}
+        {live.length > 0 && (
+          <div className="wallboard-strip">
+            {live.map(r => {
+              const expected = r.status === 'running' ? medianDuration(runs, r.workflow_id) : null;
+              const elapsed = r.started_at ? (now - new Date(r.started_at).getTime()) / 1000 : 0;
+              const pct = expected ? Math.min(100, elapsed / expected * 100) : null;
+              const over = expected != null && elapsed > expected * 1.15;
+              // 0 at/under median → 1 at 135% of median (fully amber)
+              const overRatio = expected ? Math.min(1, Math.max(0, (elapsed / expected - 1) / 0.35)) : 0;
+              const flowName = flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`;
+              return (
+                <div key={r.id} className={`wallboard-live-card ${r.status}`}>
+                  <span className={`run-pulse ${r.status}`} />
+                  <div className="wallboard-live-body">
+                    <b title={flowName}>{flowName}</b>
+                    <small>#{r.id} · {r.status.replace(/_/g, ' ')} · {liveDuration(r, now)}</small>
+                    {pct != null && (
+                      <div className="wb-progress" style={{ '--over-ratio': overRatio.toFixed(3) } as CSSProperties}>
+                        <div className="wb-progress-fill" style={{ width: `${pct}%` }}>
+                          <CometCanvas kind="fill" />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {expected != null && r.status === 'running' && (
+                    <span className={`wb-eta${over ? ' wb-eta--over' : ''}`}>
+                      {over ? 'running long' : `~${formatEta(Math.max(0, (expected - elapsed) * 1000))} left`}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="wallboard-grid" ref={gridRef}>
+          {tiles.map(({ flow: w, last, streak, streakStart, rate7d, next, status }) => (
+            <Link key={w.id} to={`/workflows/${w.id}`} data-flip-id={String(w.id)}
+                 className={`wallboard-tile wb-${status}${blooms[w.id] ? ` wb-bloom wb-bloom-${blooms[w.id]}` : ''}`}
+                 onAnimationEnd={e => {
+                   if (e.animationName === 'tile-bloom') setBlooms(({ [w.id]: _, ...rest }) => rest);
+                 }}>
+              <div className="wallboard-tile-top">
+                <div className="wallboard-tile-name" title={w.name}>{w.name}</div>
+                <ChevronRight className="wallboard-tile-arrow" size={20} />
+              </div>
+              <div className="wallboard-tile-status" key={status}>{status === 'never' ? 'no runs' : status}</div>
+              {status === 'failed' && streak > 0 && (
+                <div className="wallboard-tile-streak">
+                  {streak} consecutive failure{streak === 1 ? '' : 's'}
+                  {streakStart ? ` · red for ${formatEta(clock.getTime() - new Date(streakStart).getTime())}` : ''}
+                </div>
+              )}
+              <div className="wallboard-tile-meta">
+                {last ? `${timeAgo(last.finished_at || last.created_at)}` : '—'}
+                {w.schedule_cron ? ` · ${cronLabel(w.schedule_cron, w.schedule_timezone)}` : ' · manual'}
+                {next ? ` · next in ${formatEta(next.getTime() - clock.getTime())}` : ''}
+                {status !== 'failed' && rate7d != null ? ` · ${rate7d}% · 7d` : ''}
+                {!w.enabled ? ' · paused' : ''}
+              </div>
+              <WorkflowSparkline runs={runs.filter(r => r.workflow_id === w.id).slice(0, 16)} />
+            </Link>
+          ))}
+          {flows.length === 0 && <div className="wallboard-empty">No workflows yet.</div>}
+        </div>
+
+        {failures.length > 0 && (
+          <div className="wallboard-failures">
+            <span className="wallboard-failures-label"><AlertTriangle size={14} /> Failures · 24h</span>
+            {failures.map(r => {
+              const name = flows.find(w => w.id === r.workflow_id)?.name ?? String(r.workflow_id);
+              return (
+                <span key={r.id} className="wallboard-failure" title={`${name} #${r.id} · ${timeAgo(r.created_at)}`}>
+                  {name} #{r.id} · {timeAgo(r.created_at)}
+                </span>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

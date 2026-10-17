@@ -704,9 +704,10 @@ export function WallboardServices({ items, now }: { items: Service[]; now: numbe
   const { up } = serviceCounts(items);
   const swaps = handovers(items);
   return (
-    <section className="wb-services" aria-label="Services">
-      <div className="wb-services-head">
-        <span className="wb-services-title"><Server size={15} /> Services <em>{up}/{items.length} up</em></span>
+    <section className="wb-section wb-services" aria-label="Services">
+      <div className="wb-section-head">
+        <span className="wb-section-title"><Server size={15} /> Services</span>
+        <em className="wb-section-count">{up}/{items.length} up</em>
         {swaps.map(h => (
           <span key={h.resource} className="wb-handover" title={`Who has ${h.resource}`}>
             <Lock size={12} /> <code>{h.resource}</code>
@@ -719,6 +720,7 @@ export function WallboardServices({ items, now }: { items: Service[]; now: numbe
                   <span>{h.upcoming.name} at {clockTime(h.upcoming.next_change!, zoneOf(h.upcoming))}</span></>}
           </span>
         ))}
+        <span className="wb-section-rule" aria-hidden="true" />
       </div>
       <div className="wb-service-grid">
         {ordered.map(s => {
@@ -732,8 +734,10 @@ export function WallboardServices({ items, now }: { items: Service[]; now: numbe
               : s.state_detail || describe(s, now).text;
           return (
             <Link key={s.id} to={`/services/${s.id}`} className={clsx('wb-service', `wb-service--${tone}`)}>
-              <span className="wb-service-name" title={s.name}>{s.name}</span>
-              <span className="wb-service-state">{STATE_WORD[s.state] ?? s.state}</span>
+              <span className="wb-service-top">
+                <span className="wb-service-name" title={s.name}>{s.name}</span>
+                <span className="wb-service-state">{STATE_WORD[s.state] ?? s.state}</span>
+              </span>
               <span className="wb-service-detail" title={detail}>{detail}</span>
               {s.start_mode === 'schedule' && <TodayBar windows={s.windows} zone={zoneOf(s)} className="today-bar--wb" />}
             </Link>
