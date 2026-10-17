@@ -2,6 +2,87 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] — 2026-10-17
+
+A repair release from the second audit pass: backfills, imports, log search,
+file serving, the shared export, and alerts. Nothing new to learn; several
+things that were quietly wrong are now right. One small migration runs on
+first start (new columns only).
+
+### Changed
+- **Run parameters override task parameters.** It was the other way round: a
+  task that happened to define `ds` made every run of a 30-day backfill
+  process the same day. The "Run with…" form always described its values as
+  one-off overrides, and now they are. A backfill's `ts` names its date rather
+  than the moment the range was queued.
+- **The schedule takes its turn ahead of a queued backfill.** A month of
+  backfill rows queued ahead of the 09:00 iteration used to hold it for the
+  hours they took to drain — and every fire meanwhile was dropped, hours the
+  schedule never produced and could not replay.
+- **Alerts are decided once, where they happen.** Failure and recovery alerts,
+  auto-pause and the notification panel's view of them were reconstructed from
+  run ids after the fact; now each is decided and recorded at the moment it
+  happens (see Fixed). One visible change: a failed run that is resumed and
+  recovers shows once in the panel, as "recovered".
+- A backfill covers at most 366 days per request.
+- Only a run the schedule produced ends a missed-schedule alert, and not while
+  the workflow is paused. Removing the schedule or the watch clears one.
+- A resumed run measures its deadline from the resume, not from the day it was
+  first created.
+
+### Added
+- `POST /api/workflows/{id}/notify-test` sends a test message to the
+  workflow's webhook and reports what happened. Delivery failures are now
+  logged and recorded on the workflow (`webhook_error`) instead of vanishing.
+- The README covers services, with new screenshots and a new demo GIF, and
+  the demo seeder makes a home that really runs when served.
+
+### Fixed
+- **Fixing a task and resuming the failed run never closed the failure
+  alert.** Two runs finishing together could alert zero times. A run killed
+  with its worker failed silently, so the next success posted a "recovered"
+  nobody had seen a failure for. A workflow switched back on after an
+  auto-pause was paused again by the very next failure.
+- **One pathological regex in log search could stall the whole server for
+  hours**: the time budget was checked only between files, lines were matched
+  at full length, and Python holds the GIL while it matches. The budget is
+  checked inside files, lines are matched on their first 8 KB, and total bytes
+  read are capped.
+- **Only log search checked that a file path from the database was inside
+  RunRail's own folders.** The run page, artifact download, live log tail,
+  shared export and service log opened whatever the row said. All go through
+  one check now.
+- **On Windows, the file browser resolved a path before checking it**, so a
+  UNC path sent the user's credentials to whatever host it named — from a
+  request any web page could make. Network, device and other-drive paths are
+  refused before they are touched.
+- **An import that failed part-way left a home with a database and no logs**,
+  which the next start accepted as real and a retry refused to overwrite.
+  Imports are assembled in a staging directory and moved into place only once
+  complete. Imported rows kept the old home's absolute paths — unreadable once
+  it was gone, and deleted *there* by the new home's retention; they are
+  re-pointed, and retention never deletes outside the home's own trees. A
+  database from a newer RunRail, or a stale WAL file in the destination, is
+  refused. `runrail import <dir>` with `RUNRAIL_DB_URL` set no longer reports
+  success for a database the app never opens.
+- A backfill hid a dead schedule from the missed-run alert for as long as it
+  took to drain, and starting one announced a "recovery".
+- A finished task's log was read whole into memory (three copies of a
+  multi-gigabyte file) and decoded in the platform's default encoding; it is
+  streamed as UTF-8. The live log tail read the whole file on first connect,
+  on the event loop; it starts 256 KB from the end, off the loop.
+- Exports overshot the size they promised: a notebook report grows 1.7× once
+  escaped, not the 2% assumed. The size is measured now. Without
+  `RUNRAIL_PUBLIC_URL` the footer no longer links to a loopback address.
+- A service's log tail could not reach rotated files; deleting a service
+  left its logs behind.
+- Webhook delivery blocked the worker thread, the gate-rejection request and
+  the watchdog tick; it runs on its own thread.
+- Case-insensitive log search folded ASCII only ("ärger" never matched
+  "Ärger"); the search highlighter duplicated text around an empty match.
+- Eight frontend packages were pinned to `"latest"`, so a fresh install on
+  the day a new major shipped could break the build; they are pinned.
+
 ## [0.7.0] — 2026-10-17
 
 Services: long-running processes RunRail keeps up — a model server like
