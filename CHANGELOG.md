@@ -2,6 +2,86 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-10-17
+
+Cancel now stops the work, Windows is tested on every change, and an audit of
+environments, retention and the scheduler fixed defects that cost data or ran
+things twice. Two database migrations run on first start.
+
+**Upgrading:** managed environments built by 0.5.1 or earlier are rebuilt
+automatically on first start, because every command-line tool inside them is
+broken (see Fixed). The rebuild waits for runs using the environment and needs
+network access to reinstall packages; if it fails, the environment is marked
+degraded, keeps working exactly as before, and the next start tries again.
+
+### Added
+- **Notebook reports stay out of the way, and running notebooks are live.**
+  Reports are collapsed rows instead of rendering inline, with a pill per
+  attempt. A notebook task that is executing shows its progress — cells done,
+  the cell running, its latest output — refreshed every few seconds.
+- **One card per task on the run page.** A retried task was listed once per
+  attempt under the same name; it is one card with an attempt switcher now, and
+  every report surface (run page, `?task=`, the shared export) defaults to the
+  final attempt instead of the first. Each attempt has its own `?task_run=` link.
+- **Windows is tested on every change**, as is real notebook execution on Linux
+  and Windows, and the main flows run in a browser against the real server.
+- **YAML apply survives renames.** Exports carry a stable `key` per workflow
+  and apply matches it before the name, so re-applying a file after renaming a
+  workflow in the UI updates that workflow instead of creating a duplicate that
+  fires alongside it. The file is the source of truth: the workflow takes the
+  file's name back. Files without a key still match by name.
+
+### Changed
+- **A run uses the task definitions it started with.** Edits made while a run
+  is executing apply from the next run, and deleting a task whose workflow is
+  executing is refused (409).
+- **Disabling, auto-pausing or a pause-runs snooze also drops the scheduled
+  iteration already queued**, which used to run anyway — including one more run
+  of a pipeline that had just been auto-paused for failing. Manual runs,
+  retries and resumes still go ahead.
+- **Retention goes by when a run finished, not when it was created**, and
+  always keeps each workflow's newest successful run. `RUNRAIL_RETENTION_DAYS`
+  refuses negative values.
+- Deleting an environment that a running task is using is refused (409).
+- The home page's workflow list is ordered by recent activity, filterable and
+  scrollable, and the run timeline keeps retries and failures legible.
+
+### Fixed
+- **Cancelling a run left its task running.** Cancel only relabelled the run;
+  the process carried on, possibly for hours, and then retried. The running
+  task's whole process tree is killed within about a second now, and a
+  cancelled attempt is never retried. Deleting a workflow mid-run stops its task
+  the same way.
+- **Every command-line tool in a managed environment was broken.** Builds were
+  made in a staging directory and renamed into place, and pip writes the
+  interpreter's absolute path into each script it installs — so `pytest`,
+  `dbt`, `papermill` and any CLI a shell task called failed with "bad
+  interpreter". Each build now goes into a directory it never leaves.
+- **A rebuild requested during a run failed the rest of that run**, and one run
+  waiting on a build held up every other workflow behind it. A build
+  interrupted by a restart no longer locks the environment for 30 minutes.
+- **Retention could delete runs that had just finished** — a month-old run
+  resumed and completed today — and its pass deleted all files before one final
+  commit, holding SQLite's write lock throughout and orphaning any file it could
+  not delete. Rows now go first in small batches, files after, and orphaned
+  directories are swept.
+- **A daily job at a time the autumn clock change repeats ran twice.** It runs
+  once, at the earlier instant, as the schedule preview always said; hourly
+  jobs still run in both hours.
+- **An edited schedule could fire on the old and the new time**, during the 30
+  seconds before the scheduler picked the edit up.
+- **Timeouts and cancels could leave child processes running** when the shell
+  exited first, and a force quit (a second Ctrl+C) left every task running.
+  SQL tasks now honour their timeout and Cancel too.
+- **SQLite reused the ids of deleted runs**, so an old link to a run or its
+  report could open a different one. Ids are never handed out twice now.
+- YAML apply accepted workflow settings the API refuses, such as
+  `max_concurrent_runs: 0` or an unknown time zone.
+- The settings page scrolled sideways on phones, and pages overflowed between
+  roughly 1100 and 1350px wide.
+- Windows: `tzdata` is a declared dependency, since Windows has no time zone
+  database of its own.
+
 ## [0.5.1] — 2026-09-01
 
 A repair release. Almost everything here is a defect in 0.5.0, and two of them
