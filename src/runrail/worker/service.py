@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import func, select, update
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session, selectinload
 
 from runrail.api.ws import manager as _ws_manager
@@ -377,14 +378,31 @@ def _run_cancelled(db: Session, run_id: int) -> bool:
     return status is None or status == RunStatus.cancelled
 
 
-def _task_job(run_id: int, workflow_id: int, task_id: int) -> bool:
-    """Execute one task on its own DB session (sessions are not thread-safe)."""
+def _definition(task: Task) -> dict:
+    """A task's configuration as the run's graph read it."""
+    return {attr.key: getattr(task, attr.key) for attr in sa_inspect(Task).column_attrs}
+
+
+def _task_job(run_id: int, workflow_id: int, task_id: int,
+              definition: dict | None = None) -> bool:
+    """Execute one task on its own DB session (sessions are not thread-safe).
+
+    `definition` is the task as the run's graph read it when the run started.
+    The graph — order, dependencies, gates — was always that snapshot, but each
+    task re-read its own row as it started, so an edit made mid-run gave the run
+    the old shape with the new commands: a task rewired to depend on a new one
+    ran without it, and a gate added as a brake was ignored while the command
+    behind it changed. Edits now apply from the next run. The copy is never
+    added to the session, so nothing is written back.
+    """
     with SessionLocal() as db:
         run = db.get(WorkflowRun, run_id)
         workflow = db.get(Workflow, workflow_id)
         task = db.get(Task, task_id)
         if run is None or workflow is None or task is None:
             return False
+        if definition is not None:
+            task = Task(**definition)
         return _run_task(db, run, workflow, task)
 
 
@@ -436,7 +454,8 @@ def _execute_task_graph(db: Session, run: WorkflowRun, workflow: Workflow,
                     else:  # rejected — the existing skip cascade does the rest
                         outcomes[task.name] = False
                 else:
-                    running[pool.submit(_task_job, run.id, workflow.id, task.id)] = task.name
+                    running[pool.submit(_task_job, run.id, workflow.id, task.id,
+                                        _definition(task))] = task.name
             if ready:
                 continue  # a skip/cancel may have unlocked more tasks; re-evaluate first
             if not running:
