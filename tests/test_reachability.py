@@ -24,7 +24,7 @@ FRONTEND = Path(__file__).resolve().parents[1] / "frontend" / "src"
 
 #: Schemas describing things a person configures. Read-only projections
 #: (…Out) and pure actions (snooze, approve) are deliberately absent.
-CONFIG_SCHEMAS = ("ProjectIn", "EnvironmentIn", "WorkflowIn", "TaskIn", "RunNoteIn")
+CONFIG_SCHEMAS = ("ProjectIn", "EnvironmentIn", "WorkflowIn", "TaskIn", "RunNoteIn", "ServiceIn")
 
 #: Fields the UI sets through a computed key, which no source scan can see.
 #: Each entry must say how it is really published — an unexplained gap is the
