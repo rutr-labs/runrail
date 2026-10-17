@@ -299,7 +299,8 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
                 )
             if task.task_type.value == "sql":
                 task_run.rendered_command = f"sqlite3 < {render(task.sql_path, context)}"
-                result = execute_sql(task, context, cwd, stdout, stderr)
+                result = execute_sql(task, context, cwd, stdout, stderr, task.timeout_seconds,
+                                     should_stop=lambda: _cancel_requested(run.id))
                 artifact = None
             else:
                 if task.task_type in (TaskType.python, TaskType.notebook):
