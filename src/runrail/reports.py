@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from fastapi.responses import FileResponse
 from jinja2 import Environment
+from markupsafe import escape
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -39,6 +40,7 @@ from runrail.models import (
     _aware,
     now,
 )
+from runrail.paths import confined
 from runrail.worker.runners import safe_filename
 
 _MAX_SOURCE_BYTES = 50 * 1024 * 1024
@@ -132,6 +134,9 @@ _LOG_TOTAL_BYTES = 2 * 1024 * 1024
 #: Rough cost of the export's CSS, markup and timeline; reserved before logs
 #: and the report are allowed to spend the caller's max_bytes.
 _SHELL_BYTES = 16 * 1024
+#: How much larger a rendered notebook gets once escaped into srcdoc (measured
+#: on a Plotly-heavy report: 1.69). Used for the size preview only.
+_REPORT_ESCAPE_FACTOR = 1.6
 #: Measured floor of an nbconvert "lab" render — JupyterLab's inlined CSS, paid
 #: even by a two-cell notebook. Only used to estimate an unrendered report.
 _RENDER_FLOOR_BYTES = 280 * 1024
@@ -415,7 +420,7 @@ def _read_log(path: str | None, limit: int, link: str) -> tuple[str, int]:
     if not path:
         return "", 0
     file = Path(path)
-    if not file.is_file():
+    if not confined(file, get_settings().logs_dir) or not file.is_file():
         return "(log file no longer available)", 0
     size = file.stat().st_size
     if size == 0:
@@ -423,7 +428,7 @@ def _read_log(path: str | None, limit: int, link: str) -> tuple[str, int]:
     if limit <= 0:
         return f"… {_human(size)} elided — no size budget left. Full log at {link} …", 0
     if size <= limit:
-        return file.read_text(errors="replace"), size
+        return file.read_text(encoding="utf-8", errors="replace"), size
     head_bytes = min(_LOG_HEAD_BYTES, limit // 4)
     tail_bytes = limit - head_bytes
     with file.open("rb") as handle:
@@ -539,6 +544,11 @@ def run_outputs(db: Session, run: WorkflowRun) -> dict:
              "stderr_bytes": _file_size(tr.stderr_log_path)} for tr in task_runs]
     log_bytes = min(_LOG_TOTAL_BYTES, sum(entry["stdout_bytes"] + entry["stderr_bytes"]
                                           for entry in logs))
+    # What the file will weigh, not what the sources weigh: a report is markup
+    # and quoted JSON that escaping grows by about 1.6×, logs by about a tenth.
+    # The export itself measures; this is the preview the modal sizes by.
+    log_bytes = int(log_bytes * 1.1)
+    report_bytes = int(report_bytes * _REPORT_ESCAPE_FACTOR)
     return {
         "run_id": run.id, "workflow_name": workflow.name if workflow else None,
         "status": run.status.value, "reports": reports, "logs": logs,
@@ -579,7 +589,11 @@ def export_run_html(db: Session, run: WorkflowRun, logs: str = "tail",
 
     budget = max(0, min(_LOG_TOTAL_BYTES, max_bytes - _SHELL_BYTES))
     sections = _log_sections(task_runs, logs, budget)
-    spent = sum(len(text) for streams in sections.values() for text in streams.values())
+    # Charged as the bytes that land in the file, after escaping: a log full of
+    # quotes or angle brackets grows by half when escaped, and counting
+    # characters before escaping let exports overshoot the cap they promised.
+    spent = sum(len(escape(text).encode()) for streams in sections.values()
+                for text in streams.values())
 
     report_html, report_note = None, None
     if include_report:
@@ -590,6 +604,9 @@ def export_run_html(db: Session, run: WorkflowRun, logs: str = "tail",
         run=run, workflow=workflow, task_runs=task_runs, sections=sections,
         timeline=_timeline(run, task_runs), report_html=report_html, report_note=report_note,
         exported_at=_stamp(now()), run_url=run_url, version=__version__,
+        # Without RUNRAIL_PUBLIC_URL the link is a loopback address — the
+        # recipient's own machine, not the one that ran this.
+        run_url_reachable=bool(settings.public_url), report_csp=REPORT_CSP,
         started=_stamp(run.started_at), finished=_stamp(run.finished_at),
         duration=_duration(run.duration_seconds), stamp=_stamp, fmt_duration=_duration)
 
@@ -606,10 +623,13 @@ def _export_report(db: Session, run: WorkflowRun, room: int, max_bytes: int,
     except ReportError as exc:
         return None, None if exc.code == "no_notebook" else exc.detail
     text = Path(report.path).read_text(encoding="utf-8", errors="replace")
-    # srcdoc escaping inflates by roughly 2%; charge for it before committing.
-    if len(text) * 1.05 > room:
-        return None, (f"The notebook report ({_human(len(text))}) was left out to keep this "
-                      f"file under {_human(max_bytes)}. Open it at {run_url}.")
+    # Measured, not estimated: a notebook report is mostly markup and quoted
+    # JSON, and escaping it for srcdoc made it 1.7× larger, not the 2% once
+    # assumed — so an 18 MB report went into a "25 MB" file as 30 MB.
+    escaped = len(escape(text).encode())
+    if escaped > room:
+        return None, (f"The notebook report ({_human(escaped)} once embedded) was left out "
+                      f"to keep this file under {_human(max_bytes)}. Open it at {run_url}.")
     return text, None
 
 

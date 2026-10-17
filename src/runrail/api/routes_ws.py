@@ -5,8 +5,10 @@ from pathlib import Path
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from runrail.api.ws import manager
+from runrail.config import get_settings
 from runrail.db import SessionLocal
 from runrail.models import TaskRun, TaskRunStatus
+from runrail.paths import confined
 
 router = APIRouter()
 
@@ -28,6 +30,39 @@ async def global_ws(ws: WebSocket) -> None:
         manager.disconnect(ws)
 
 
+#: A first connection starts this far from the end, not at the beginning: a
+#: tail is what a live view is for, and the full file is a click away.
+FIRST_READ_BYTES = 256 * 1024
+#: Most bytes one poll sends; the next poll continues from there.
+CHUNK_BYTES = 1024 * 1024
+
+
+def _task_state(task_run_id: int, attr: str) -> tuple[TaskRunStatus | None, str | None]:
+    with SessionLocal() as db:
+        task_run = db.get(TaskRun, task_run_id)
+        if task_run is None:
+            return None, None
+        return task_run.status, getattr(task_run, attr)
+
+
+def _read_from(path: Path, offset: int | None) -> tuple[bytes, int | None]:
+    """The next chunk of the file from `offset` (the tail on a first read),
+    and where the following read starts. A file shorter than the offset was
+    truncated or replaced: start again from its beginning."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return b"", offset
+    if offset is None:
+        offset = max(0, size - FIRST_READ_BYTES)
+    elif size < offset:
+        offset = 0
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        chunk = handle.read(CHUNK_BYTES)
+    return chunk, offset + len(chunk)
+
+
 @router.websocket("/api/ws/task-runs/{task_run_id}/logs")
 async def stream_logs(ws: WebSocket, task_run_id: int, stream: str = "stdout") -> None:
     """Tail the stdout or stderr of a running task run, then close when it finishes."""
@@ -36,30 +71,30 @@ async def stream_logs(ws: WebSocket, task_run_id: int, stream: str = "stdout") -
         return
     await ws.accept()
     attr = "stdout_log_path" if stream == "stdout" else "stderr_log_path"
-    offset = 0
+    logs_root = get_settings().logs_dir
+    offset: int | None = None  # None until the first read picks where to start
     # Incremental decoder: a chunk boundary can split a multibyte UTF-8
     # character, which a plain decode() would mangle into replacement chars.
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     try:
         while True:
-            with SessionLocal() as db:
-                task_run = db.get(TaskRun, task_run_id)
-            if task_run is None:
+            # Off the event loop: the database read and the file read are
+            # blocking, and a poll every quarter second per open tab used to do
+            # both on the loop — a tab on a task hours into a multi-gigabyte
+            # log read all of it there, freezing every other request.
+            status, log_path = await asyncio.to_thread(_task_state, task_run_id, attr)
+            if status is None:
                 break
-            log_path = getattr(task_run, attr)
-            if log_path:
-                path = Path(log_path)
-                if path.is_file():
-                    # Incremental byte-offset read so long logs are not re-read every poll.
-                    with path.open("rb") as handle:
-                        handle.seek(offset)
-                        chunk = handle.read()
-                    if chunk:
-                        offset += len(chunk)
-                        text = decoder.decode(chunk)
-                        if text:
-                            await ws.send_text(text)
-            if task_run.status in _TERMINAL:
+            if log_path and confined(log_path, logs_root):
+                chunk, offset = await asyncio.to_thread(_read_from, Path(log_path), offset)
+                if chunk:
+                    text = decoder.decode(chunk)
+                    if text:
+                        await ws.send_text(text)
+            if status in _TERMINAL:
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    await ws.send_text(tail)
                 break
             # Wait on the socket instead of sleeping blind: this raises
             # WebSocketDisconnect the moment the client leaves or the server

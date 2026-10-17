@@ -49,6 +49,7 @@ from runrail.models import (
     _aware,
     now,
 )
+from runrail.paths import confined
 from runrail.services import process as proc
 from runrail.services.locks import HOLDING, holder_description, try_claim
 from runrail.services.windows import is_active, next_change
@@ -461,17 +462,29 @@ class ServiceSupervisor:
 
 
 def log_tail(path: str | None, max_bytes: int) -> str:
-    if not path:
+    """The last `max_bytes` of a session's log, reaching back through the
+    rotated files when the current one is short: right after a rotation it
+    holds a few lines and the previous ten megabytes sit in `.1`."""
+    if not path or not confined(path, get_settings().logs_dir):
         return ""
     file = Path(path)
-    try:
-        with file.open("rb") as handle:
-            size = handle.seek(0, 2)
-            handle.seek(max(0, size - max_bytes))
-            data = handle.read()
-    except OSError:
-        return ""
+    parts: list[bytes] = []
+    remaining = max_bytes
+    for candidate in (file, *(file.with_name(f"{file.name}.{n}")
+                              for n in range(1, proc.LOG_BACKUPS + 1))):
+        if remaining <= 0:
+            break
+        try:
+            with candidate.open("rb") as handle:
+                size = handle.seek(0, 2)
+                handle.seek(max(0, size - remaining))
+                data = handle.read()
+        except OSError:
+            break
+        parts.insert(0, data)
+        remaining -= len(data)
+    data = b"".join(parts)
     text = data.decode("utf-8", errors="replace")
-    if len(data) == max_bytes and "\n" in text:
+    if len(data) >= max_bytes and "\n" in text:
         text = text.split("\n", 1)[1]
     return text

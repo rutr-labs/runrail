@@ -54,7 +54,8 @@ export interface LogSearchStats {
   /** True only when no bound fired — the one thing that licenses a claim about
    *  history. */
   complete: boolean;
-  stopped_by: 'limit' | 'timeout' | 'max_files' | null;
+  stopped_by: 'limit' | 'timeout' | 'max_files' | 'max_bytes' | null;
+  files_out_of_scope?: number;
 }
 
 export interface LogSearchResponse {
@@ -609,7 +610,9 @@ function highlight(line: string, pattern: RegExp | null): ReactNode {
       parts.push(<mark key={key++} className="log-match">{found[0]}</mark>);
       cursor = found.index + found[0].length;
     } else {
-      // A zero-width match would spin forever; step past it.
+      // A zero-width match would spin forever; step past it — and move the
+      // cursor too, or the text before it is pushed again on the next match.
+      cursor = found.index;
       pattern.lastIndex++;
     }
     if (parts.length > 200) break; // pathological pattern on a 2000-char line
