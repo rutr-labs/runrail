@@ -1,3 +1,5 @@
+from collections.abc import Collection
+
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
@@ -95,7 +97,7 @@ def _resource_blocked():
     )
 
 
-def claim_next_run(db: Session) -> WorkflowRun | None:
+def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | None:
     """Atomically claim the oldest queued run whose workflow has concurrency budget
     left and can take its named resource.
 
@@ -104,6 +106,8 @@ def claim_next_run(db: Session) -> WorkflowRun | None:
     later iterations of the same workflow wait in the queue. A lock_resource narrows
     that further, across workflows: exclusive runs get the resource alone, shared
     runs overlap each other.
+
+    `skip` excludes runs the caller already found it cannot start this pass.
     """
     candidate = db.scalar(
         select(WorkflowRun.id)
@@ -112,6 +116,7 @@ def claim_next_run(db: Session) -> WorkflowRun | None:
             WorkflowRun.status == RunStatus.queued,
             _running_runs_for_same_workflow() < Workflow.max_concurrent_runs,
             ~_resource_blocked(),
+            *([WorkflowRun.id.not_in(skip)] if skip else []),
         )
         .order_by(WorkflowRun.created_at)
         .limit(1)

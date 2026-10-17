@@ -15,6 +15,7 @@ from runrail.db import SessionLocal
 from runrail.environments import (
     claim_next_environment,
     environment_python,
+    environment_usable_now,
     managed_environment_path,
     provision_managed,
 )
@@ -288,9 +289,8 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
             path_parts.append(configured_pythonpath)
         env["PYTHONPATH"] = os.pathsep.join(path_parts)
         try:
-            if environment and environment.status not in (
-                EnvironmentStatus.ready, EnvironmentStatus.degraded
-            ):
+            if (environment and task.task_type != TaskType.sql
+                    and not environment_usable_now(environment)):
                 raise RuntimeError(
                     f"Environment '{environment.name}' is not ready: "
                     f"{environment.last_error or environment.status.value}"
@@ -565,12 +565,28 @@ def _over_gate_budget(db: Session, run: WorkflowRun) -> bool:
     return active > limit  # the run just claimed already counts as running
 
 
+#: Runs passed over in one claim pass before the worker sleeps until its next poll.
+_CLAIM_SKIP_LIMIT = 50
+
+
 def claim_runnable_run(db: Session) -> WorkflowRun | None:
-    """Claim the next run the worker can actually start, requeueing one it
-    cannot: a needed environment is mid-build, or a sibling holds the gate."""
-    run = claim_next_run(db)
-    if run is None or not (_building_environment(db, run) or _over_gate_budget(db, run)):
-        return run
+    """Claim the next run the worker can actually start, requeueing any it
+    cannot — a needed environment is mid-build, or a sibling holds the gate —
+    and moving on to the next. Stopping at the first one held up every other
+    workflow behind a single run waiting on a fifteen-minute pip build: it
+    stays the oldest in the queue, so it was claimed and requeued every poll.
+    """
+    skipped: list[int] = []
+    while len(skipped) < _CLAIM_SKIP_LIMIT:
+        run = claim_next_run(db, skip=skipped)
+        if run is None or not (_building_environment(db, run) or _over_gate_budget(db, run)):
+            return run
+        _requeue(db, run)
+        skipped.append(run.id)
+    return None
+
+
+def _requeue(db: Session, run: WorkflowRun) -> None:
     values: dict = {"status": RunStatus.queued}
     # Keep the timeline origin of a run that already executed part of this
     # segment (a gate re-entry); a run that never started must not keep the
@@ -582,7 +598,6 @@ def claim_runnable_run(db: Session) -> WorkflowRun | None:
                .where(WorkflowRun.id == run.id, WorkflowRun.status == RunStatus.running)
                .values(**values))
     db.commit()
-    return None
 
 
 #: Statuses a run never leaves. A `running` task row under one of these is
