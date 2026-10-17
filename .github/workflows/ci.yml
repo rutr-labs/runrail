@@ -129,3 +129,40 @@ jobs:
       - name: Tests
         run: npm test
         working-directory: frontend
+
+  # The real server over the built UI, driven in a browser. Each flow is one a
+  # person found broken by using the app while every job above passed.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        run: |
+          pip install -e .
+          npm ci --prefix frontend
+      - name: Build UI
+        run: npm run build
+        working-directory: frontend
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - name: End-to-end tests
+        run: npm run test:e2e
+        working-directory: frontend
+      - name: Keep traces of failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-traces
+          path: frontend/test-results/
+          retention-days: 7

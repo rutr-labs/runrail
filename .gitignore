@@ -19,3 +19,7 @@ dist/
 # CI rebuilds it at release time and hatch's `artifacts` config ships it
 # in the wheel; the repo stays source-only.
 src/runrail/web/static/
+
+# Playwright output (frontend/e2e)
+frontend/test-results/
+frontend/playwright-report/
