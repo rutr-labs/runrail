@@ -144,3 +144,48 @@ def test_apply_rejects_a_cron_the_scheduler_cannot_run(client):
         db.commit()
     stored = client.get("/api/workflows").json()
     assert next(w for w in stored if w["name"] == "bad-cron")["schedule_cron"] == "0 9 * * 0"
+
+
+def test_applying_a_file_after_a_rename_updates_the_renamed_workflow(client):
+    """Apply matched by name, so re-applying the file that still said `etl` after
+    a rename to `etl-v2` created a second, identically scheduled workflow."""
+    from runrail.db import SessionLocal
+    from runrail.workflow_io import apply_workflows, export_workflows
+
+    workflow = client.post("/api/workflows", json={
+        "name": "etl", "enabled": True, "max_concurrent_runs": 1,
+        "schedule_cron": "0 9 * * *"}).json()
+    with SessionLocal() as db:
+        exported = export_workflows(db)
+    assert exported["workflows"][0]["key"]
+
+    renamed = client.put(f"/api/workflows/{workflow['id']}", json={"name": "etl-v2"})
+    assert renamed.status_code == 200, renamed.text
+    with SessionLocal() as db:
+        summary = apply_workflows(db, exported)
+        db.commit()
+    names = [w["name"] for w in client.get("/api/workflows").json()]
+    assert names == ["etl"], "applying the old file created a duplicate"
+    assert summary["updated"] == ["etl"]
+
+    # A file without keys (written by hand, or by an older RunRail) still
+    # matches by name.
+    for entry in exported["workflows"]:
+        entry.pop("key")
+    with SessionLocal() as db:
+        assert apply_workflows(db, exported)["updated"] == ["etl"]
+        db.commit()
+
+
+def test_a_rename_in_a_file_cannot_take_another_workflows_name(client):
+    from runrail.db import SessionLocal
+    from runrail.workflow_io import apply_workflows, export_workflows
+
+    for name in ("a", "b"):
+        client.post("/api/workflows", json={"name": name, "enabled": True,
+                                            "max_concurrent_runs": 1})
+    with SessionLocal() as db:
+        exported = export_workflows(db, "a")
+    exported["workflows"][0]["name"] = "b"
+    with SessionLocal() as db, pytest.raises(ValueError, match="already has that name"):
+        apply_workflows(db, exported)

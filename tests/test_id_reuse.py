@@ -38,8 +38,11 @@ def test_upgrading_keeps_every_row_and_stops_reusing_ids(tmp_path, monkeypatch):
     get_settings.cache_clear()
     command.upgrade(_config(url), "n5b2d81f3a94")  # the revision before this one
 
-    # Through the models: this revision adds no columns, so they match the old schema.
-    from sqlalchemy import create_engine
+    # The workflow through the table as it is at that revision (later ones add
+    # columns the model has); the rest through the models, whose tables match.
+    from datetime import datetime
+
+    from sqlalchemy import MetaData, Table, create_engine, insert
     from sqlalchemy.orm import Session
 
     from runrail.models import (
@@ -51,17 +54,21 @@ def test_upgrading_keeps_every_row_and_stops_reusing_ids(tmp_path, monkeypatch):
         TaskRunStatus,
         TaskType,
         TriggerType,
-        Workflow,
         WorkflowRun,
     )
     engine = create_engine(url)
+    workflows = Table("workflows", MetaData(), autoload_with=engine)
+    stamp = datetime(2026, 1, 1)
+    with engine.begin() as connection:
+        workflow_id = connection.execute(insert(workflows).values(
+            name="w", enabled=True, max_concurrent_runs=1, lock_mode="shared",
+            snooze_pauses_runs=False, created_at=stamp,
+            updated_at=stamp)).inserted_primary_key[0]
     with Session(engine) as db:
-        workflow = Workflow(name="w")
-        db.add(workflow); db.flush()
-        task = Task(workflow_id=workflow.id, name="t", task_type=TaskType.shell, command="exit 0")
+        task = Task(workflow_id=workflow_id, name="t", task_type=TaskType.shell, command="exit 0")
         db.add(task); db.flush()
         for _ in range(3):
-            run = WorkflowRun(workflow_id=workflow.id, status=RunStatus.success,
+            run = WorkflowRun(workflow_id=workflow_id, status=RunStatus.success,
                               trigger_type=TriggerType.manual)
             db.add(run); db.flush()
             task_run = TaskRun(workflow_run_id=run.id, task_id=task.id, attempt=1,
@@ -80,6 +87,8 @@ def test_upgrading_keeps_every_row_and_stops_reusing_ids(tmp_path, monkeypatch):
         counts = [db.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
                   for t in ("workflow_runs", "task_runs", "artifacts")]
         assert counts == [3, 3, 3], "the table rebuild lost rows"
+        # The next migration gave the existing workflow its YAML key.
+        assert len(db.execute("SELECT key FROM workflows").fetchone()[0]) == 32
         # Retention deletes the newest run; its children cascade, as before.
         db.execute("DELETE FROM workflow_runs WHERE id = 3")
         assert db.execute("SELECT count(*) FROM task_runs").fetchone()[0] == 2

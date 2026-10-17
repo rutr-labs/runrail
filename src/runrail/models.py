@@ -1,4 +1,5 @@
 import enum
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -144,6 +145,11 @@ class Workflow(TimestampMixin, Base):
     __tablename__ = "workflows"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True)
+    #: Identity for workflow-as-code: written into every YAML export and matched
+    #: before the name on apply, so a file applied after a rename updates the
+    #: renamed workflow instead of creating a duplicate that fires alongside it.
+    key: Mapped[str] = mapped_column(String(32), unique=True,
+                                     default=lambda: uuid.uuid4().hex)
     description: Mapped[str | None] = mapped_column(Text)
     schedule_cron: Mapped[str | None] = mapped_column(String(255))
     # IANA name (e.g. "Asia/Dubai"); NULL evaluates the cron in UTC as before.
