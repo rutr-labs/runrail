@@ -67,3 +67,21 @@ test('dragging across the week adds a window that the service keeps', async ({ p
     { days: ['sun'], start: '12:00', end: '18:00' },
   ]);
 });
+
+test('the dashboard lists services and starts one in a click', async ({ page, request }) => {
+  const name = unique('dash');
+  const created = await request.post('/api/services', {
+    data: { name, command: 'while true; do echo up; sleep 1; done', start_mode: 'manual' } });
+  expect(created.ok()).toBeTruthy();
+
+  await page.goto('/');
+  const row = page.locator('.svc-row', { hasText: name });
+  await expect(row.locator('.svc-word')).toHaveText('Off');
+  await row.getByRole('button', { name: `Start ${name}` }).click();
+  await expect(row.locator('.svc-word')).toHaveText('Up', { timeout: 15_000 });
+  await row.getByRole('button', { name: `Stop ${name}` }).click();
+  await expect(row.locator('.svc-word')).toHaveText('Off', { timeout: 20_000 });
+
+  await page.goto('/wallboard');
+  await expect(page.locator('.wb-service', { hasText: name })).toBeVisible();
+});

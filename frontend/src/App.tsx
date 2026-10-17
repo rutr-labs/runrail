@@ -31,7 +31,9 @@ import { ScheduleGapsPanel, useScheduleGaps, heatmapGapFeed } from './components
 import { ApprovalField, approvalValues } from './components/ApprovalField';
 import { RunRailMark } from './components/Brand';
 import { useNow, useVisibleInterval } from './hooks';
-import { ServiceDetail, ServicesPage } from './Services';
+import {
+  ServiceDetail, ServicesPage, ServicesPanel, WallboardServices, serviceCounts, useServices,
+} from './Services';
 import { attemptLabel, attemptTag, groupAttempts } from './attempts';
 import type { AttemptGroup } from './attempts';
 import { LockField, LockBadge, lockValues } from './components/LockField';
@@ -780,6 +782,8 @@ function Dashboard() {
   // mode, so the count is a headline stat, not only a panel further down.
   const approvals = useOpenApprovals();
   const waitingRuns = new Set((approvals ?? []).map(row => row.run_id)).size;
+  const services = useServices();
+  const serviceCount = serviceCounts(services.items);
 
   useEffect(() => { load(); }, []);
   useEffect(() => {
@@ -824,7 +828,15 @@ function Dashboard() {
       <div className="dashboard-hero">
         <div className="dashboard-hero-content">
           <div className="dashboard-eyebrow">CONTROL PLANE</div>
-          <h1 className="dashboard-title">{empty ? 'Welcome to RunRail' : 'Everything on track.'}</h1>
+          {/* The headline is the dashboard's verdict, so it has to agree with
+              the status line under it: what needs a person, in that order. */}
+          <h1 className="dashboard-title">
+            {empty ? 'Welcome to RunRail'
+              : serviceCount.down ? `${serviceCount.down === 1 ? 'A service is' : `${serviceCount.down} services are`} down.`
+              : waitingRuns ? `${waitingRuns === 1 ? 'A run is' : `${waitingRuns} runs are`} waiting for you.`
+              : failed24h ? `${failed24h} run${failed24h === 1 ? '' : 's'} failed today.`
+              : 'Everything on track.'}
+          </h1>
           <p className="dashboard-sub">
             {empty
               ? 'Schedules, retries, logs, and history for the scripts you already have.'
@@ -853,6 +865,17 @@ function Dashboard() {
                   </span>
                 </>
               )}
+              {serviceCount.total > 0 && (
+                <>
+                  <span className="dash-sep">·</span>
+                  <Link to="/services" className={`dash-stat dash-stat-link${serviceCount.down ? ' stat-down' : serviceCount.up ? ' stat-up' : ''}`}>
+                    <Server size={12} />
+                    {serviceCount.down
+                      ? `${serviceCount.down} service${serviceCount.down === 1 ? '' : 's'} down`
+                      : `${serviceCount.up}/${serviceCount.total} service${serviceCount.total === 1 ? '' : 's'} up`}
+                  </Link>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -867,7 +890,13 @@ function Dashboard() {
         )}
       </div>
 
-      {empty ? <QuickStart /> : (
+      {empty ? (
+        <>
+          {/* Someone who only runs services still sees them first. */}
+          <ServicesPanel items={services.items} onChanged={services.load} />
+          <QuickStart />
+        </>
+      ) : (
         <>
           <div className="metric-grid dashboard-metric-grid">
             <MetricCard icon={<Activity size={18} />} label="Live now" value={liveCount} tone={parked ? 'warning' : liveCount ? 'running' : 'default'} note={parked ? `${parked} waiting on a person` : 'Running and queued'} />
@@ -900,6 +929,7 @@ function Dashboard() {
                   ? <div style={{ padding: '6px 0' }}>{liveRuns.map(r => <LiveRunRow key={r.id} run={r} flows={flows} />)}</div>
                   : <EmptyState icon={<Activity size={22} />} title="Nothing live" text="Runs appear here the moment they queue or start." />}
               </div>
+              <ServicesPanel items={services.items} onChanged={services.load} />
               <WorkflowQuickList flows={flows} runs={runs} onRun={runNow} />
               <div className="panel" style={{ marginBottom: 16 }}>
                 <div className="panel-head"><div><h2>Upcoming</h2><p>Next scheduled executions</p></div></div>
@@ -3186,6 +3216,8 @@ function Wallboard() {
   }, []);
   useVisibleInterval(true, load, 5000);
   const now = useNow(runs.some(r => r.status === 'running'));
+  const services = useServices();
+  const servicesDown = serviceCounts(services.items).down;
 
   const live = runs.filter(r => LIVE(r.status));
   const failures = runs.filter(r => r.status === 'failed'
@@ -3242,9 +3274,11 @@ function Wallboard() {
   const overdueCount = tiles.filter(t => t.status === 'overdue').length;
   const waitingCount = tiles.filter(t => t.status === 'waiting').length;
   const runningCount = live.filter(r => r.status === 'running').length;
-  const mood = failing || overdueCount ? 'attention' : waitingCount || runningCount ? 'active' : 'calm';
+  const mood = failing || overdueCount || servicesDown ? 'attention'
+    : waitingCount || runningCount ? 'active' : 'calm';
   const verdict = failing ? `${failing} failing`
     : overdueCount ? `${overdueCount} overdue`
+    : servicesDown ? `${servicesDown} service${servicesDown === 1 ? '' : 's'} down`
     : waitingCount ? `${waitingCount} waiting for approval`
     : runningCount ? `${runningCount} running`
     : 'All systems nominal';
@@ -3306,6 +3340,8 @@ function Wallboard() {
           })}
         </div>
       )}
+
+      <WallboardServices items={services.items ?? []} now={clock.getTime()} />
 
       <div className="wallboard-grid" ref={gridRef}>
         {tiles.map(({ flow: w, last, streak, streakStart, rate7d, next, status }) => (
