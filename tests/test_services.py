@@ -352,7 +352,9 @@ def test_deleting_a_running_service_stops_its_process(client, supervisor):
     pid = settle(sup, client, svc["id"], "running")["current_session"]["pid"]
     assert client.delete(f"/api/services/{svc['id']}").status_code == 204
     deadline = time.monotonic() + 10
-    while process_alive(pid) and time.monotonic() < deadline:
+    # Until the supervisor has let go, not merely until the pid reads as dead:
+    # on Windows an exited process reads as dead before it has been reaped.
+    while (process_alive(pid) or sup.live) and time.monotonic() < deadline:
         sup.tick()
         time.sleep(0.1)
     assert not process_alive(pid)
