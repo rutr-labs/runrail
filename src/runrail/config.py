@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     # When set, finished runs older than this many days (and their log/artifact
     # files) are deleted automatically by the scheduler. Essential for
     # high-frequency schedules that create hundreds of runs per day.
-    retention_days: int | None = None
+    # Negative is refused: -1 is truthy and would delete every finished run.
+    retention_days: int | None = Field(default=None, ge=0)
     # Default webhook for run notifications (Slack/Teams incoming webhooks work);
     # a workflow's own notify_webhook_url overrides this.
     notify_webhook_url: str | None = None

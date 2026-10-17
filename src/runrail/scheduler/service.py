@@ -271,7 +271,13 @@ class SchedulerService:
         if not retention_days:
             return
         with SessionLocal() as db:
-            cleanup_runs(db, retention_days)
+            stats = cleanup_runs(db, retention_days)
+        # Nobody watches this job, so what it could not delete has to be said.
+        if stats.runs_deleted or stats.errors:
+            print(f"Retention: deleted {stats.runs_deleted} run(s) and "
+                  f"{stats.files_deleted} file(s)", flush=True)
+        for error in stats.errors:
+            print(f"Retention: could not delete {error}", flush=True)
 
     def start(self) -> None:
         self.scheduler.start(); self.sync()
