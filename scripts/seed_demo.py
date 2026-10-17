@@ -280,12 +280,12 @@ def _live_plans(rng: random.Random, specs: list[dict], current: datetime) -> lis
     Appended last so they are the newest rows whatever order the workflows came
     in, and the approval gate is put on a workflow that actually has one.
 
-    Running runs start at a fraction of their own typical duration. The
-    wallboard draws progress as elapsed over the median of recent runs, so a
-    tail that started a uniform "few minutes ago" sits past 100% on every bar
-    and paints the whole strip amber — a board that cries wolf about every run
-    at once. One overrun is kept on purpose: past-median is a state the
-    wallboard has a treatment for, and the demo should show it. Once.
+    Nothing here is seeded as `running`: the worker marks a running row it did
+    not start as failed the moment it comes up, so a served home opened with a
+    seeded running tail began life with a row of red tiles. The tail is queued
+    instead, and the worker starts it within a second of `runrail serve` — for
+    real, against the stand-in pipelines — which is what makes the bars move.
+    Drawn from the quicker workflows so the pool is free again soon after.
     """
     from runrail.models import RunStatus, TriggerType
 
@@ -302,17 +302,11 @@ def _live_plans(rng: random.Random, specs: list[dict], current: datetime) -> lis
         }
 
     plans = []
-    # Readable bars need runs that last: draw the running tail from the slower
-    # half of the fleet, at spread-out points of their typical duration.
-    slow = sorted(specs, key=lambda spec: spec["base_seconds"])[len(specs) // 2:]
-    for spec, fraction in zip(rng.sample(slow, min(4, len(slow))), (0.35, 0.55, 0.8, 1.2),
-                              strict=False):  # a tiny fleet seeds fewer than four
-        started = current - timedelta(seconds=spec["base_seconds"] * fraction)
-        plans.append(row(spec, RunStatus.running, started - timedelta(seconds=2), started))
     # Queued means "a worker will take this within seconds", not minutes: a
     # queued run that is minutes old says the workers are wedged.
-    for spec in rng.sample(specs, min(3, len(specs))):
-        created = current - timedelta(seconds=rng.randint(4, 75))
+    quick = [spec for spec in specs if spec["base_seconds"] <= 45] or specs
+    for spec in rng.sample(quick, min(4, len(quick))):
+        created = current - timedelta(seconds=rng.randint(2, 20))
         plans.append(row(spec, RunStatus.queued, created, None))
     # People are slower than workers; a gate open for many minutes is honest.
     gated = [spec for spec in specs if spec["gated"]]
@@ -377,6 +371,32 @@ def _task_row(run_id: int, task_id: int, status, started: datetime,
         # Filled by one UPDATE once the ids these paths are built from exist.
         "stdout_log_path": None, "stderr_log_path": None,
     }
+
+
+_PIPELINE_SCRIPT = '''"""Stand-in for the {name} step: logs like one and takes about as long as one."""
+import argparse, random, time
+parser = argparse.ArgumentParser()
+parser.add_argument("--ds"); parser.add_argument("--seconds", type=float, default=2)
+args = parser.parse_args()
+rows = random.randint(2_000, 90_000)
+print(f"INFO  starting {name} for ds={{args.ds}}", flush=True)
+steps = max(1, int(args.seconds))
+for n in range(steps):
+    time.sleep(args.seconds / steps)
+    print(f"INFO  checkpoint {{n + 1}}/{{steps}} · {{rows * (n + 1) // steps}} rows", flush=True)
+print(f"INFO  {name} finished · {{rows}} rows", flush=True)
+'''
+
+
+def write_pipeline_scripts(directory: Path) -> None:
+    """One runnable stand-in per task name. Every seeded command points at one
+    of these, so a home opened with ``runrail serve`` executes its workflows
+    for real — the logs, the durations and the live board are then the real
+    thing, not labels — instead of failing every fire on a path that does not
+    exist."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in TASK_NAMES:
+        (directory / f"{name}.py").write_text(_PIPELINE_SCRIPT.format(name=name))
 
 
 def log_path(logs_root: Path, run_id: int, task_run_id: int, stream: str) -> Path:
@@ -460,6 +480,143 @@ def apply_operator_state(db, rng: random.Random, specs: list[dict], current: dat
     db.commit()
 
 
+#: What each stand-in service prints: a banner once, then one of its lines
+#: every few seconds. Enough for a live log to look like one.
+SERVICE_SCRIPTS = [
+    ("llama_server.py",
+     "llama-server listening on http://0.0.0.0:8081 · model loaded in 4.2s · 48 layers on GPU",
+     ["POST /v1/chat/completions 200 · 412 prompt + 96 completion tokens · 38.4 tok/s",
+      "POST /v1/chat/completions 200 · 1280 prompt + 310 completion tokens · 35.1 tok/s",
+      "POST /v1/embeddings 200 · 64 inputs · 11ms",
+      "slot 0 released · kv cache 23% used"], 4),
+    ("folder_sync.py", "watching //fileserver/shared -> /mnt/nas/shared (1,284 files in sync)",
+     ["changed  finance/Q3-forecast.xlsx (2.1 MB) -> copied in 0.4s",
+      "created  design/brand/logo-v7.ai (18.3 MB) -> copied in 2.9s",
+      "deleted  tmp/~$budget.xlsx -> removed on NAS",
+      "idle · next full scan in 15m"], 3),
+    ("log_shipper.py",
+     "tailing /var/log/warehouse/*.log -> https://siem.internal/ingest (batch 500, flush 5s)",
+     ["shipped 500 events in 212ms · lag 0.8s",
+      "shipped 497 events in 189ms · lag 0.6s",
+      "rotated: warehouse.log -> warehouse.log.1, reopened",
+      "shipped 500 events in 240ms · lag 1.1s"], 5),
+    ("dashboard.py", "Streamlit app running at http://localhost:8501",
+     ["GET / 200 · 41ms", "cache hit: load_orders (ttl 300s)",
+      "GET /_stcore/stream · session a91f opened", "GET /_stcore/health 200"], 6),
+]
+
+_SERVICE_SCRIPT = '''"""A stand-in for the real program: prints what it would print, forever."""
+import itertools, signal, sys, time
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # stop politely when asked
+LINES = {lines!r}
+print({banner!r}, flush=True)
+for i in itertools.count():
+    time.sleep({every})
+    print(time.strftime("%H:%M:%S"), LINES[i % len(LINES)], flush=True)
+'''
+
+
+def seed_services(db, rng: random.Random, project, environment, current: datetime) -> int:
+    """A handful of services with a few days of history each: two model servers
+    taking turns on one GPU, a folder sync with a lunch break, a log shipper
+    that is simply always on, and an on-demand dashboard somebody stopped.
+
+    The commands are real: each runs a stand-in that prints what the program would, so
+    once ``runrail serve`` opens this home the supervisor starts them and the
+    Services page shows live state and output rather than seeded labels. The
+    model servers' windows are placed around the current hour (in UTC) so the
+    daytime one is running now and the night one starts in about two hours.
+    """
+    from runrail.models import (
+        LockMode,
+        RestartPolicy,
+        Service,
+        ServiceSession,
+        ServiceStartMode,
+        ServiceState,
+        ServiceStopReason,
+    )
+
+    # Stand-in programs in the project folder, so the commands read like the
+    # real thing and the live log shows what such a service would say. `python`
+    # resolves to the demo environment's interpreter, which the supervisor puts
+    # first on PATH.
+    scripts = Path(project.root_path) / "services"
+    scripts.mkdir(parents=True, exist_ok=True)
+    for name, banner, lines, every in SERVICE_SCRIPTS:
+        (scripts / name).write_text(_SERVICE_SCRIPT.format(banner=banner, lines=lines, every=every))
+
+    every_day = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    weekdays = every_day[:5]
+    hour = current.hour
+    day_start, day_end = f"{(hour - 3) % 24:02d}:00", f"{(hour + 2) % 24:02d}:00"
+    services = [
+        dict(name="llama-day", description="Qwen 7B behind the team chat UI",
+             command="python services/llama_server.py --model models/qwen2.5-7b-q5.gguf --port 8081",
+             start_mode=ServiceStartMode.schedule, timezone="UTC",
+             windows_json=[{"days": every_day, "start": day_start, "end": day_end}],
+             lock_resource="gpu", lock_mode=LockMode.exclusive, stop_timeout_seconds=180),
+        dict(name="llama-night", description="Qwen 72B for the overnight batch jobs",
+             command="python services/llama_server.py --model models/qwen2.5-72b-q4.gguf "
+                     "--port 8081 --ctx 32768",
+             start_mode=ServiceStartMode.schedule, timezone="UTC",
+             windows_json=[{"days": every_day, "start": day_end, "end": day_start}],
+             lock_resource="gpu", lock_mode=LockMode.exclusive, stop_timeout_seconds=300),
+        dict(name="folder-sync", description="Mirrors the shared drive to the NAS",
+             command="python services/folder_sync.py //fileserver/shared /mnt/nas/shared --watch",
+             start_mode=ServiceStartMode.schedule, timezone="UTC",
+             windows_json=[{"days": weekdays, "start": "08:00", "end": "12:30"},
+                           {"days": weekdays, "start": "13:30", "end": "17:30"}]),
+        dict(name="log-shipper", description="Tails the warehouse logs into the SIEM",
+             command="python services/log_shipper.py --source /var/log/warehouse "
+                     "--sink https://siem.internal/ingest",
+             start_mode=ServiceStartMode.startup),
+        dict(name="metrics-dashboard", description="Streamlit board for the ops channel",
+             command="python services/dashboard.py --port 8501",
+             start_mode=ServiceStartMode.manual, restart_policy=RestartPolicy.never),
+    ]
+    rows = []
+    for spec in services:
+        rows.append(Service(**spec, project_id=project.id, environment_id=environment.id,
+                            state=ServiceState.stopped, restart_requested=False,
+                            created_at=current - timedelta(days=30), updated_at=current))
+    db.add_all(rows)
+    db.flush()
+
+    # History: the shape each service's life has had over the past week.
+    sessions = []
+    for service in rows:
+        for days_ago in range(7, 0, -1):
+            day = (current - timedelta(days=days_ago)).replace(minute=0, second=0, microsecond=0)
+            if service.start_mode == ServiceStartMode.schedule:
+                for window in service.windows_json:
+                    start_h = int(window["start"][:2])
+                    length = (int(window["end"][:2]) - start_h) % 24 or 24
+                    started = day.replace(hour=start_h)
+                    sessions.append(ServiceSession(
+                        service_id=service.id, started_at=started,
+                        stopped_at=started + timedelta(hours=length, minutes=rng.randint(0, 3)),
+                        pid=rng.randint(2000, 60000), exit_code=0,
+                        stop_reason=ServiceStopReason.window_closed, command=service.command))
+            elif service.start_mode == ServiceStartMode.startup and days_ago in (7, 3):
+                started = day.replace(hour=9)
+                sessions.append(ServiceSession(
+                    service_id=service.id, started_at=started,
+                    stopped_at=started + timedelta(days=4 if days_ago == 7 else 3, hours=-1),
+                    pid=rng.randint(2000, 60000), exit_code=None,
+                    stop_reason=ServiceStopReason.runrail_shutdown, command=service.command))
+            elif service.start_mode == ServiceStartMode.manual and days_ago in (6, 2):
+                started = day.replace(hour=14)
+                sessions.append(ServiceSession(
+                    service_id=service.id, started_at=started,
+                    stopped_at=started + timedelta(hours=rng.randint(2, 5)),
+                    pid=rng.randint(2000, 60000), exit_code=0,
+                    stop_reason=ServiceStopReason.stopped_by_user, command=service.command))
+    db.add_all(sessions)
+    db.commit()
+    return len(rows)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     rng = random.Random(args.seed)
@@ -520,10 +677,14 @@ def main(argv: list[str] | None = None) -> int:
         for spec in specs:
             spec["id"] = ids_by_name[spec["name"]]
 
+        write_pipeline_scripts(Path(project.root_path) / "pipelines")
         insert_rows(db, Task, [{
             "workflow_id": spec["id"], "project_id": project.id,
             "environment_id": environment.id, "name": name, "task_type": TaskType.shell,
-            "command": f"python /opt/pipelines/{name}.py --ds {{{{ ds }}}}",
+            # Runs for about the share of the workflow's typical duration this
+            # task has in the seeded history, so a live bar fills on time.
+            "command": (f"python pipelines/{name}.py --ds {{{{ ds }}}} "
+                        f"--seconds {max(1, round(spec['base_seconds'] / len(spec['task_names'])))}"),
             "depends_on_json": [spec["task_names"][position - 1]] if position else [],
             "retries": 1, "retry_delay_seconds": 60,
             "requires_approval": spec["gated"] and position == len(spec["task_names"]) - 1,
@@ -579,6 +740,7 @@ def main(argv: list[str] | None = None) -> int:
         apply_operator_state(db, rng, specs, current)
         files, written = write_logs(db, logs_root, rng, args.log_files, args.log_lines)
         say(f"  notes {len(noted)}  log files {files} ({written // 1024} KiB)")
+        say(f"  services {seed_services(db, rng, project, environment, current)}")
 
     say(f"Seeded {home} in {time.monotonic() - clock:.1f}s")
     return 0
