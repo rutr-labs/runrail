@@ -1,7 +1,10 @@
+from urllib.parse import urlsplit
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from runrail import notify
 from runrail.api.crud import (
     apply_update,
     create_backfill,
@@ -11,6 +14,7 @@ from runrail.api.crud import (
     save,
 )
 from runrail.api.ws import manager as ws_manager
+from runrail.config import get_settings
 from runrail.db import get_db
 from runrail.models import (
     LockMode,
@@ -102,8 +106,14 @@ def get_workflow(object_id: int, db: Session = Depends(get_db)):
 @router.put("/workflows/{object_id}", response_model=WorkflowOut)
 def update_workflow(object_id: int, data: WorkflowIn, db: Session = Depends(get_db)):
     ensure_environment_ready(db, data.default_environment_id)
-    workflow = apply_update(get_or_404(db, Workflow, object_id),
-                            data.model_dump(exclude_unset=True))
+    workflow = get_or_404(db, Workflow, object_id)
+    was_enabled, was_watched = workflow.enabled, workflow.missed_run_grace_minutes
+    workflow = apply_update(workflow, data.model_dump(exclude_unset=True))
+    if workflow.enabled and not was_enabled:
+        mark_enabled(workflow)
+    # A workflow nobody watches any more has nothing to be "still missing".
+    if workflow.schedule_cron is None or (was_watched and not workflow.missed_run_grace_minutes):
+        workflow.missed_notified_at = None
     # The invariant belongs to the stored row, not to one payload: a partial
     # update that clears the resource while saying nothing about the mode would
     # otherwise leave `exclusive` behind, claiming a rule with nothing to apply
@@ -111,6 +121,29 @@ def update_workflow(object_id: int, data: WorkflowIn, db: Session = Depends(get_
     if not workflow.lock_resource:
         workflow.lock_mode = LockMode.shared
     return save(db, workflow)
+
+
+def mark_enabled(workflow: Workflow) -> None:
+    """Switching a workflow on starts a new count for auto-pause and closes the
+    record of the pause that switched it off."""
+    workflow.enabled_at = now()
+    workflow.auto_paused_at = None
+    workflow.auto_paused_run_id = None
+
+
+@router.post("/workflows/{object_id}/notify-test")
+def test_notification(object_id: int, db: Session = Depends(get_db)):
+    """Post a test message to the workflow's webhook now, and say what happened.
+    Delivery failures are otherwise only logged and recorded on the workflow."""
+    workflow = get_or_404(db, Workflow, object_id)
+    url = workflow.notify_webhook_url or get_settings().notify_webhook_url
+    if not url:
+        raise HTTPException(400, "No webhook is configured for this workflow or as the default")
+    error = notify.deliver(url, f"🔔 RunRail: test message for workflow '{workflow.name}'.",
+                           event="test", workflow=workflow.name)
+    workflow.webhook_error, workflow.webhook_error_at = error, (now() if error else None)
+    db.commit()
+    return {"ok": error is None, "error": error, "url_host": urlsplit(url).hostname}
 
 
 @router.delete("/workflows/{object_id}", status_code=204)

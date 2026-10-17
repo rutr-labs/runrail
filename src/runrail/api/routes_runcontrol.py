@@ -70,7 +70,8 @@ def resume_run(object_id: int, data: ResumeIn | None = None, db: Session = Depen
     result = db.execute(update(WorkflowRun)
                         .where(WorkflowRun.id == run.id, WorkflowRun.status.in_(_RESUMABLE))
                         .values(status=RunStatus.queued, resume_count=segment, started_at=None,
-                                finished_at=None, duration_seconds=None, sla_breached_at=None))
+                                finished_at=None, duration_seconds=None, sla_breached_at=None,
+                                resumed_at=now()))
     if result.rowcount != 1:
         raise HTTPException(409, "Run is no longer resumable")
     # The worker recomputes the reuse set at claim time and never sees this

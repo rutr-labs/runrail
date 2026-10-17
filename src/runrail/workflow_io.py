@@ -213,10 +213,14 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
             lock_resource=entry.get("lock_resource"),
             lock_mode=entry.get("lock_mode") or LockMode.shared,
         )
+        was_enabled = workflow.enabled if not created else None
         for field in ("description", "schedule_cron", "schedule_timezone", "enabled",
                       "max_concurrent_runs", "notify_webhook_url", "auto_pause_failures",
                       "missed_run_grace_minutes", "sla_minutes", "lock_resource", "lock_mode"):
             setattr(workflow, field, getattr(checked, field))
+        if workflow.enabled and was_enabled is False:
+            from runrail.api.routes_workflows import mark_enabled
+            mark_enabled(workflow)
         workflow.project_id = _resolve(db, Project, entry.get("project"), "project")
         workflow.default_environment_id = _resolve(
             db, Environment, entry.get("default_environment"), "environment")

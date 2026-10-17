@@ -725,6 +725,11 @@ def recover_interrupted_runs(db: Session) -> int:
                .values(status=TaskRunStatus.cancelled, finished_at=finished,
                        error_message="Interrupted by worker shutdown"))
     db.commit()
+    # These are failures like any other: unannounced, the next success posted a
+    # "recovered" nobody had seen a failure for, and the auto-pause count
+    # skipped them.
+    for run in stale:
+        notify_run_outcome(db, run)
     return len(stale)
 
 

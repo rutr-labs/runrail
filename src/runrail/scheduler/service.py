@@ -131,6 +131,15 @@ def check_missed_runs(db: Session) -> None:
     in_flight = set(db.scalars(select(WorkflowRun.workflow_id).where(
         WorkflowRun.workflow_id.in_(ids), WorkflowRun.status.in_(_IN_FLIGHT),
         WorkflowRun.trigger_type != TriggerType.backfill)))
+    # What ends a miss: a run the SCHEDULE produced. A manual run or a resume
+    # while the schedule was still dead used to announce "running on schedule
+    # again", after which the miss alerted again a minute later — and so on
+    # for every manual run.
+    scheduled_since = dict(db.execute(
+        select(WorkflowRun.workflow_id, func.max(WorkflowRun.created_at))
+        .where(WorkflowRun.workflow_id.in_(ids),
+               WorkflowRun.trigger_type == TriggerType.schedule)
+        .group_by(WorkflowRun.workflow_id)).all())
     current = now()
     for workflow in workflows:
         # A mute must not even record the transition: a marker set while snoozed
@@ -161,11 +170,11 @@ def check_missed_runs(db: Session) -> None:
         # Recovery takes an actual run, not merely the absence of a miss: an
         # unrelated edit moves the anchor, and announcing a recovery for a
         # workflow that is still dead is worse than staying quiet.
-        elif workflow.missed_notified_at is not None and (
-                workflow.id in in_flight
-                or (last is not None and last > _aware(workflow.missed_notified_at))):
-            if _mark_missed(db, workflow, None):
-                notify.notify_missed_run_recovered(workflow)
+        elif workflow.missed_notified_at is not None and workflow.enabled:
+            newest = _aware(scheduled_since.get(workflow.id))
+            if newest is not None and newest > _aware(workflow.missed_notified_at):
+                if _mark_missed(db, workflow, None):
+                    notify.notify_missed_run_recovered(workflow)
 
 
 def check_sla_breaches(db: Session) -> None:
@@ -208,7 +217,7 @@ def check_sla_breaches(db: Session) -> None:
         # fire minute, so "240" on a 02:00 workflow means "done by 06:00" with no
         # timezone arithmetic — and it is the only origin that catches a run
         # which never started because the worker is dead.
-        deadline = _aware(run.created_at) + timedelta(minutes=workflow.sla_minutes)
+        deadline = notify.sla_anchor(run) + timedelta(minutes=workflow.sla_minutes)
         if current < deadline:
             continue
         changed = db.execute(
