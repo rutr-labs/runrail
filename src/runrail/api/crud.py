@@ -60,24 +60,42 @@ def create_run(db: Session, workflow: Workflow, trigger: TriggerType, params=Non
     ))
 
 
+#: The longest range one backfill may cover. Nothing in the queue copes well
+#: with ten thousand rows arriving at once, and a typo in a year is the usual
+#: way to ask for them.
+MAX_BACKFILL_DAYS = 366
+
+
 def create_backfill(db: Session, workflow: Workflow, start: date, end: date, params=None):
+    """Queue one run per date in [start, end], skipping dates already backfilled.
+    Raises ValueError for a range it will not queue."""
     if end < start:
-        raise HTTPException(400, "Backfill 'to' date must be on or after 'from' date")
+        raise ValueError("Backfill 'to' date must be on or after 'from' date")
+    days = (end - start).days + 1
+    if days > MAX_BACKFILL_DAYS:
+        raise ValueError(f"A backfill covers at most {MAX_BACKFILL_DAYS} days; "
+                         f"this range is {days}. Queue it in parts.")
     existing = set(db.scalars(select(WorkflowRun.run_key).where(
         WorkflowRun.run_key.like(f"backfill:{workflow.id}:%")
     )))
     runs = []
-    day = start
-    while day <= end:
+    for offset in range(days):
+        day = start + timedelta(days=offset)
         key = f"backfill:{workflow.id}:{day.isoformat()}"
         if key not in existing:
             values = dict(params or {})
             values["ds"] = day.isoformat()
             runs.append(WorkflowRun(workflow_id=workflow.id, trigger_type=TriggerType.backfill,
                                     status="queued", parameters_json=values, run_key=key))
-        day += timedelta(days=1)
     db.add_all(runs)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Two requests for overlapping ranges at once: the second loses on the
+        # unique run_key. Say so rather than answering with a traceback.
+        db.rollback()
+        raise ValueError("Another backfill of these dates was queued at the same time; "
+                         "check the run list and retry for any dates still missing") from None
     for run in runs:
         db.refresh(run)
     return runs

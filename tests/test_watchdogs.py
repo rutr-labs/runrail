@@ -382,3 +382,30 @@ def test_the_watchdog_job_is_registered_and_survives_reconciliation(client):
         assert "watchdog" in {job.id for job in service.scheduler.get_jobs()}
     finally:
         service.shutdown()
+
+
+def test_a_backfill_says_nothing_about_whether_the_schedule_is_alive(client, monkeypatch):
+    """A month of backfill rows is bulk work someone queued by hand. Counting it
+    hid a dead schedule for as long as it took to drain, and announced a
+    recovery the moment it started."""
+    sent = capture_webhooks(monkeypatch)
+    workflow = make_workflow(client, "nightly", schedule_cron="*/5 * * * *",
+                             missed_run_grace_minutes=10)
+    add_run(workflow["id"], RunStatus.success, age_minutes=90)
+    configure(workflow["id"], aged_minutes=120)
+    run_watchdogs()
+    assert [n["event"] for n in sent] == ["run_missed"]
+
+    # Catching up by hand while the schedule is still dead is not a recovery…
+    add_run(workflow["id"], RunStatus.queued, trigger=TriggerType.backfill)
+    add_run(workflow["id"], RunStatus.success, trigger=TriggerType.backfill)
+    run_watchdogs()
+    assert [n["event"] for n in sent] == ["run_missed"]
+    # …and a queued backfill does not hide a fresh outage either.
+    other = make_workflow(client, "hourly", schedule_cron="*/5 * * * *",
+                          missed_run_grace_minutes=10)
+    add_run(other["id"], RunStatus.success, age_minutes=90)
+    add_run(other["id"], RunStatus.queued, trigger=TriggerType.backfill)
+    configure(other["id"], aged_minutes=120)
+    run_watchdogs()
+    assert [n["event"] for n in sent] == ["run_missed", "run_missed"]

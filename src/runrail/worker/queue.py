@@ -1,9 +1,9 @@
 from collections.abc import Collection
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
-from runrail.models import LockMode, RunStatus, Workflow, WorkflowRun, now
+from runrail.models import LockMode, RunStatus, TriggerType, Workflow, WorkflowRun, now
 from runrail.services.locks import service_blocks_run
 
 #: The statuses that are unconditionally mid-flight. `queued` belongs to the
@@ -120,7 +120,13 @@ def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | Non
             ~service_blocks_run(),
             *([WorkflowRun.id.not_in(skip)] if skip else []),
         )
-        .order_by(WorkflowRun.created_at)
+        # Backfills last. Ordered by age alone, a month of backfill rows
+        # queued ahead of the 09:00 iteration held it for the hours they took
+        # to drain, and every fire meanwhile found that one iteration still
+        # queued and was dropped — hours the schedule never produced and, with
+        # no `ds` on a scheduled run, could not replay.
+        .order_by(case((WorkflowRun.trigger_type == TriggerType.backfill, 1), else_=0),
+                  WorkflowRun.created_at, WorkflowRun.id)
         .limit(1)
     )
     if candidate is None:

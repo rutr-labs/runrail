@@ -128,8 +128,12 @@ def _runs(db: Session, workflow: Workflow, since: datetime,
         created = _aware(row.created_at)
         # Only a scheduled run answers a fire: a manual or CLI run is somebody
         # pressing the button, and it says nothing about whether cron fired.
-        if row.trigger_type == TriggerType.schedule:
-            scheduled.append(created)
+        if row.trigger_type != TriggerType.schedule:
+            # Only a scheduled iteration coalesces fires now (enqueue_scheduled
+            # counts those alone), so a queued backfill or manual run explains
+            # no gap.
+            continue
+        scheduled.append(created)
         end = _aware(row.started_at) or _aware(row.finished_at) or current
         if end > created:
             spans.append((created, end))

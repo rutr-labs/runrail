@@ -68,7 +68,11 @@ def _run_files(db: Session, run_ids: list[int], logs_root: Path,
     layout = {}
     for run_id, paths in files.items():
         directories = [logs_root / f"run_{run_id}", artifacts_root / str(run_id)]
-        loose = [path for path in paths if not any(path.is_relative_to(d) for d in directories)]
+        # Only files inside this home's trees: a row imported from another
+        # home may still name files there, and those are not ours to delete.
+        loose = [path for path in paths
+                 if not any(path.is_relative_to(d) for d in directories)
+                 and (path.is_relative_to(logs_root) or path.is_relative_to(artifacts_root))]
         layout[run_id] = (directories, loose)
     return layout
 

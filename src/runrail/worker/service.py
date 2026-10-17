@@ -191,7 +191,18 @@ def _context(run: WorkflowRun, task_run: TaskRun, task: Task, project: Project |
         timestamp = timestamp.replace(tzinfo=timezone.utc)
     else:
         timestamp = timestamp.astimezone(timezone.utc)
-    parameters = {**(run.parameters_json or {}), **(task.parameters_json or {})}
+    # Task parameters are defaults; what a run was started with — the values
+    # typed into "Run with…", or the date a backfill set — overrides them. The
+    # other way round, a task that happened to define `ds` made every run of a
+    # 30-day backfill process the same day.
+    parameters = {**(task.parameters_json or {}), **(run.parameters_json or {})}
+    if run.trigger_type == TriggerType.backfill and "ds" in parameters:
+        # A backfill is about its date: `ts` names that day, not the moment the
+        # range was queued, so outputs partitioned by either agree.
+        try:
+            timestamp = datetime.fromisoformat(str(parameters["ds"])).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
     return {
         "ds": parameters.get("ds", timestamp.date().isoformat()), "ts": timestamp.isoformat(),
         "ts_nodash": timestamp.strftime("%Y%m%dT%H%M%S"),

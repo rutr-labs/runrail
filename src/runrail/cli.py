@@ -74,6 +74,13 @@ def _import_source(source: Path) -> None:
     source = source.expanduser()
     if source.is_dir():
         settings = get_settings()
+        if settings.db_url is not None:
+            # The copy would land in a file the app never opens, and the
+            # summary would still say "Imported" with a workflow count.
+            raise typer.BadParameter(
+                "RUNRAIL_DB_URL is set, so this RunRail does not read a runrail.db in its "
+                "home; a data-directory import has nowhere to go. Unset it to import into "
+                "SQLite, or point RUNRAIL_DB_URL at the database you want to use.")
         try:
             lines = import_home(source, settings.home, on_progress=typer.echo)
         except ImportSourceError as exc:
@@ -247,7 +254,10 @@ def backfill(name: str, from_date: str = typer.Option(..., "--from"),
             start, end = date.fromisoformat(from_date), date.fromisoformat(to_date)
         except ValueError as exc:
             raise typer.BadParameter("Dates must use YYYY-MM-DD") from exc
-        runs = create_backfill(db, _workflow(db, name), start, end, _params(param))
+        try:
+            runs = create_backfill(db, _workflow(db, name), start, end, _params(param))
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
         typer.echo(f"Queued {len(runs)} backfill run(s)")
 
 
