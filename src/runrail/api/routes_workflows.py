@@ -132,7 +132,10 @@ def run_workflow(object_id: int, data: RunCreate, db: Session = Depends(get_db))
 def backfill_workflow(object_id: int, data: BackfillCreate, db: Session = Depends(get_db)):
     workflow = get_or_404(db, Workflow, object_id)
     _ensure_workflow_runnable(db, workflow)
-    runs = create_backfill(db, workflow, data.from_date, data.to_date, data.parameters)
+    try:
+        runs = create_backfill(db, workflow, data.from_date, data.to_date, data.parameters)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     for run in runs:
         ws_manager.notify({"type": "run_created", "id": run.id, "workflow_id": run.workflow_id})
     return runs

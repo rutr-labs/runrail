@@ -120,12 +120,17 @@ def check_missed_runs(db: Session) -> None:
         return
     # Three queries regardless of workflow count — this runs every 60 seconds.
     ids = [workflow.id for workflow in workflows]
+    # Backfills are left out of both: a month of backfill rows is bulk work
+    # someone queued by hand, and counting it hid a dead schedule for as long
+    # as it took to drain — and announced a "recovery" the moment it started.
     last_run = dict(db.execute(
         select(WorkflowRun.workflow_id, func.max(WorkflowRun.created_at))
-        .where(WorkflowRun.workflow_id.in_(ids))
+        .where(WorkflowRun.workflow_id.in_(ids),
+               WorkflowRun.trigger_type != TriggerType.backfill)
         .group_by(WorkflowRun.workflow_id)).all())
     in_flight = set(db.scalars(select(WorkflowRun.workflow_id).where(
-        WorkflowRun.workflow_id.in_(ids), WorkflowRun.status.in_(_IN_FLIGHT))))
+        WorkflowRun.workflow_id.in_(ids), WorkflowRun.status.in_(_IN_FLIGHT),
+        WorkflowRun.trigger_type != TriggerType.backfill)))
     current = now()
     for workflow in workflows:
         # A mute must not even record the transition: a marker set while snoozed
