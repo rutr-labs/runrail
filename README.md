@@ -13,7 +13,7 @@ Give the scripts, notebooks and queries you already have schedules, retries, app
 
 ![Live wallboard](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/demo.gif)
 
-*The wallboard. Each bar runs against that workflow's own median duration and turns amber when a run goes over.*
+*The wallboard: services along the top, then every workflow. Each run's bar is measured against that workflow's own median duration and turns amber when it goes over.*
 
 A task in RunRail is a command:
 
@@ -22,6 +22,14 @@ python scripts/refresh_sales.py --date {{ ds }}
 ```
 
 That is the whole configuration. Nothing is imported into your code, and there is no DAG file to keep in sync with it. RunRail runs that command on a schedule, in a Python environment you declare, and keeps the logs, the timings and the history.
+
+A service is a command RunRail keeps running instead:
+
+```bash
+llama-server -m models/qwen2.5-7b-q5.gguf --port 8081
+```
+
+Started with RunRail, inside weekly windows, or by hand; restarted if it crashes; stopped politely when its window closes; and able to take turns with your workflows on a shared GPU.
 
 ## Sixty seconds to a first run
 
@@ -63,6 +71,8 @@ A few workflows later, the dashboard looks like this:
 
 **Some things should wait for a person.** Mark a task as needing approval and the run parks there, showing the prompt and the exact command it is about to run. It gives up its worker thread while it waits, so a gate left open overnight holds nothing else up.
 
+**Some things should stay up rather than finish.** A model server, a folder sync, a dashboard. A service runs on RunRail's startup, inside weekly windows (any number, overnight included), or on demand, with a live log and a history of every start and stop. A crashing one is restarted with a growing delay and held after five crashes in ten minutes, with a notification. Two model servers on an exclusive `gpu` lock take turns, and a GPU workflow waits for whichever one is running, because nothing in RunRail interrupts anything else.
+
 **Notebooks come out the other end as reports.** An executed notebook renders to HTML on the run page, charts and tables included. `/reports/<workflow>/latest` always resolves to the newest successful run, so a link you shared last month still shows this morning's numbers.
 
 Also in the box: retries and backfills, per-workflow concurrency, resource locks so two jobs never enter the same database at once, snooze, auto-pause after repeated failures, deadlines that alert while a run is still going, per-task duration trends, notes on a run, webhooks for Slack and Microsoft Teams, YAML export and apply, and a REST API with live docs at `/docs`.
@@ -76,6 +86,14 @@ A run in progress. Independent tasks overlap on the timeline, and every attempt 
 A run waiting on approval, showing the prompt from whoever built the workflow and the command about to execute.
 
 ![Approval gate](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/05-approval.png)
+
+Services. Each card says what the process is doing and why, in the supervisor's own words: up and until when, waiting for a resource and who holds it, stopped by you and when its schedule takes over again.
+
+![Services](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/06-services.png)
+
+One service, with its schedule as a week, its live log, and every start and stop it has had.
+
+![A service](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/07-service.png)
 
 ## Install
 
@@ -95,7 +113,7 @@ Rendering notebooks as HTML reports needs an extra: `pipx install "runrail[noteb
 
 ## How it fits together
 
-**Projects** point at the directories your code lives in. **Environments** say how Python runs: a managed virtualenv built from pip requirements, an interpreter you already have, or a Conda environment. **Workflows** group **tasks** into a dependency graph with an optional schedule.
+**Projects** point at the directories your code lives in. **Environments** say how Python runs: a managed virtualenv built from pip requirements, an interpreter you already have, or a Conda environment. **Workflows** group **tasks** into a dependency graph with an optional schedule. **Services** are single commands kept running, using the same projects and environments.
 
 Environments resolve per task, then per workflow, then per project. Python and notebook tasks will not fall back to RunRail's own interpreter. That is deliberate: your dependencies are not its dependencies.
 
@@ -143,6 +161,8 @@ FastAPI serves the API and the prebuilt React UI. APScheduler is used purely as 
 
 A bounded worker pool (`RUNRAIL_WORKER_CONCURRENCY`) claims queued runs atomically, so different workflows execute at the same time and a long job never blocks a frequent one. Runs of the same workflow are serialised by its `max_concurrent_runs`. Inside a run, the task graph executes with real parallelism (`RUNRAIL_TASK_PARALLELISM`).
 
+Services have a supervisor of their own, beside the worker. Once a second it compares each service's process with what the service should be doing (its mode, its windows, any Start or Stop you pressed) and starts, stops, restarts or waits accordingly. It holds a lease in the database, so with `serve` and a separate `worker` running only one of them manages services, and a supervisor taking over from one that died first stops whatever that one left running.
+
 All of it happens on one machine, using threads and subprocesses. There are no remote workers.
 
 SQLite in WAL mode is the default. For PostgreSQL, set `RUNRAIL_DB_URL=postgresql+psycopg://user:password@host:5432/runrail`; the `+psycopg` matters, because a bare `postgresql://` looks for psycopg2, which isn't installed. CI runs the whole suite against both. Logs live under `$RUNRAIL_HOME/logs/`, artifacts under `$RUNRAIL_HOME/artifacts/<id>/`, timestamped so retries never overwrite each other.
@@ -172,6 +192,7 @@ Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:0
 - It's built for one person on one machine. There are no accounts and no roles, by choice rather than omission. If you expose the port beyond localhost, put something in front of it that handles authentication, and narrow `RUNRAIL_BROWSE_ROOT` while you're there.
 - Work runs on a single machine. Plenty happens in parallel there, but there are no remote workers.
 - SQL tasks run against SQLite only.
+- Services are managed by `runrail serve` or `runrail worker`. `runrail api` on its own shows them but starts and stops nothing, and the Services page says so.
 - Environment variables, including anything secret, are stored unencrypted in the database.
 - Log search is a bounded grep rather than an index. Every limit is capped and the response says which cap it hit, so a partial answer never looks like a complete one.
 - Missed-run history is recomputed from the current schedule, so editing a cron expression redraws the past under the new one.
@@ -180,13 +201,14 @@ Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:0
 
 ```bash
 pip install -e '.[dev,notebook]'
-pytest                                        # 277 backend tests
+pytest                                        # 379 backend tests
 ruff check src tests
 
 cd frontend
 npm install
 npm run build     # needed from a clone; the built UI is gitignored, not committed
-npm test          # 143 frontend tests
+npm test          # 165 frontend tests
+npm run test:e2e  # browser tests against a real `runrail serve` (needs the build above)
 ```
 
 The frontend tests check cron previews against fire times generated by the backend's own scheduler, so if the UI ever promises a run time the scheduler wouldn't produce, the build fails. `scripts/seed_demo.py` fills a throwaway home with a realistic history if you want something to look at.
