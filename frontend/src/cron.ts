@@ -72,9 +72,9 @@ function zonedFormatter(tz: string): Intl.DateTimeFormat | null {
 
 const DOW: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
-interface Wall { y: number; mo: number; d: number; h: number; mi: number; dow: number }
+export interface Wall { y: number; mo: number; d: number; h: number; mi: number; dow: number }
 
-function wallParts(date: Date, tz: string): Wall {
+export function wallParts(date: Date, tz: string): Wall {
   const formatter = zonedFormatter(tz) ?? zonedFormatter('UTC')!;
   const parts: Record<string, string> = {};
   for (const part of formatter.formatToParts(date)) parts[part.type] = part.value;
@@ -89,7 +89,7 @@ function wallParts(date: Date, tz: string): Wall {
    time the earlier of its two instants, and a wall time that never happens at
    all the instant the schedule really fires — an hour past the wall time the
    operator typed, never a skipped day. */
-function zonedTimeToUtc(
+export function zonedTimeToUtc(
   y: number, mo: number, d: number, h: number, mi: number, tz: string,
 ): Date {
   const target = Date.UTC(y, mo - 1, d, h, mi);

@@ -4,7 +4,7 @@ import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useS
 import clsx from 'clsx';
 import {
   LayoutDashboard, GitBranch, History, FolderOpen,
-  Cpu, Package, Play, Plus, Search, ChevronRight,
+  Cpu, Package, Play, Plus, Search, ChevronRight, Server,
   Clock, Calendar, Zap, GitMerge, Activity,
   AlertTriangle, CheckCircle2, RefreshCw, Trash2, Pencil,
   ArrowLeft, Terminal, Download, Settings, ChevronsRight,
@@ -30,6 +30,8 @@ import { NotificationBell } from './components/NotificationCenter';
 import { ScheduleGapsPanel, useScheduleGaps, heatmapGapFeed } from './components/ScheduleGaps';
 import { ApprovalField, approvalValues } from './components/ApprovalField';
 import { RunRailMark } from './components/Brand';
+import { useNow, useVisibleInterval } from './hooks';
+import { ServiceDetail, ServicesPage } from './Services';
 import { attemptLabel, attemptTag, groupAttempts } from './attempts';
 import type { AttemptGroup } from './attempts';
 import { LockField, LockBadge, lockValues } from './components/LockField';
@@ -199,17 +201,6 @@ const timeoutSeconds = (f: FormData): number | null =>
 
 const environmentUsable = (e: Env) => e.status === 'ready' || e.status === 'degraded';
 
-/** Ticks every second while `active`, so live durations count up. */
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return now;
-}
-
 function liveDuration(run: Run, now: number): string {
   if (run.duration_seconds != null) return formatDuration(run.duration_seconds);
   if (run.status === 'running' && run.started_at) {
@@ -257,36 +248,6 @@ function useFlip(ref: React.RefObject<HTMLElement | null>, deps: unknown[]) {
   }, deps);
 }
 
-/** Every poll in this file, on one rule: it runs only while `active` AND the
- *  tab is visible, and fires once on the way back from hidden. A window left
- *  open on another desktop must not spend a request every few seconds on a
- *  page nobody is looking at, and must not be showing yesterday when it is
- *  looked at again. Matches the notification bell and the approvals poll. */
-function useVisibleInterval(active: boolean, tick: () => void, intervalMs: number) {
-  // Keep the latest callback in a ref so a new `tick` identity every render
-  // (common — callers define it inline, and a 1s useNow ticker re-renders while
-  // a run is live) does not tear down and recreate the interval before it ever
-  // fires. Without this the poll silently never runs and live views go stale.
-  const saved = useRef(tick);
-  saved.current = tick;
-  useEffect(() => {
-    if (!active) return;
-    let timer = 0;
-    const start = () => { timer = window.setInterval(() => saved.current(), intervalMs); };
-    const onVisibility = () => {
-      window.clearInterval(timer);
-      if (document.hidden) return;
-      saved.current();
-      start();
-    };
-    if (!document.hidden) start();
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [active, intervalMs]);
-}
 
 /** Runs with live statuses keep pages fresh even when the WebSocket is unavailable
  *  (for example when the API and worker run as separate processes). */
@@ -299,6 +260,7 @@ const NAV: { href: string; icon: typeof LayoutDashboard; label: string; section:
   { href: '/',             icon: LayoutDashboard, label: 'Dashboard',    section: 'Overview' },
   { href: '/runs',         icon: History,         label: 'Runs',         section: 'Overview' },
   { href: '/workflows',    icon: GitBranch,       label: 'Workflows',    section: 'Build' },
+  { href: '/services',     icon: Server,          label: 'Services',     section: 'Build' },
   { href: '/projects',     icon: FolderOpen,      label: 'Projects',     section: 'Build' },
   { href: '/environments', icon: Cpu,             label: 'Environments', section: 'Build' },
   { href: '/logs',         icon: Search,          label: 'Log search',   section: 'Observe' },
@@ -421,6 +383,8 @@ function Shell() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/environments" element={<Environments />} />
+            <Route path="/services" element={<ServicesPage />} />
+            <Route path="/services/:id" element={<ServiceDetail />} />
             <Route path="/workflows" element={<Workflows />} />
             <Route path="/workflows/:id" element={<WorkflowDetail />} />
             <Route path="/runs" element={<Runs />} />

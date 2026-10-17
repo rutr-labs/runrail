@@ -99,6 +99,14 @@ const STATUS_MAP: Record<string, {
   awaiting_approval: { cls: 'status-warning', icon: ShieldAlert, label: 'Awaiting approval' },
   approved:          { cls: 'status-success', icon: ShieldCheck, label: 'Approved' },
   rejected:          { cls: 'status-danger',  icon: CircleSlash, label: 'Rejected' },
+  // Services. Waiting and restarting are warnings — the supervisor is handling
+  // them; a crash loop is the one that needs a person.
+  stopped:      { cls: 'status-muted',   icon: MinusCircle,   label: 'Stopped' },
+  starting:     { cls: 'status-running', icon: Loader2,       label: 'Starting' },
+  stopping:     { cls: 'status-warning', icon: Clock,         label: 'Stopping' },
+  waiting_lock: { cls: 'status-warning', icon: Clock,         label: 'Waiting' },
+  backoff:      { cls: 'status-warning', icon: AlertTriangle, label: 'Restarting' },
+  crash_loop:   { cls: 'status-danger',  icon: XCircle,       label: 'Crash loop' },
 };
 
 export function StatusBadge({ value }: { value: string }) {

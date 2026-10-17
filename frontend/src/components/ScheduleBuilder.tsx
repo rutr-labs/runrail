@@ -79,7 +79,7 @@ export function toCron(s: State): string | null {
 }
 
 /* Browser zone and UTC pinned on top; the rest of the IANA registry after. */
-function zoneOptions(current: string): string[] {
+export function zoneOptions(current: string): string[] {
   const all: string[] = typeof Intl.supportedValuesOf === 'function'
     ? Intl.supportedValuesOf('timeZone') : [];
   const pinned = [viewerZone(), 'UTC'];

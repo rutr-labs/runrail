@@ -22,9 +22,16 @@ test('no page scrolls sideways at phone, tablet or laptop widths', async ({ page
   const waiting = await startRun(request, gated.id);
   await expectRunStatus(request, waiting, 'waiting_approval');
 
+  const service = await (await request.post('/api/services', { data: {
+    name: 'a-service-name-long-enough-to-overflow-a-narrow-card-header', command: 'sleep 600',
+    start_mode: 'schedule', timezone: 'UTC', lock_resource: 'gpu',
+    windows: [{ days: ['mon', 'tue', 'wed', 'thu', 'fri'], start: '08:00', end: '12:30' },
+              { days: ['fri'], start: '22:00', end: '06:00' }],
+  } })).json();
+
   const pages = ['/', '/workflows', `/workflows/${long.id}`, '/runs', `/runs/${failed}`,
-                 `/runs/${waiting}`, '/projects', '/environments', '/logs', '/artifacts',
-                 '/settings', '/wallboard'];
+                 `/runs/${waiting}`, '/services', `/services/${service.id}`, '/projects',
+                 '/environments', '/logs', '/artifacts', '/settings', '/wallboard'];
   const overflowing: string[] = [];
   for (const width of WIDTHS) {
     await page.setViewportSize({ width, height: 900 });
