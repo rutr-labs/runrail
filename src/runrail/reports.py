@@ -11,9 +11,10 @@ rendering failed.
 """
 
 import importlib.util
+import json
 import os
 import threading
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
@@ -181,17 +182,38 @@ def notebook_outputs(db: Session, run_id: int) -> list[tuple[Artifact, TaskRun]]
     return [(artifact, task_run) for artifact, task_run in db.execute(stmt)]
 
 
-def pick_notebook(rows: list[tuple[Artifact, TaskRun]],
-                  task: str | None = None) -> tuple[Artifact, TaskRun]:
-    """Default to the lowest-Task.id notebook, matching topological_tasks' tiebreak."""
+def _final_first(task_run: TaskRun) -> tuple:
+    """Sort key putting a task's last attempt first: the latest resume segment,
+    then the highest attempt within it."""
+    return (-(task_run.resume_index or 0), -(task_run.attempt or 0), -task_run.id)
+
+
+def pick_notebook(rows: list[tuple[Artifact, TaskRun]], task: str | None = None,
+                  task_run_id: int | None = None) -> tuple[Artifact, TaskRun]:
+    """The notebook a report link means.
+
+    `task_run_id` names one attempt exactly. Otherwise it is the FINAL attempt
+    of the named task — or of the first notebook task when none is named.
+
+    This used to return the first row, which is the first attempt: on a run
+    whose notebook failed once and succeeded on retry, the default report, the
+    ?task= link, /latest and the shared export all showed the traceback from
+    the attempt that failed, and the successful one was unreachable from every
+    surface.
+    """
     if not rows:
         raise ReportError(404, "no_notebook", "This run produced no notebook output")
+    if task_run_id is not None:
+        for artifact, task_run in rows:
+            if task_run.id == task_run_id:
+                return artifact, task_run
+        raise ReportError(404, "no_notebook", f"No notebook output for task run {task_run_id}")
     if task is None:
-        return rows[0]
-    for artifact, task_run in rows:
-        if task_run.task_name == task:
-            return artifact, task_run
-    raise ReportError(404, "no_notebook", f"No notebook output for task {task!r}")
+        task = rows[0][1].task_name     # rows are ordered by Task.id
+    matching = [row for row in rows if row[1].task_name == task]
+    if not matching:
+        raise ReportError(404, "no_notebook", f"No notebook output for task {task!r}")
+    return min(matching, key=lambda row: _final_first(row[1]))
 
 
 def report_for(db: Session, source: Artifact) -> Artifact | None:
@@ -286,8 +308,8 @@ def render_report(db: Session, source: Artifact, force: bool = False) -> Artifac
 
 
 def resolve_report(db: Session, run_id: int, task: str | None = None,
-                   force: bool = False) -> tuple[Artifact, TaskRun]:
-    source, task_run = pick_notebook(notebook_outputs(db, run_id), task)
+                   force: bool = False, task_run_id: int | None = None) -> tuple[Artifact, TaskRun]:
+    source, task_run = pick_notebook(notebook_outputs(db, run_id), task, task_run_id)
     return render_report(db, source, force=force), task_run
 
 
@@ -485,7 +507,10 @@ def run_outputs(db: Session, run: WorkflowRun) -> dict:
     task_runs = db.scalars(select(TaskRun).where(TaskRun.workflow_run_id == run.id)
                            .order_by(TaskRun.id)).all()
     reports, report_bytes = [], 0
-    for source, task_run in notebook_outputs(db, run.id):
+    outputs = notebook_outputs(db, run.id)
+    final_ids = {pick_notebook(outputs, name)[1].id
+                 for name in dict.fromkeys(tr.task_name for _, tr in outputs)}
+    for source, task_run in outputs:
         cached = report_for(db, source)
         rendered = bool(cached and Path(cached.path).is_file())
         # An unrendered report costs at least the lab template's inlined CSS,
@@ -494,13 +519,20 @@ def run_outputs(db: Session, run: WorkflowRun) -> dict:
                          else _RENDER_FLOOR_BYTES + (source.size_bytes or 0))
         reports.append({
             "task_run_id": task_run.id, "task_name": task_run.task_name,
+            # Attempts of one task share a name, so these are what tell them
+            # apart in the UI — and `final` is the one a reader means by default.
+            "attempt": task_run.attempt, "resume_index": task_run.resume_index or 0,
+            "status": task_run.status.value, "final": task_run.id in final_ids,
             "notebook_artifact_id": source.id, "notebook_name": source.name,
             "notebook_bytes": source.size_bytes,
             "report_artifact_id": cached.id if cached else None,
             "report_bytes": cached.size_bytes if rendered else None,
             "rendered": rendered,
-            "report_url": (f"/api/runs/{run.id}/report"
-                           f"?task={quote(task_run.task_name or '')}"),
+            # The final attempt keeps the readable, shareable ?task= form, which
+            # resolves to exactly it; earlier attempts are only addressable by id.
+            "report_url": (f"/api/runs/{run.id}/report?task={quote(task_run.task_name or '')}"
+                           if task_run.id in final_ids
+                           else f"/api/runs/{run.id}/report?task_run={task_run.id}"),
         })
     logs = [{"task_run_id": tr.id, "task_name": tr.task_name,
              "stdout_bytes": _file_size(tr.stdout_log_path),
@@ -579,3 +611,94 @@ def _export_report(db: Session, run: WorkflowRun, room: int, max_bytes: int,
         return None, (f"The notebook report ({_human(len(text))}) was left out to keep this "
                       f"file under {_human(max_bytes)}. Open it at {run_url}.")
     return text, None
+
+
+# ─── Live notebook progress ───────────────────────────────────────────────
+
+#: Characters of the current cell's source shown live — enough to recognise the
+#: cell, not so much that a pasted dataframe dump floods the panel.
+_LIVE_SOURCE_CHARS = 600
+_LIVE_OUTPUT_LINES = 40
+
+
+def _running_notebook_path(task_run: TaskRun) -> Path | None:
+    """The output notebook a task run is writing, before it is registered.
+
+    The Artifact row is only added when the task finishes, so a running
+    notebook is found by the naming build_command uses: every output is
+    `<task>_<stamp>_<task_run_id>.ipynb` in the run's artifacts directory.
+    """
+    directory = get_settings().artifacts_dir.resolve() / str(task_run.workflow_run_id)
+    matches = sorted(directory.glob(f"*_{task_run.id}.ipynb"),
+                     key=lambda path: path.stat().st_mtime, reverse=True)
+    return matches[0] if matches else None
+
+
+def _cell_text(outputs: list[dict]) -> list[str]:
+    lines: list[str] = []
+    for output in outputs or []:
+        if output.get("output_type") == "stream":
+            text = output.get("text", "")
+        elif output.get("output_type") == "error":
+            text = f"{output.get('ename', 'Error')}: {output.get('evalue', '')}"
+        else:
+            text = (output.get("data") or {}).get("text/plain", "")
+        lines.extend("".join(text).splitlines() if isinstance(text, list) else str(text).splitlines())
+    return lines
+
+
+def notebook_progress(task_run: TaskRun) -> dict:
+    """What a notebook has done so far, read from the file papermill rewrites
+    after every cell (`request_save_on_cell_execute`, on by default).
+
+    Reads JSON only — never renders — so polling it every few seconds costs a
+    file read. Cell state comes from papermill's own per-cell metadata, falling
+    back to execution counts for a notebook written by something else.
+    """
+    path = _running_notebook_path(task_run)
+    base = {"task_run_id": task_run.id, "status": task_run.status.value}
+    if path is None or not path.is_file():
+        # Papermill writes the file within a second or two of starting; until
+        # then there is honestly nothing to show.
+        return {**base, "available": False}
+    try:
+        notebook = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # Caught mid-write. The next poll will read a whole file.
+        return {**base, "available": False}
+
+    code = [cell for cell in notebook.get("cells", []) if cell.get("cell_type") == "code"]
+    states = []
+    for cell in code:
+        meta = (cell.get("metadata") or {}).get("papermill") or {}
+        state = meta.get("status")
+        if state not in ("pending", "running", "completed", "failed"):
+            state = "completed" if cell.get("execution_count") is not None else "pending"
+        states.append(state)
+
+    running = next((i for i, state in enumerate(states) if state in ("running", "failed")), None)
+    if running is None:
+        # Between cells: the next pending one is about to start.
+        running = next((i for i, state in enumerate(states) if state == "pending"), None)
+    latest_done = max((i for i, state in enumerate(states) if state == "completed"), default=None)
+
+    current = None
+    if running is not None:
+        source = code[running].get("source", "")
+        source = "".join(source) if isinstance(source, list) else source
+        current = {"index": running + 1, "state": states[running],
+                   "source": source[:_LIVE_SOURCE_CHARS],
+                   "truncated": len(source) > _LIVE_SOURCE_CHARS}
+    shown = running if running is not None and code[running].get("outputs") else latest_done
+    recent = _cell_text(code[shown].get("outputs", []))[-_LIVE_OUTPUT_LINES:] if shown is not None else []
+
+    return {
+        **base, "available": True,
+        "total": len(code),
+        "completed": sum(1 for state in states if state == "completed"),
+        "failed": "failed" in states,
+        "current": current,
+        "recent_output": recent,
+        "recent_output_cell": shown + 1 if shown is not None else None,
+        "updated_at": datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat(),
+    }

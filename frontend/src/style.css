@@ -438,12 +438,15 @@ main {
 /* ─── Page Header ─────────────────────────────────────── */
 .page-header {
   display: flex;
+  flex-wrap: wrap;            /* actions drop below the title rather than off-screen */
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 28px;
 }
-.page-header-text { flex: 1; }
+/* A real floor: below ~280px the actions wrap instead of the title being
+   squeezed into a column one word wide. */
+.page-header-text { flex: 1 1 280px; min-width: 0; }
 .eyebrow-label {
   display: inline-block;
   font-size: 11px;
@@ -466,8 +469,8 @@ main {
   margin-top: 5px;
 }
 .page-header-action {
-  flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -843,6 +846,10 @@ main {
 
 /* ─── Tables ──────────────────────────────────────────── */
 .table-scroll { overflow-x: auto; }
+/* Grid and flex children default to min-width: auto, i.e. their content's
+   width — so a cell holding a wide table grew to the table instead of letting
+   .table-scroll scroll it, and the whole page scrolled sideways. */
+.dashboard-panels > *, .panel { min-width: 0; }
 table { width: 100%; border-collapse: collapse; }
 thead th {
   font-size: 11.5px; font-weight: 600; text-transform: uppercase;
@@ -899,7 +906,7 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .log-viewer { border-radius: var(--r-md); border: 1px solid var(--border); overflow: hidden; background: #050508; }
 [data-theme="light"] .log-viewer { background: #1a1a2e; }
 .log-viewer-header {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; flex-wrap: wrap; row-gap: 8px; align-items: center; justify-content: space-between;
   padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,0.07);
   background: rgba(0,0,0,0.3);
 }
@@ -1166,13 +1173,20 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .detail-head { margin-bottom: 24px; }
 .detail-head > a { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text-3); margin-bottom: 16px; font-weight: 500; }
 .detail-head > a:hover { color: var(--text-1); }
-.detail-head-row { display: flex; align-items: center; gap: 16px; }
-.detail-head-text { flex: 1; min-width: 0; }
+/* Wraps. With a non-wrapping row the title had min-width: 0 and the actions
+   refused to shrink, so a long workflow name was squeezed to ~60px and broken
+   mid-word across seven lines — or, on the workflow page, the actions ran
+   187px off the right edge. Now the title keeps a real width and the actions
+   move to the next line when both cannot fit. */
+.detail-head-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+.detail-head-text { flex: 1 1 320px; min-width: 0; }
 .detail-head-text .eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 4px; }
 /* wraps, never ellipsizes — a view-transition name lives on this h1 */
-.detail-head-text h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-1); line-height: 1.2; overflow-wrap: anywhere; }
+/* break-word, not anywhere: break a name at its underscores when it has to,
+   never mid-syllable just because the box got narrow. */
+.detail-head-text h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-1); line-height: 1.2; overflow-wrap: break-word; }
 .detail-head-text p  { font-size: 14px; color: var(--text-2); margin-top: 4px; }
-.detail-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+.detail-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .summary-strip {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 1px; background: var(--border); border: 1px solid var(--border);
@@ -1215,7 +1229,17 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .tl-row { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; gap: 12px; }
 .tl-name { font-size: 12px; color: var(--text-2); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); }
 .tl-track { flex: 1; height: 20px; background: var(--bg-card-r); border-radius: var(--r-xs); position: relative; overflow: hidden; border: 1px solid var(--border); }
-.tl-bar { position: absolute; top: 0; height: 100%; border-radius: var(--r-xs); min-width: 3px; }
+/* 10px, not 3px: a half-second attempt beside a 60-second retry delay scales
+   to ~1% of the axis, which at 3px was a sliver nobody could see or hover. */
+.tl-bar { position: absolute; top: 0; height: 100%; border-radius: var(--r-xs); min-width: 10px; }
+.tl-scroll { overflow-x: auto; scrollbar-width: thin; }
+.tl-scroll .task-timeline { min-width: 540px; }
+/* The wait between attempts — a dashed rail, so the gap reads as deliberate. */
+.tl-retry-wait {
+  position: absolute; top: 50%; height: 0; transform: translateY(-50%);
+  border-top: 1.5px dashed color-mix(in srgb, var(--text-3) 70%, transparent);
+  pointer-events: auto;
+}
 .tl-bar.success { background: var(--success); }
 .tl-bar.failed  { background: var(--danger); }
 .tl-bar.running { background: var(--running); }
@@ -1262,7 +1286,14 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
   .sidebar.open { transform: translateX(0); }
   .sidebar-overlay { display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 35; backdrop-filter: blur(2px); }
   .workspace { margin-left: 0; width: 100%; }
-  .mobile-nav-btn { display: flex; }
+  /* Pinned over the topbar. It used to be a plain flex child of the shell,
+     which took a 17px column and pushed the whole workspace off the right
+     edge on every page at tablet width. */
+  .mobile-nav-btn {
+    display: flex; position: fixed; z-index: 40;
+    top: calc((var(--topbar-h) - 36px) / 2); left: 10px;
+  }
+  .topbar { padding-left: 54px; padding-right: 16px; }
   main { padding: 20px 16px 40px; }
   .page-title { font-size: 20px; }
 }
@@ -1853,7 +1884,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
 }
 
 /* ─── Log search ──────────────────────────────────────── */
-.log-toolbar { display: flex; align-items: center; gap: 8px; }
+.log-toolbar { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .log-search {
   display: flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 8px; border-radius: var(--r-xs);
@@ -1931,7 +1962,9 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
   padding: 28px 36px; display: flex; flex-direction: column; gap: 24px;
   font-size: 15px;
 }
-.wallboard-head { display: flex; align-items: center; gap: 20px; }
+/* Wraps: brand, health, "next up", clock and exit were one ~690px row, so on
+   a phone the whole board scrolled sideways. */
+.wallboard-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
 .wallboard-brand { display: flex; align-items: center; gap: 12px; font-size: 20px; font-weight: 800; letter-spacing: -0.4px; }
 .wallboard-live {
   display: inline-flex; align-items: center; gap: 7px;
@@ -1961,7 +1994,9 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cur
 .wallboard-live-card b { display: block; font-size: 16.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wallboard-live-card small { color: #94a3b8; font-size: 13px; }
 .wallboard-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  /* min(380px, 100%): a 380px floor is right for a TV and wider than a phone,
+     where it pushed the board 319px off-screen. */
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr));
   gap: 22px; flex: 1; align-content: start;
 }
 .wallboard-tile {
@@ -4184,7 +4219,9 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
    ALL-CLEAR health chip — the one piece of non-news up there — steps out. */
 .cmd-k-label { display: inline; }
 @media (max-width: 720px) {
-  .topbar { padding: 0 16px; gap: 8px; }
+  /* 54px on the left clears the fixed menu button; 16px alone put it on top
+     of the breadcrumb. */
+  .topbar { padding: 0 16px 0 54px; gap: 8px; }
   .cmd-k-btn { width: 30px; padding: 0; justify-content: center; }
   .cmd-k-label, .cmd-k-btn kbd { display: none; }
 }
@@ -4220,4 +4257,142 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   /* The grid's own hover pop — .hm-cell's twin was already covered, this one
      was not, and the gap marks make the cells worth hovering. */
   .run-heatmap-cell:hover { transform: none !important; }
+}
+
+/* ─── Notebooks panel ─────────────────────────────────────
+   One row per notebook task, collapsed. A report renders only when its row is
+   opened, so a long notebook no longer stands between the reader and the task
+   logs, and nothing is converted that nobody asked to see. */
+.panel-head { flex-wrap: wrap; row-gap: 10px; }
+.panel-head > div:first-child { flex: 1 1 220px; min-width: 0; }
+.nb-list { display: flex; flex-direction: column; }
+.nb-row { border-top: 1px solid var(--border); }
+.nb-row:first-child { border-top: none; }
+.nb-row-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px;
+  padding: 12px 20px;
+}
+.nb-row-icon {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border-radius: var(--r-md); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.nb-row-title { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.nb-row-title b {
+  font-size: 13.5px; font-weight: 600; color: var(--text-1); font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nb-row-title small {
+  font-size: 11.5px; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Attempt pills — shared by notebook rows and task cards. The dot carries the
+   outcome so the label can stay a plain "Attempt 2". */
+.nb-attempts, .attempt-switch { display: flex; flex-wrap: wrap; gap: 6px; }
+.attempt-switch { padding: 12px 0 4px; }
+.nb-attempt {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 26px; padding: 0 10px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 550; white-space: nowrap; cursor: pointer;
+  color: var(--text-2); background: var(--bg-card-r); border: 1px solid var(--border);
+  transition: background .15s var(--ease-swift), border-color .15s var(--ease-swift), color .15s;
+}
+.nb-attempt:hover { color: var(--text-1); border-color: var(--border-strong); }
+.nb-attempt.is-active { color: var(--text-1); border-color: var(--border-strong); background: var(--bg-hover); }
+.nb-attempt i { width: 7px; height: 7px; border-radius: 50%; background: var(--queued); flex: none; }
+.nb-attempt--success i { background: var(--success); }
+.nb-attempt--failed i { background: var(--danger); }
+.nb-attempt--running i { background: var(--running); animation: badge-pulse 2s ease infinite; }
+.nb-attempt--cancelled i, .nb-attempt--skipped i { background: var(--text-3); }
+.attempt-count {
+  flex: none; font-size: 10.5px; font-weight: 600; letter-spacing: .02em;
+  padding: 1px 7px; border-radius: 999px; color: var(--text-3);
+  border: 1px solid var(--border); font-family: var(--font-ui);
+}
+.attempt-empty { padding: 14px 0 6px; font-size: 12.5px; color: var(--text-3); }
+.run-task-gate { padding: 0 20px 12px 58px; font-size: 12px; color: var(--text-3); }
+
+/* Embedded viewer: no second panel frame inside the first. */
+.report-embed { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+.report-embed-bar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 8px 12px; padding: 10px 20px 0;
+}
+.report-embed-bar p { font-size: 12px; color: var(--text-3); }
+.report-embed .report-body { padding-top: 12px; }
+
+/* Live: a notebook executing right now, cell by cell. */
+.nb-row--live { background: color-mix(in srgb, var(--running) 4%, transparent); }
+.nb-row-icon--live {
+  color: var(--running);
+  background: color-mix(in srgb, var(--running) 12%, transparent);
+  border-color: color-mix(in srgb, var(--running) 30%, transparent);
+}
+.nb-live-tag {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--running);
+}
+.nb-live-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--running);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--running) 22%, transparent);
+  animation: badge-pulse 2s ease infinite;
+}
+.nb-live-body { padding: 0 20px 16px; display: flex; flex-direction: column; gap: 12px; }
+.nb-live-progress { height: 8px; }
+.nb-live-cell > span {
+  display: block; margin-bottom: 6px;
+  font-size: 10.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3);
+}
+.nb-live-cell pre {
+  margin: 0; padding: 10px 12px; max-height: 180px; overflow: auto;
+  font: 12px/1.55 var(--font-mono); color: var(--text-2);
+  background: var(--bg-card-r); border: 1px solid var(--border); border-radius: var(--r-md);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.nb-live-output { color: var(--text-1); }
+@media (prefers-reduced-motion: reduce) {
+  .nb-live-dot, .nb-attempt--running i { animation: none; }
+}
+
+/* ─── Workflows quick list ──────────────────────────────── */
+.wf-quick-search {
+  display: flex; align-items: center; gap: 8px; margin: 10px 20px 4px;
+  padding: 0 10px; height: 32px; border-radius: var(--r-md);
+  background: var(--bg-card-r); border: 1px solid var(--border); color: var(--text-3);
+  transition: border-color .15s var(--ease-swift);
+}
+.wf-quick-search:focus-within { border-color: var(--border-focus); }
+.wf-quick-search input {
+  flex: 1; min-width: 0; border: none; outline: none; background: none;
+  font: inherit; font-size: 12.5px; color: var(--text-1);
+}
+.wf-quick-clear {
+  display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
+  border: none; background: var(--bg-hover); color: var(--text-2); cursor: pointer;
+}
+.wf-quick-list { padding: 6px 0 10px; }
+/* About eight rows, then it scrolls inside the panel instead of stretching
+   the column. */
+.wf-quick-list.is-scrollable { max-height: 336px; overflow-y: auto; scrollbar-width: thin; }
+/* The fade is the "there is more" cue, and it goes away at the bottom. */
+.wf-quick-list.has-more {
+  -webkit-mask-image: linear-gradient(to bottom, #000 82%, transparent);
+          mask-image: linear-gradient(to bottom, #000 82%, transparent);
+}
+.wf-quick-empty { padding: 14px 20px; font-size: 12.5px; color: var(--text-3); }
+.wf-quick-foot {
+  padding: 8px 20px 12px; border-top: 1px solid var(--border);
+  font-size: 11.5px; color: var(--text-3);
+}
+
+/* Phone width: the wallboard is a TV view, but it should still fit a phone. */
+@media (max-width: 560px) {
+  .wallboard { padding: 20px 16px; }
+  .wallboard-live-card { min-width: 0; flex: 1 1 100%; max-width: 100%; }
+  .wallboard-clock { font-size: 18px; }
+  .wallboard-next { max-width: 100%; }
+  .toaster { left: 16px; right: 16px; bottom: 16px; }
+  .toaster > * { max-width: 100%; }
 }
