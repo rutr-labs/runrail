@@ -38,45 +38,37 @@ def test_upgrading_keeps_every_row_and_stops_reusing_ids(tmp_path, monkeypatch):
     get_settings.cache_clear()
     command.upgrade(_config(url), "n5b2d81f3a94")  # the revision before this one
 
-    # The workflow through the table as it is at that revision (later ones add
-    # columns the model has); the rest through the models, whose tables match.
+    # Through the tables as they are at that revision, reflected: the models
+    # have gained columns since, and the point is to upgrade real old rows.
     from datetime import datetime
 
     from sqlalchemy import MetaData, Table, create_engine, insert
-    from sqlalchemy.orm import Session
 
-    from runrail.models import (
-        Artifact,
-        ArtifactType,
-        RunStatus,
-        Task,
-        TaskRun,
-        TaskRunStatus,
-        TaskType,
-        TriggerType,
-        WorkflowRun,
-    )
     engine = create_engine(url)
-    workflows = Table("workflows", MetaData(), autoload_with=engine)
+    meta = MetaData()
+    workflows, tasks, runs, task_runs, artifacts = (
+        Table(name, meta, autoload_with=engine)
+        for name in ("workflows", "tasks", "workflow_runs", "task_runs", "artifacts"))
     stamp = datetime(2026, 1, 1)
     with engine.begin() as connection:
         workflow_id = connection.execute(insert(workflows).values(
             name="w", enabled=True, max_concurrent_runs=1, lock_mode="shared",
             snooze_pauses_runs=False, created_at=stamp,
             updated_at=stamp)).inserted_primary_key[0]
-    with Session(engine) as db:
-        task = Task(workflow_id=workflow_id, name="t", task_type=TaskType.shell, command="exit 0")
-        db.add(task); db.flush()
+        task_id = connection.execute(insert(tasks).values(
+            workflow_id=workflow_id, name="t", task_type="shell", command="exit 0",
+            depends_on_json=[], retries=0, retry_delay_seconds=0, requires_approval=False,
+            created_at=stamp, updated_at=stamp)).inserted_primary_key[0]
         for _ in range(3):
-            run = WorkflowRun(workflow_id=workflow_id, status=RunStatus.success,
-                              trigger_type=TriggerType.manual)
-            db.add(run); db.flush()
-            task_run = TaskRun(workflow_run_id=run.id, task_id=task.id, attempt=1,
-                               status=TaskRunStatus.success, resume_index=0)
-            db.add(task_run); db.flush()
-            db.add(Artifact(task_run_id=task_run.id, workflow_run_id=run.id, name="a",
-                            artifact_type=ArtifactType.notebook, path="p"))
-        db.commit()
+            run_id = connection.execute(insert(runs).values(
+                workflow_id=workflow_id, status="success", trigger_type="manual",
+                created_at=stamp, resume_count=0)).inserted_primary_key[0]
+            task_run_id = connection.execute(insert(task_runs).values(
+                workflow_run_id=run_id, task_id=task_id, attempt=1, status="success",
+                resume_index=0, created_at=stamp)).inserted_primary_key[0]
+            connection.execute(insert(artifacts).values(
+                task_run_id=task_run_id, workflow_run_id=run_id, name="a",
+                artifact_type="notebook", path="p", created_at=stamp))
     engine.dispose()
 
     command.upgrade(_config(url), "head")

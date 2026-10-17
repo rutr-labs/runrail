@@ -96,6 +96,9 @@ def test_a_rejected_run_resumed_and_then_failing_still_alerts(client, monkeypatc
     assert client.post(f"/api/task-runs/{gate['task_run_id']}/reject", json={}).status_code == 200
     assert events(sent) == ["approval_requested", "approval_rejected"]
     run_id = gate["run_id"]
+    with SessionLocal() as db:  # the rejection re-enters the run, which lands cancelled
+        execute_workflow_run(db, claim_next_run(db))
+    assert client.get(f"/api/runs/{run_id}").json()["status"] == "cancelled"
     assert client.post(f"/api/runs/{run_id}/resume", json={}).status_code == 200
     with SessionLocal() as db:
         execute_workflow_run(db, claim_next_run(db))
