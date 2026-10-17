@@ -2,6 +2,62 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-10-17
+
+Services: long-running processes RunRail keeps up — a model server like
+llama.cpp or ollama, a script that syncs folders — alongside the workflows it
+runs to completion. One database migration runs on first start (three new
+tables; nothing existing changes).
+
+**Upgrading:** services are supervised by `runrail serve` or `runrail worker`.
+`runrail api` on its own shows them but starts and stops nothing, and the
+Services page says so.
+
+### Added
+- **Services.** A command RunRail keeps running, started with RunRail, inside
+  weekly windows, or on demand. Start, Stop, Restart and Resume schedule work
+  at any time; a click lasts until the service's next scheduled change, and the
+  card always says until when.
+  - **Schedules** are any number of weekly windows in the service's own time
+    zone, overnight windows included, exact across DST. The week editor shows
+    them as a grid you can drag across to add a window, with rows for precise
+    times and presets for the common shapes.
+  - **Stopping** is polite first (SIGTERM; Ctrl+Break on Windows) and forced
+    at the service's stop timeout, so a model server can finish the request
+    it is serving.
+  - **Restarts** back off from 1 second to 5 minutes. Five unexpected exits
+    in ten minutes is a crash loop: the service is held stopped and a webhook
+    notification is sent until a person acts.
+  - **Shared resources.** A service can lock a named resource, in the same
+    namespace as workflows. Two model servers on an exclusive `gpu` take turns
+    — the next waits until the first has fully exited — a GPU workflow waits
+    for a running model and the other way round, and nothing is ever
+    interrupted. A service waiting for its turn stops new runs overtaking it.
+  - **Live logs** per run of the service, rotated at 10 MB, and a history of
+    every start: how long it ran and why it ended.
+  - **One supervisor.** With `serve` and a separate `worker` both running,
+    only one manages services. If RunRail dies, the next start stops whatever
+    it left running (matched by process id and start time, never the id
+    alone) and starts the services fresh, so there are never two copies.
+  - Services are included in YAML export and apply, matched by key like
+    workflows.
+- **Services on the dashboard and the wallboard.** The dashboard counts them
+  in its status line and lists them in a panel, any that need a person first,
+  each with a one-click Start/Stop. The wallboard has a Services section with
+  live uptime, countdowns to the next start, and a handover line per shared
+  resource — `gpu: llama-day → llama-night at 22:00`.
+
+### Changed
+- The dashboard's headline says what needs a person — a service down, a run
+  waiting for approval, failures today — and only "Everything on track." when
+  nothing does. It used to say that regardless.
+- "Live now" is "Live runs", on the dashboard and the Runs page: a running
+  service is live too.
+- The wallboard is split into Services and Workflows sections with headings.
+- An environment a running service uses counts as in use: rebuilding or
+  deleting it waits for the service to stop.
+- New dependency: `psutil`.
+
 ## [0.6.0] — 2026-10-17
 
 Cancel now stops the work, Windows is tested on every change, and an audit of
