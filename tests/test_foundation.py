@@ -4,6 +4,7 @@ suppression, the claim-time started_at guard, and the new schema bounds."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from portable import emit
 from pydantic import ValidationError
 from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import Session
@@ -99,7 +100,7 @@ def test_snoozed_workflow_sends_no_failure_webhook(client, monkeypatch):
     with SessionLocal() as db:
         db.get(Workflow, workflow["id"]).snooze_until = None
         db.commit()
-    make_shell_task(client, workflow["id"], "job2", "printf ok")
+    make_shell_task(client, workflow["id"], "job2", emit("ok"))
     client.delete(f"/api/tasks/{task['id']}")
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     execute_queued_run(client)
@@ -185,7 +186,7 @@ def test_run_detail_carries_notes_and_new_run_fields(client):
     from runrail.models import RunNote
 
     workflow = make_workflow(client, "annotated")
-    make_shell_task(client, workflow["id"], "job", "printf ok")
+    make_shell_task(client, workflow["id"], "job", emit("ok"))
     run = client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}}).json()
     assert run["resume_count"] == 0 and run["sla_breached_at"] is None
 

@@ -1,6 +1,8 @@
 """Regression tests for production-readiness fixes: SPA path confinement,
 task validation, dependency hygiene, and run cancellation."""
 
+from portable import emit
+
 
 def make_workflow(client, name="wf"):
     return client.post("/api/workflows", json={
@@ -142,7 +144,7 @@ def test_api_timestamps_are_timezone_aware_utc(client):
 
 def test_run_detail_exposes_task_names(client):
     workflow = make_workflow(client, "named-tasks")
-    make_shell_task(client, workflow["id"], "greet", command="printf hi")
+    make_shell_task(client, workflow["id"], "greet", command=emit("hi"))
     created = client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}}).json()
 
     from runrail.db import SessionLocal

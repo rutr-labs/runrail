@@ -1,13 +1,15 @@
 """Shutdown hygiene: phantom-run recovery and websocket log streams that
 terminate cleanly instead of hanging graceful shutdown."""
 
+from portable import emit
+
 
 def make_workflow_with_task(client, name):
     workflow = client.post("/api/workflows", json={
         "name": name, "enabled": True, "max_concurrent_runs": 1,
     }).json()
     client.post(f"/api/workflows/{workflow['id']}/tasks", json={
-        "name": "job", "task_type": "shell", "command": "printf hello",
+        "name": "job", "task_type": "shell", "command": emit("hello"),
         "depends_on_json": [], "retries": 0, "retry_delay_seconds": 0,
     })
     return workflow
