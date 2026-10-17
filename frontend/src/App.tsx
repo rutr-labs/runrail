@@ -30,6 +30,8 @@ import { NotificationBell } from './components/NotificationCenter';
 import { ScheduleGapsPanel, useScheduleGaps, heatmapGapFeed } from './components/ScheduleGaps';
 import { ApprovalField, approvalValues } from './components/ApprovalField';
 import { RunRailMark } from './components/Brand';
+import { attemptLabel, attemptTag, groupAttempts } from './attempts';
+import type { AttemptGroup } from './attempts';
 import { LockField, LockBadge, lockValues } from './components/LockField';
 import { LatestReportPanel, ReportPanel } from './components/ReportPanel';
 import type { LatestReportMeta } from './components/ReportPanel';
@@ -592,8 +594,9 @@ function CancelRunButton({ run, onDone, size = 'sm' }: { run: Run; onDone?: () =
       await post(`/runs/${run.id}/cancel`, {});
       // Only a *running* run has a worker attached; the other two settle inside
       // the request, and the open gate is cancelled with them.
+      // A running task is killed by the worker's next poll, within about a second.
       toast(run.status === 'running'
-        ? 'Cancellation requested — stops before the next task'
+        ? 'Cancelling — the running task is being stopped'
         : run.status === 'waiting_approval'
         ? 'Run cancelled — the open approval was withdrawn'
         : 'Run cancelled', 'info');
@@ -933,20 +936,7 @@ function Dashboard() {
                   ? <div style={{ padding: '6px 0' }}>{liveRuns.map(r => <LiveRunRow key={r.id} run={r} flows={flows} />)}</div>
                   : <EmptyState icon={<Activity size={22} />} title="Nothing live" text="Runs appear here the moment they queue or start." />}
               </div>
-              <div className="panel" style={{ marginBottom: 16 }}>
-                <div className="panel-head">
-                  <div><h2>Workflows</h2><p>Run one right now</p></div>
-                </div>
-                <div style={{ padding: '6px 0 10px' }}>
-                  {flows.slice(0, 6).map(w => (
-                    <div key={w.id} className="wf-spark-row">
-                      <Link className="wf-spark-name" to={`/workflows/${w.id}`} title={w.name}>{w.name}</Link>
-                      <WorkflowSparkline runs={runs.filter(r => r.workflow_id === w.id).slice(0, 12)} />
-                      <button className="edit-link" onClick={() => runNow(w.id)} title={`Run ${w.name} now`}><Play size={12} /></button>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <WorkflowQuickList flows={flows} runs={runs} onRun={runNow} />
               <div className="panel" style={{ marginBottom: 16 }}>
                 <div className="panel-head"><div><h2>Upcoming</h2><p>Next scheduled executions</p></div></div>
                 <UpcomingList flows={flows} />
@@ -962,6 +952,82 @@ function Dashboard() {
         </>
       )}
     </>
+  );
+}
+
+/* ─── Workflows quick list ────────────────────────────────
+   The dashboard's launch pad. It used to show the first six workflows
+   alphabetically and nothing else — with forty-odd workflows, only the ones
+   whose names start with "b" were ever reachable from here. Now: the most
+   recently active first, a filter once there are more than a handful, and a
+   scrolling list whose fade says there is more below. */
+
+const QUICK_ROWS = 8;
+
+function WorkflowQuickList({ flows, runs, onRun }: {
+  flows: Workflow[]; runs: Run[]; onRun: (id: number) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [atEnd, setAtEnd] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const ordered = useMemo(() => {
+    const lastActive = new Map<number, number>();
+    for (const run of runs) {
+      const at = new Date(run.created_at).getTime();
+      if (at > (lastActive.get(run.workflow_id) ?? 0)) lastActive.set(run.workflow_id, at);
+    }
+    return [...flows].sort((a, b) =>
+      (lastActive.get(b.id) ?? 0) - (lastActive.get(a.id) ?? 0) || a.name.localeCompare(b.name));
+  }, [flows, runs]);
+
+  const needle = query.trim().toLowerCase();
+  const shown = needle ? ordered.filter(w => w.name.toLowerCase().includes(needle)) : ordered;
+  const scrolls = shown.length > QUICK_ROWS;
+
+  const onScroll = () => {
+    const el = listRef.current;
+    if (el) setAtEnd(el.scrollTop + el.clientHeight >= el.scrollHeight - 4);
+  };
+  useEffect(() => { setAtEnd(false); listRef.current?.scrollTo({ top: 0 }); }, [needle]);
+
+  return (
+    <div className="panel wf-quick" style={{ marginBottom: 16 }}>
+      <div className="panel-head">
+        <div><h2>Workflows</h2><p>Most recently active first</p></div>
+        <Link className="panel-link" to="/workflows">All {flows.length} →</Link>
+      </div>
+      {flows.length > 6 && (
+        <label className="wf-quick-search">
+          <Search size={13} aria-hidden="true" />
+          <input value={query} onChange={e => setQuery(e.target.value)}
+                 placeholder="Find a workflow…" aria-label="Filter workflows"
+                 onKeyDown={e => { if (e.key === 'Escape' && query) { e.preventDefault(); setQuery(''); } }} />
+          {query && (
+            <button type="button" className="wf-quick-clear" onClick={() => setQuery('')} aria-label="Clear filter">
+              <X size={12} />
+            </button>
+          )}
+        </label>
+      )}
+      <div ref={listRef} onScroll={onScroll}
+           className={clsx('wf-quick-list', scrolls && 'is-scrollable', scrolls && !atEnd && 'has-more')}>
+        {shown.map(w => (
+          <div key={w.id} className="wf-spark-row">
+            <Link className="wf-spark-name" to={`/workflows/${w.id}`} title={w.name}>{w.name}</Link>
+            <WorkflowSparkline runs={runs.filter(r => r.workflow_id === w.id).slice(0, 12)} />
+            <button className="edit-link" onClick={() => onRun(w.id)} title={`Run ${w.name} now`}
+                    aria-label={`Run ${w.name} now`}><Play size={12} /></button>
+          </div>
+        ))}
+        {needle && shown.length === 0 && (
+          <p className="wf-quick-empty">No workflow matches “{query.trim()}”.</p>
+        )}
+      </div>
+      {needle && shown.length > 0 && (
+        <div className="wf-quick-foot">{shown.length} of {flows.length}</div>
+      )}
+    </div>
   );
 }
 
@@ -1551,7 +1617,8 @@ function RunDetail() {
           nothing when the run produced no notebook. Keyed on status so a run
           that finishes while you watch picks up the notebook it just wrote —
           the panel deliberately does not re-probe on the 2s live tick. */}
-      <ReportPanel key={run.status} runId={run.id} runStatus={run.status} />
+      <ReportPanel key={run.status} runId={run.id} runStatus={run.status}
+                   liveTaskRuns={(run.task_runs ?? []).filter(t => t.task_type === 'notebook')} />
 
       <div className="panel" style={{ marginBottom: 20 }}>
         <div className="panel-head">
@@ -1559,10 +1626,10 @@ function RunDetail() {
         </div>
         <div className="run-tasks">
           {run.task_runs && run.task_runs.length > 0
-            ? run.task_runs.map((t, i) => (
-                <TaskRunCard key={t.id} task={t} index={i + 1}
-                             trend={trends.byTaskId.get(t.task_id)}
-                             openByDefault={openTaskAnchor != null && openTaskAnchor === t.task_name} />
+            ? groupAttempts(run.task_runs).map((group, i) => (
+                <TaskRunCard key={group.key} group={group} index={i + 1}
+                             trend={trends.byTaskId.get((group.attempts[0] ?? group.gates[0]).task_id)}
+                             openByDefault={openTaskAnchor != null && openTaskAnchor === group.name} />
               ))
             : run.status === 'queued'
             ? <QueueWhy run={run} flow={flow} />
@@ -1626,12 +1693,36 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
   // Bare on purpose: RunDetail owns the panel, because Graph and Timeline
   // share one.
   return (
+    /* Scrolls sideways below its minimum width rather than squeezing: at phone
+       width the track was ~180px, so bars shrank to slivers and the axis labels
+       ran into each other. */
+    <div className="tl-scroll">
     <div className="task-timeline">
-        {[...lanes.entries()].map(([name, attempts], laneIndex) => (
+        {[...lanes.entries()].map(([name, attempts], laneIndex) => {
+          const executions = attempts.filter(t => !isGate(t) && t.started_at).sort(byAttemptOrder);
+          const resumed = executions.some(t => (t.resume_index ?? 0) > 0);
+          const labelled = executions.length > 1;
+          return (
           <div key={name} className="tl-row">
             <span className="tl-name" title={name}>{name}</span>
             <div className="tl-track">
               {ticks.map(f => <span key={f} className="tl-tick" style={{ left: `${f * 100}%` }} />)}
+              {/* The wait between one attempt ending and the next starting —
+                  the retry delay, 60s by default. Drawn rather than left blank,
+                  because a blank gap between two short bars read as the
+                  chart having lost something. */}
+              {executions.slice(1).map((next, i) => {
+                const prev = executions[i];
+                const from = (endMs(prev) - origin) / totalMs * 100;
+                const to = (startMs(next) - origin) / totalMs * 100;
+                if (to - from < 0.5) return null;
+                const gap = formatDuration((startMs(next) - endMs(prev)) / 1000);
+                return (
+                  <span key={`wait-${next.id}`} className="tl-retry-wait"
+                        style={{ left: `${from}%`, width: `${to - from}%` }}
+                        title={`${name} · waited ${gap} before ${attemptLabel(next, resumed).toLowerCase()}`} />
+                );
+              })}
               {attempts.filter(t => t.started_at || (isGate(t) && t.created_at)).map(t => {
                 const gate = isGate(t);
                 const start = (startMs(t) - origin) / totalMs * 100;
@@ -1643,7 +1734,7 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
                   `parked +${formatDuration((startMs(t) - origin) / 1000)}`,
                   isWaiting(t) ? `waiting ${waited}` : `waited ${waited} for a decision`,
                 ].filter(Boolean).join('\n') : [
-                  `${name} · attempt ${t.attempt} · ${t.status}`,
+                  `${name} · ${attemptLabel(t, resumed).toLowerCase()} · ${t.status}`,
                   `started +${formatDuration((startMs(t) - origin) / 1000)}`,
                   t.duration_seconds != null ? `took ${formatDuration(t.duration_seconds)}`
                     : isLive(t) ? `running ${formatDuration(spanMs(t) / 1000)}` : null,
@@ -1656,7 +1747,9 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
                        style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%`, animationDelay: `${Math.min(laneIndex * 30, 240)}ms` }} title={tip}>
                     {!gate && (t.status === 'running' ? <CometCanvas kind="fill" />
                       : (t.status === 'success' || t.status === 'failed') && <CometCanvas kind="still" />)}
-                    {!gate && t.attempt > 1 && <span className="tl-attempt">A{t.attempt}</span>}
+                    {/* Every attempt is labelled once there is more than one:
+                        marking only the retries left the first bar ambiguous. */}
+                    {!gate && labelled && <span className="tl-attempt">{attemptTag(t, resumed)}</span>}
                   </div>
                 );
               })}
@@ -1665,7 +1758,8 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
               {formatDuration(attempts.reduce((sum, t) => sum + spanMs(t) / 1000, 0) || null)}
             </span>
           </div>
-        ))}
+          );
+        })}
         <div className="tl-axis">
           <span className="tl-name" />
           <div className="tl-axis-track">
@@ -1680,8 +1774,13 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
           <span className="tl-dur" />
         </div>
     </div>
+    </div>
   );
 }
+
+/** Execution order for one lane's attempts: segment, then attempt. */
+const byAttemptOrder = (a: TaskRun, b: TaskRun) =>
+  (a.resume_index ?? 0) - (b.resume_index ?? 0) || a.attempt - b.attempt || a.id - b.id;
 
 /** A TaskRun row that never produced logs: the approval gate rows, plus the
  *  statuses that were already excluded. Expanding one into an empty LogViewer
@@ -1690,47 +1789,80 @@ const NO_LOGS = new Set([
   'skipped', 'cancelled', 'awaiting_approval', 'approved', 'rejected',
 ]);
 
-function TaskRunCard({ task, index, trend, openByDefault }: {
-  task: TaskRun; index: number; trend?: TaskDurationSeries; openByDefault?: boolean;
+function TaskRunCard({ group, index, trend, openByDefault }: {
+  group: AttemptGroup<TaskRun>; index: number; trend?: TaskDurationSeries; openByDefault?: boolean;
 }) {
-  const collapsible = !NO_LOGS.has(task.status);
+  /* One card per task. A retried task used to get a card per attempt, each
+     headed with the same name, which read as the task running twice; the
+     attempts now live inside the card, switchable, defaulting to the last. */
+  const runs = group.attempts.length ? group.attempts : group.gates;
+  const final = runs[runs.length - 1];
+  const [pickedId, setPickedId] = useState<number | null>(null);
+  const task = runs.find(r => r.id === pickedId) ?? final;
+  const collapsible = runs.some(r => !NO_LOGS.has(r.status));
   const [open, setOpen] = useState(
-    collapsible && (openByDefault || index === 1 || task.status === 'failed' || task.status === 'running'));
-  const name = task.task_name ?? `Task #${task.task_id}`;
-  const decided = task.approved_at || task.approval_note;
-  const meta = decided
-    ? ['Decided',
-       task.approved_at ? formatDate(task.approved_at) : null,
-       task.approval_note].filter(Boolean).join(' · ')
-    : `Attempt ${task.attempt}`
+    collapsible && (openByDefault || index === 1 || final.status === 'failed' || final.status === 'running'));
+  const many = runs.length > 1;
+
+  const gate = group.gates[group.gates.length - 1];
+  const gateNote = gate && (gate.approved_at || gate.approval_note)
+    ? [gate.status === 'rejected' ? 'Rejected' : 'Approved',
+       gate.approved_at ? formatDate(gate.approved_at) : null,
+       gate.approval_note].filter(Boolean).join(' · ')
+    : null;
+  const meta = !group.attempts.length
+    ? (gateNote ?? 'Waiting for approval')
+    : (many ? `${attemptLabel(task, group.resumed)} of ${runs.length}` : `Attempt ${task.attempt}`)
       + (task.exit_code != null ? ` · exit ${task.exit_code}` : '')
       + (task.duration_seconds != null ? ` · ${formatDuration(task.duration_seconds)}` : '')
       + (task.rendered_command ? ` · ${task.rendered_command}` : '');
+
   return (
-    <article className="run-task" id={task.task_name ? `task-${task.task_name}` : undefined}>
+    <article className="run-task" id={`task-${group.name}`}>
       <button className="run-task-head" onClick={() => collapsible && setOpen(!open)}>
         <span className="task-order">{index}</span>
         <div>
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {task.task_type && <TaskTypeBadge type={task.task_type} />}
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>{name}</span>
-            <TrendSpark series={trend} taskName={task.task_name ?? undefined}
+            {final.task_type && <TaskTypeBadge type={final.task_type} />}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={group.name}>{group.name}</span>
+            {many && <span className="attempt-count">{runs.length} attempts</span>}
+            <TrendSpark series={trend} taskName={final.task_name ?? undefined}
                         size="md" highlightTaskRunId={task.id} showLabel />
           </h3>
           <p title={meta}>{meta}</p>
         </div>
-        <StatusBadge value={task.status} />
+        {/* What the task ended as, whichever attempt is being looked at. */}
+        <StatusBadge value={final.status} />
         {collapsible && <b>{open ? '⌃' : '⌄'}</b>}
       </button>
+      {gateNote && group.attempts.length > 0 && (
+        <div className="run-task-gate">Approval · {gateNote}</div>
+      )}
       {open && collapsible && (
         <div className="log-area">
-          <LogViewer taskRunId={task.id} taskStatus={task.status}
-            initialTab={task.status === 'failed' ? 'stderr' : 'stdout'}
-            errorMessage={task.error_message ?? undefined} />
+          {many && (
+            <div className="attempt-switch" role="group" aria-label={`${group.name} attempts`}>
+              {runs.map(r => (
+                <button key={r.id} type="button"
+                        className={clsx('nb-attempt', `nb-attempt--${r.status}`, r === task && 'is-active')}
+                        aria-pressed={r === task}
+                        onClick={() => setPickedId(r.id)}>
+                  {attemptLabel(r, group.resumed)}<i aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          )}
+          {NO_LOGS.has(task.status) ? (
+            <div className="attempt-empty">This attempt produced no output — it was {task.status.replace(/_/g, ' ')}.</div>
+          ) : (
+            <LogViewer key={task.id} taskRunId={task.id} taskStatus={task.status}
+              initialTab={task.status === 'failed' ? 'stderr' : 'stdout'}
+              errorMessage={task.error_message ?? undefined} />
+          )}
         </div>
       )}
-      {!collapsible && task.error_message && (
-        <div style={{ padding: '0 20px 14px', fontSize: 12.5, color: 'var(--text-3)' }}>{task.error_message}</div>
+      {!collapsible && final.error_message && (
+        <div style={{ padding: '0 20px 14px', fontSize: 12.5, color: 'var(--text-3)' }}>{final.error_message}</div>
       )}
     </article>
   );
@@ -1765,7 +1897,7 @@ function RunReportPage() {
       />
       {/* hideWhenEmpty=false: someone followed this link on purpose and is
           owed a reason when there is nothing to show. */}
-      <ReportPanel runId={id!} runStatus={run?.status} hideWhenEmpty={false} />
+      <ReportPanel runId={id!} runStatus={run?.status} hideWhenEmpty={false} defaultOpen />
     </>
   );
 }

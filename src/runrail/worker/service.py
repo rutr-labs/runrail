@@ -325,7 +325,8 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
                              if os.name == "nt" else ["/bin/sh", "-c"])
                     spec = CommandSpec([*command, *shell, str(spec.command)], False, spec.artifact)
                 task_run.rendered_command = display_command(spec)
-                result = execute_command(spec, cwd, env, stdout, stderr, task.timeout_seconds)
+                result = execute_command(spec, cwd, env, stdout, stderr, task.timeout_seconds,
+                                         should_stop=lambda: _cancel_requested(run.id))
                 artifact = spec.artifact
         except Exception as exc:
             stdout.touch(); stderr.write_text(f"{type(exc).__name__}: {exc}\n")
@@ -333,15 +334,33 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
         task_run.exit_code = result.exit_code
         task_run.error_message = result.error
         task_run.finished_at = now(); task_run.duration_seconds = _duration(task_run.started_at)
-        task_run.status = TaskRunStatus.success if result.exit_code == 0 else TaskRunStatus.failed
+        stopped = getattr(result, "cancelled", False)
+        task_run.status = (TaskRunStatus.cancelled if stopped
+                           else TaskRunStatus.success if result.exit_code == 0
+                           else TaskRunStatus.failed)
         if artifact and artifact.is_file():
             db.add(Artifact(task_run_id=task_run.id, workflow_run_id=run.id, name=artifact.name,
                             artifact_type=ArtifactType.notebook, path=str(artifact), size_bytes=artifact.stat().st_size))
         db.commit()
         _ws_manager.notify({"type": "task_run_updated", "id": task_run.id, "run_id": run.id})
         if result.exit_code == 0: return True
+        # A cancelled attempt is not a failure to retry: stop here rather than
+        # sleeping through the retry delay and only then noticing.
+        if stopped: return False
         if attempt < attempts: time.sleep(task.retry_delay_seconds)
     return False
+
+
+def _cancel_requested(run_id: int) -> bool:
+    """Polled once a second while a task's subprocess runs.
+
+    On its own short-lived session, never the task's: that session holds an
+    unflushed rendered_command, so querying through it would autoflush and keep
+    a SQLite write transaction open for the whole task, locking out every other
+    writer until the command finished.
+    """
+    with SessionLocal() as poll:
+        return _run_cancelled(poll, run_id)
 
 
 def _run_cancelled(db: Session, run_id: int) -> bool:

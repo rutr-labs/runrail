@@ -5,6 +5,8 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,13 @@ class CommandSpec:
 class ExecutionResult:
     exit_code: int
     error: str | None = None
+    #: Stopped because the run was cancelled, as opposed to failing on its own.
+    cancelled: bool = False
+
+
+#: How often a running subprocess is checked for a timeout or a cancellation.
+#: Also the worst-case delay between pressing Cancel and the process dying.
+POLL_SECONDS = 1.0
 
 
 def python_module_name(script_path: Path, project_root: Path) -> str | None:
@@ -92,8 +101,40 @@ def build_command(task: Task, context: dict[str, Any], python_command: list[str]
     raise ValueError(f"Task type {task.task_type.value} is handled separately")
 
 
+def _terminate(process: subprocess.Popen) -> None:
+    """Stop the whole process group: the command, and anything it spawned.
+
+    A shell task is `sh -c "..."` and a notebook is papermill plus a kernel, so
+    killing only the direct child would leave the real work running.
+    """
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                       capture_output=True, check=False)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    process.wait()
+
+
 def execute_command(spec: CommandSpec, cwd: Path, env: dict[str, str], stdout: Path,
-                    stderr: Path, timeout: int | None) -> ExecutionResult:
+                    stderr: Path, timeout: int | None,
+                    should_stop: Callable[[], bool] | None = None) -> ExecutionResult:
+    """Run one task's subprocess to completion, a timeout, or a cancellation.
+
+    `should_stop` is polled while the process runs. Without it, cancelling a run
+    only marked it cancelled: this call blocked in wait() until the command
+    finished on its own, so a long task kept running — for hours, with no
+    timeout set — under a run the UI already showed as cancelled.
+    """
     try:
         with stdout.open("w") as out, stderr.open("w") as err:
             process = subprocess.Popen(
@@ -102,30 +143,32 @@ def execute_command(spec: CommandSpec, cwd: Path, env: dict[str, str], stdout: P
                 creationflags=(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                                if os.name == "nt" else 0),
             )
-            try:
-                return ExecutionResult(process.wait(timeout=timeout))
-            except subprocess.TimeoutExpired:
-                if os.name == "nt":
-                    subprocess.run(
-                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                        capture_output=True, check=False,
-                    )
-                else:
-                    try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                process.wait()
-                return ExecutionResult(124, f"Task timed out after {timeout} seconds")
+            deadline = time.monotonic() + timeout if timeout else None
+            while True:
+                slice_seconds = POLL_SECONDS
+                if deadline is not None:
+                    slice_seconds = max(0.0, min(slice_seconds, deadline - time.monotonic()))
+                try:
+                    return ExecutionResult(process.wait(timeout=slice_seconds))
+                except subprocess.TimeoutExpired:
+                    pass
+                if deadline is not None and time.monotonic() >= deadline:
+                    _terminate(process)
+                    return ExecutionResult(124, f"Task timed out after {timeout} seconds")
+                if should_stop is not None and _asked_to_stop(should_stop):
+                    _terminate(process)
+                    return ExecutionResult(130, "Cancelled while running", cancelled=True)
     except OSError as exc:
         return ExecutionResult(1, f"Could not start subprocess: {exc}")
+
+
+def _asked_to_stop(should_stop: Callable[[], bool]) -> bool:
+    # A failed check (the database briefly locked, say) must not kill a healthy
+    # task; the next poll asks again.
+    try:
+        return bool(should_stop())
+    except Exception:
+        return False
 
 
 def execute_sql(task: Task, context: dict[str, Any], cwd: Path, stdout: Path,

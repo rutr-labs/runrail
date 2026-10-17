@@ -1,13 +1,14 @@
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle, BookOpen, Check, Clock, Copy, Download, ExternalLink, FileX,
-  Maximize2, Minimize2, NotebookText, PackageOpen, RefreshCw,
+  AlertTriangle, BookOpen, Check, ChevronDown, ChevronUp, Clock, Copy, Download, ExternalLink,
+  FileX, Maximize2, Minimize2, NotebookText, PackageOpen, RefreshCw, X,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { post } from '../api';
 import { formatBytes, formatDate, timeAgo } from '../format';
-import { Button, EmptyState, LoadingBar, StatusBadge } from './ui';
+import { Button, CometCanvas, EmptyState, LoadingBar, StatusBadge } from './ui';
+import { attemptLabel, groupAttempts } from '../attempts';
 import { useToast } from './toast';
 
 /* ─── Backend shapes ──────────────────────────────────────
@@ -17,6 +18,13 @@ import { useToast } from './toast';
 export type ReportEntry = {
   task_run_id: number;
   task_name: string | null;
+  /** Which execution of the task this notebook came from. Attempts share a
+   *  name, so these are what tell them apart. */
+  attempt: number;
+  resume_index: number;
+  status: string;
+  /** The task's last attempt — what a reader means by default. */
+  final: boolean;
   notebook_artifact_id: number;
   notebook_name: string;
   notebook_bytes: number | null;
@@ -375,7 +383,12 @@ function ReportProblem({ failure, notebookArtifactId, onRerender, busy }: {
 
 function ReportShell({
   title, subtitle, src, notebookArtifactId, tabs, banner, problem, canRerender = true,
+  embedded = false, onClose,
 }: {
+  /** Inside a notebook row rather than a panel of its own. */
+  embedded?: boolean;
+  /** Embedded only: collapse the viewer back into its row. */
+  onClose?: () => void;
   title: string;
   subtitle?: ReactNode;
   /** null when the caller already knows there is nothing to point at. */
@@ -431,10 +444,11 @@ function ReportShell({
     problem ?? (state.phase === 'failed' ? { code: state.code, detail: state.detail } : null);
 
   return (
-    <section className={clsx('panel report-panel', fullscreen && 'report-panel--fullscreen')}>
-      <div className="panel-head">
+    <section className={clsx(embedded ? 'report-embed' : 'panel report-panel',
+                             fullscreen && 'report-panel--fullscreen')}>
+      <div className={embedded && !fullscreen ? 'report-embed-bar' : 'panel-head'}>
         <div>
-          <h2>{title}</h2>
+          {(!embedded || fullscreen) && <h2>{title}</h2>}
           {subtitle && <p>{subtitle}</p>}
         </div>
         <div className="report-actions">
@@ -461,6 +475,11 @@ function ReportShell({
             <Button variant="ghost" size="sm" onClick={() => setFullscreen(!fullscreen)}
                     title={fullscreen ? 'Exit full screen (Esc)' : 'Expand to full screen'}>
               {fullscreen ? <><Minimize2 size={13} /> Exit</> : <><Maximize2 size={13} /> Full screen</>}
+            </Button>
+          )}
+          {embedded && onClose && !fullscreen && (
+            <Button variant="ghost" size="sm" onClick={onClose} title="Hide this report">
+              <X size={13} /> Hide
             </Button>
           )}
         </div>
@@ -504,18 +523,37 @@ export interface ReportPanelProps {
   /** Render nothing at all when the run produced no notebook (default true) —
    *  an empty report panel on every shell-only run is noise. */
   hideWhenEmpty?: boolean;
+  /** The run's notebook task rows, so one that is executing gets a live view. */
+  liveTaskRuns?: LiveTaskRun[];
+  /** Open the first notebook immediately — for the dedicated report page,
+   *  where the reader came specifically to see it. */
+  defaultOpen?: boolean;
+}
+
+export interface LiveTaskRun {
+  id: number;
+  task_name?: string | null;
+  attempt: number;
+  status: string;
 }
 
 export function ReportPanel({
-  runId, runStatus, initialTask, hideWhenEmpty = true,
+  runId, runStatus, initialTask, hideWhenEmpty = true, liveTaskRuns = [], defaultOpen = false,
 }: ReportPanelProps) {
   const [outputs, setOutputs] = useState<RunOutputs | null>(null);
   const [problem, setProblem] = useState<Failure | null>(null);
-  const [activeTask, setActiveTask] = useState<string | null>(initialTask ?? null);
+  /* Which notebook row has its viewer open — one at a time, so the page never
+     grows by more than one report. Nothing is open by default on the run page:
+     a large notebook rendered inline pushed the task logs a long scroll away,
+     and rendering it costs the server a conversion nobody asked for. */
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  /** The attempt picked in each row, by group key; unset means the final one. */
+  const [picked, setPicked] = useState<Record<string, number>>({});
 
+  // A notebook attempt that finishes mid-run should appear without a reload.
+  const liveKey = liveTaskRuns.map(t => `${t.id}:${t.status}`).join(',');
   useEffect(() => {
     const controller = new AbortController();
-    setOutputs(null);
     setProblem(null);
     void fetchTyped<RunOutputs>(`/api/runs/${runId}/outputs`, controller.signal)
       .then(result => {
@@ -524,35 +562,38 @@ export function ReportPanel({
       })
       .catch(() => { if (!controller.signal.aborted) setProblem({ code: 'unreachable', detail: 'Could not reach the API.' }); });
     return () => controller.abort();
-  }, [runId]);
+  }, [runId, liveKey]);
 
-  useEffect(() => { setActiveTask(initialTask ?? null); }, [runId, initialTask]);
+  useEffect(() => { setOpenKey(null); setPicked({}); }, [runId]);
 
   if (problem) {
-    return <ReportShell title="Notebook report" src={null} notebookArtifactId={null} problem={problem} />;
+    return <ReportShell title="Notebooks" src={null} notebookArtifactId={null} problem={problem} />;
   }
-
   if (!outputs) {
-    return (
+    return hideWhenEmpty ? null : (
       <section className="panel report-panel">
-        <div className="panel-head"><div><h2>Notebook report</h2><p>Looking for notebook output…</p></div></div>
+        <div className="panel-head"><div><h2>Notebooks</h2><p>Looking for notebook output…</p></div></div>
         <div className="report-body"><div className="report-rendering"><LoadingBar /></div></div>
       </section>
     );
   }
 
   const live = IN_PROGRESS.has(runStatus ?? outputs.status);
+  const groups = groupAttempts(outputs.reports.map(entry => ({
+    ...entry, id: entry.task_run_id, task_id: null,
+  })));
+  const running = liveTaskRuns.filter(t => t.status === 'running');
 
-  if (outputs.reports.length === 0) {
+  if (groups.length === 0 && running.length === 0) {
     if (hideWhenEmpty && !live) return null;
     return (
       <section className="panel report-panel">
-        <div className="panel-head"><div><h2>Notebook report</h2></div></div>
+        <div className="panel-head"><div><h2>Notebooks</h2></div></div>
         <div className="report-body">
           {live ? (
             <div className="report-rendering">
               <LoadingBar />
-              <p>This run is still going. A notebook report appears here as soon as a notebook task finishes.</p>
+              <p>This run is still going. Notebooks appear here as soon as one starts.</p>
             </div>
           ) : (
             <ReportProblem
@@ -565,43 +606,169 @@ export function ReportPanel({
     );
   }
 
-  const active = outputs.reports.find(entry => entry.task_name === activeTask) ?? outputs.reports[0];
-  const tabs = outputs.reports.length > 1 ? (
-    <div className="report-tabstrip">
-      <div className="segmented">
-        {outputs.reports.map(entry => (
-          <button
-            key={entry.task_run_id}
-            type="button"
-            className={clsx(entry === active && 'active')}
-            onClick={() => setActiveTask(entry.task_name)}
-            title={entry.notebook_name}
-          >
-            <BookOpen size={12} />
-            {entry.task_name ?? `task ${entry.task_run_id}`}
-          </button>
-        ))}
-      </div>
-    </div>
-  ) : undefined;
-
-  const size = active.rendered && active.report_bytes != null
-    ? `${formatBytes(active.report_bytes)} rendered`
-    : 'renders on first view';
-
-  // With one notebook, use the bare permalink instead of the ?task= form: the
-  // route already defaults to the lowest-Task.id notebook, and an unnamed task
-  // would otherwise send `?task=` — an empty string, which matches no task.
-  const src = outputs.reports.length === 1 ? `/api/runs/${runId}/report` : active.report_url;
+  // The dedicated report page opens its notebook straight away.
+  const preferred = initialTask ?? groups[0]?.name ?? null;
+  const effectiveOpen = openKey ?? (defaultOpen ? groups.find(g => g.name === preferred)?.key ?? null : null);
+  const count = groups.length + running.filter(t => !groups.some(g => g.name === t.task_name)).length;
 
   return (
-    <ReportShell
-      title="Notebook report"
-      subtitle={`${active.notebook_name} · ${size}`}
-      src={src}
-      notebookArtifactId={active.notebook_artifact_id}
-      tabs={tabs}
-    />
+    <section className="panel report-panel">
+      <div className="panel-head">
+        <div>
+          <h2>Notebooks</h2>
+          <p>{count} notebook{count === 1 ? '' : 's'} · rendered when you open one</p>
+        </div>
+      </div>
+      <div className="nb-list">
+        {running.map(taskRun => (
+          <LiveNotebook key={`live-${taskRun.id}`} taskRun={taskRun} />
+        ))}
+        {groups.map(group => {
+          const chosenId = picked[group.key];
+          const final = group.attempts[group.attempts.length - 1];
+          const entry = group.attempts.find(a => a.task_run_id === chosenId) ?? final;
+          const open = effectiveOpen === group.key;
+          const size = entry.rendered && entry.report_bytes != null
+            ? `${formatBytes(entry.report_bytes)} rendered`
+            : entry.notebook_bytes != null ? `${formatBytes(entry.notebook_bytes)} notebook` : 'not rendered yet';
+          // The bare permalink when there is one notebook and one attempt:
+          // the route defaults to exactly that, and the URL is stable.
+          const src = outputs.reports.length === 1 ? `/api/runs/${runId}/report` : entry.report_url;
+          return (
+            <div key={group.key} className={clsx('nb-row', open && 'is-open')}>
+              <div className="nb-row-head">
+                <span className="nb-row-icon"><BookOpen size={15} /></span>
+                <div className="nb-row-title">
+                  <b title={group.name}>{group.name}</b>
+                  <small title={entry.notebook_name}>{entry.notebook_name} · {size}</small>
+                </div>
+                {group.attempts.length > 1 && (
+                  <div className="nb-attempts" role="group" aria-label={`${group.name} attempts`}>
+                    {group.attempts.map(attempt => (
+                      <button key={attempt.task_run_id} type="button"
+                              className={clsx('nb-attempt', `nb-attempt--${attempt.status}`,
+                                              attempt === entry && 'is-active')}
+                              aria-pressed={attempt === entry}
+                              title={`${attemptLabel(attempt, group.resumed)} · ${attempt.status}`}
+                              onClick={() => {
+                                setPicked(current => ({ ...current, [group.key]: attempt.task_run_id }));
+                                setOpenKey(group.key);
+                              }}>
+                        {attemptLabel(attempt, group.resumed)}
+                        <i aria-hidden="true" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <Button variant={open ? 'ghost' : 'secondary'} size="sm"
+                        onClick={() => setOpenKey(open ? '' : group.key)}
+                        aria-expanded={open}>
+                  {open ? <><ChevronUp size={13} /> Hide report</> : <><ChevronDown size={13} /> View report</>}
+                </Button>
+              </div>
+              {open && (
+                <ReportShell
+                  embedded
+                  key={entry.task_run_id}
+                  title={`${group.name} · ${attemptLabel(entry, group.resumed)}`}
+                  subtitle={group.attempts.length > 1
+                    ? `${attemptLabel(entry, group.resumed)} · ${entry.status}${entry.final ? ' · final' : ''}`
+                    : undefined}
+                  src={src}
+                  notebookArtifactId={entry.notebook_artifact_id}
+                  onClose={() => setOpenKey('')}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/* ─── Live notebook ───────────────────────────────────────
+   A running notebook, cell by cell. Papermill rewrites the output notebook
+   after every cell, so its JSON is a live record of progress; the server reads
+   it without rendering, which keeps a poll every few seconds cheap. */
+
+interface NotebookProgress {
+  task_run_id: number;
+  status: string;
+  available: boolean;
+  total?: number;
+  completed?: number;
+  failed?: boolean;
+  current?: { index: number; state: string; source: string; truncated: boolean } | null;
+  recent_output?: string[];
+  recent_output_cell?: number | null;
+  updated_at?: string;
+}
+
+const LIVE_POLL_MS = 4000;
+
+function LiveNotebook({ taskRun }: { taskRun: LiveTaskRun }) {
+  const [progress, setProgress] = useState<NotebookProgress | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let timer = 0;
+    const load = () => {
+      if (document.hidden) return;   // nobody is looking; pick up on return
+      void fetchTyped<NotebookProgress>(`/api/task-runs/${taskRun.id}/notebook-progress`)
+        .then(result => { if (!cancelled && result.ok) setProgress(result.data); })
+        .catch(() => {});
+    };
+    load();
+    timer = window.setInterval(load, LIVE_POLL_MS);
+    document.addEventListener('visibilitychange', load);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', load);
+    };
+  }, [taskRun.id]);
+
+  const total = progress?.total ?? 0;
+  const done = progress?.completed ?? 0;
+  const pct = total ? Math.min(100, (done / total) * 100) : 0;
+  const name = taskRun.task_name ?? `Task #${taskRun.id}`;
+
+  return (
+    <div className="nb-row nb-row--live">
+      <div className="nb-row-head">
+        <span className="nb-row-icon nb-row-icon--live"><NotebookText size={15} /></span>
+        <div className="nb-row-title">
+          <b title={name}>{name}</b>
+          <small>
+            {!progress?.available ? 'Starting the kernel…'
+              : `Running cell ${progress.current?.index ?? done} of ${total}`}
+            {taskRun.attempt > 1 ? ` · attempt ${taskRun.attempt}` : ''}
+          </small>
+        </div>
+        <span className="nb-live-tag"><span className="nb-live-dot" />Live</span>
+      </div>
+      {progress?.available && (
+        <div className="nb-live-body">
+          <div className="wb-progress nb-live-progress" title={`${done} of ${total} code cells finished`}>
+            <div className="wb-progress-fill" style={{ width: `${pct}%` }}>
+              <CometCanvas kind="fill" />
+            </div>
+          </div>
+          {progress.current && (
+            <div className="nb-live-cell">
+              <span>Cell {progress.current.index}{progress.current.state === 'failed' ? ' · failed' : ' · executing'}</span>
+              <pre>{progress.current.source}{progress.current.truncated ? '\n…' : ''}</pre>
+            </div>
+          )}
+          {progress.recent_output && progress.recent_output.length > 0 && (
+            <div className="nb-live-cell">
+              <span>Output · cell {progress.recent_output_cell}</span>
+              <pre className="nb-live-output">{progress.recent_output.join('\n')}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

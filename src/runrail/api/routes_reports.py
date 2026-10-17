@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from runrail import reports
 from runrail.api.crud import get_or_404
 from runrail.db import get_db
-from runrail.models import Artifact, Workflow, WorkflowRun
+from runrail.models import Artifact, Task, TaskRun, TaskType, Workflow, WorkflowRun
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -28,15 +28,29 @@ def run_outputs(run_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/runs/{run_id}/report")
-def run_report(run_id: int, task: str | None = None, db: Session = Depends(get_db)):
+def run_report(run_id: int, task: str | None = None, task_run: int | None = None,
+               db: Session = Depends(get_db)):
     """The rendered notebook, rendering it on first view. Also the per-run
-    permalink: run ids are never reused, so this URL survives a rename."""
+    permalink: run ids are never reused, so this URL survives a rename.
+
+    `task_run` selects one attempt; without it, a task's final attempt."""
     get_or_404(db, WorkflowRun, run_id)
     try:
-        report, _ = reports.resolve_report(db, run_id, task)
+        report, _ = reports.resolve_report(db, run_id, task, task_run_id=task_run)
     except reports.ReportError as exc:
         return _fail(exc)
     return reports.report_response(Path(report.path))
+
+
+@router.get("/task-runs/{task_run_id}/notebook-progress")
+def notebook_progress(task_run_id: int, db: Session = Depends(get_db)):
+    """A running notebook's cell-by-cell progress, for the live view. JSON only,
+    never renders — cheap enough to poll while the task executes."""
+    task_run = get_or_404(db, TaskRun, task_run_id)
+    task = db.get(Task, task_run.task_id) if task_run.task_id else None
+    if task is None or task.task_type != TaskType.notebook:
+        raise HTTPException(409, "Not a notebook task")
+    return reports.notebook_progress(task_run)
 
 
 @router.post("/artifacts/{artifact_id}/render")
