@@ -4,6 +4,7 @@ and the sandbox around the embedded report."""
 from pathlib import Path
 
 import pytest
+from portable import emit
 
 # Sibling import: pytest puts tests/ on sys.path, and the notebook fixtures
 # belong with the reports they exist for.
@@ -14,7 +15,7 @@ from runrail import reports
 _SENTINEL = "SECRET-TOKEN-abc123"
 
 
-def run_workflow(client, name, tasks=(("job", "printf ok"),), **extra):
+def run_workflow(client, name, tasks=(("job", emit("ok")),), **extra):
     workflow = make_workflow(client, name, **extra)
     for task_name, command in tasks:
         make_shell_task(client, workflow["id"], task_name, command)
@@ -73,7 +74,7 @@ def test_export_escapes_untrusted_text(client):
     """Jinja's autoescape default is False and every value here is
     attacker-influenced — this is the guard for that one keyword argument."""
     _, run_id = run_workflow(client, "hostile",
-                             tasks=(("<img src=x onerror=alert(1)>", "printf ok"),))
+                             tasks=(("<img src=x onerror=alert(1)>", emit("ok")),))
     write_log(client, run_id, "</script><script>alert(1)</script>")
     body = client.get(f"/api/runs/{run_id}/export", params={"report": 0}).text
 
@@ -173,7 +174,7 @@ def test_export_includes_every_task_run_including_retries_and_skips(client):
         "name": "extract", "task_type": "shell", "command": "exit 3",
         "depends_on_json": [], "retries": 1, "retry_delay_seconds": 0})
     client.post(f"/api/workflows/{workflow['id']}/tasks", json={
-        "name": "load", "task_type": "shell", "command": "printf ok",
+        "name": "load", "task_type": "shell", "command": emit("ok"),
         "depends_on_json": ["extract"], "retries": 0, "retry_delay_seconds": 0})
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_queued_run(client)

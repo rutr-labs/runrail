@@ -4,6 +4,8 @@ per-run log directories, log tailing, artifact filtering, and retention cleanup.
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from portable import emit
+
 from runrail.models import Task, TaskType
 from runrail.worker.runners import build_command
 
@@ -58,7 +60,7 @@ def test_notebook_artifact_timestamp_cannot_escape_artifacts_directory(tmp_path:
 
 def test_logs_are_written_to_per_run_directory(client):
     workflow = make_workflow(client, "per-run-logs")
-    make_shell_task(client, workflow["id"], "greet", command="printf hello")
+    make_shell_task(client, workflow["id"], "greet", command=emit("hello"))
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_queued_run(client)
 
@@ -74,7 +76,7 @@ def test_logs_are_written_to_per_run_directory(client):
 
 def test_log_endpoint_supports_tailing(client):
     workflow = make_workflow(client, "tail-logs")
-    make_shell_task(client, workflow["id"], "greet", command="printf 0123456789")
+    make_shell_task(client, workflow["id"], "greet", command=emit("0123456789"))
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_queued_run(client)
 
@@ -147,7 +149,7 @@ def test_scheduler_sync_keeps_internal_jobs_alive(client, monkeypatch):
 
 def test_cleanup_deletes_old_runs_and_their_files(client):
     workflow = make_workflow(client, "retention")
-    make_shell_task(client, workflow["id"], "greet", command="printf old")
+    make_shell_task(client, workflow["id"], "greet", command=emit("old"))
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     old_run_id = execute_queued_run(client)
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})

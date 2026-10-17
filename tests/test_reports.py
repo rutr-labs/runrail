@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pytest
+from portable import emit
 
 from runrail import reports
 
@@ -24,7 +25,7 @@ def make_workflow(client, name, **extra):
     }).json()
 
 
-def make_shell_task(client, workflow_id, name, command="printf ok"):
+def make_shell_task(client, workflow_id, name, command=emit("ok")):
     return client.post(f"/api/workflows/{workflow_id}/tasks", json={
         "name": name, "task_type": "shell", "command": command,
         "depends_on_json": [], "retries": 0, "retry_delay_seconds": 0,

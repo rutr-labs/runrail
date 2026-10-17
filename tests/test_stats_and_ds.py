@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+from portable import emit
+
 
 def make_wf(client, name):
     return client.post("/api/workflows", json={
@@ -60,7 +62,7 @@ def test_ds_still_renders_when_no_parameter_is_passed(client):
 
     wf = make_wf(client, "ds-render")
     client.post(f"/api/workflows/{wf['id']}/tasks", json={
-        "name": "emit", "task_type": "shell", "command": "printf '{{ ds }}'",
+        "name": "emit", "task_type": "shell", "command": emit("{{ ds }}"),
         "depends_on_json": [], "retries": 0, "retry_delay_seconds": 0,
     })
     run = client.post(f"/api/workflows/{wf['id']}/run", json={"parameters": {}}).json()

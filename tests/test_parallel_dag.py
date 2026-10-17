@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from portable import emit, touch, wait_for, write
+
 
 def make_workflow(client, name):
     return client.post("/api/workflows", json={
@@ -36,9 +38,9 @@ def test_independent_tasks_run_in_parallel_and_dependents_wait(client, tmp_path:
     flag = tmp_path / "t2-started.flag"
     workflow = make_workflow(client, "parallel")
     make_shell_task(client, workflow["id"], "t1",
-                    f'for i in $(seq 1 100); do [ -f "{flag}" ] && exit 0; sleep 0.1; done; exit 1')
-    make_shell_task(client, workflow["id"], "t2", f'touch "{flag}"')
-    make_shell_task(client, workflow["id"], "t3", "printf t3-done", depends_on=["t1"])
+                    wait_for(flag))
+    make_shell_task(client, workflow["id"], "t2", touch(flag))
+    make_shell_task(client, workflow["id"], "t3", emit("t3-done"), depends_on=["t1"])
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_queued_run(client)
 
@@ -55,8 +57,8 @@ def test_independent_tasks_run_in_parallel_and_dependents_wait(client, tmp_path:
 def test_failed_dependency_skips_downstream_but_not_siblings(client):
     workflow = make_workflow(client, "skip-branch")
     make_shell_task(client, workflow["id"], "t1", "exit 1")
-    make_shell_task(client, workflow["id"], "t2", "printf ok")
-    make_shell_task(client, workflow["id"], "t3", "printf never", depends_on=["t1"])
+    make_shell_task(client, workflow["id"], "t2", emit("ok"))
+    make_shell_task(client, workflow["id"], "t3", emit("never"), depends_on=["t1"])
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_queued_run(client)
 
@@ -72,7 +74,7 @@ def test_task_parameters_reach_the_rendered_command(client, tmp_path: Path):
     workflow = make_workflow(client, "task-params")
     response = client.post(f"/api/workflows/{workflow['id']}/tasks", json={
         "name": "emit", "task_type": "shell",
-        "command": f'printf "%s" "{{{{ region }}}}" > "{out}"',
+        "command": write("{{ region }}", out),
         "depends_on_json": [], "retries": 0, "retry_delay_seconds": 0,
         "parameters_json": {"region": "ca"},
     })

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from portable import append, emit, exists
+
 
 def make_workflow(client, name, **extra):
     return client.post("/api/workflows", json={
@@ -38,10 +40,10 @@ def test_a_gate_parks_the_run_and_frees_the_worker_slot(client):
     """The global slot is released, so an unrelated workflow runs to completion
     while the gate waits. If the executor blocked instead, this test hangs."""
     gated = make_workflow(client, "needs-a-human")
-    make_shell_task(client, gated["id"], "publish", "printf published",
+    make_shell_task(client, gated["id"], "publish", emit("published"),
                     requires_approval=True, approval_prompt="Row counts look right?")
     other = make_workflow(client, "unrelated")
-    make_shell_task(client, other["id"], "job", "printf ok")
+    make_shell_task(client, other["id"], "job", emit("ok"))
     client.post(f"/api/workflows/{gated['id']}/run", json={"parameters": {}})
     client.post(f"/api/workflows/{other['id']}/run", json={"parameters": {}})
 
@@ -66,10 +68,10 @@ def test_a_gate_parks_the_run_and_frees_the_worker_slot(client):
 def test_a_parallel_branch_finishes_while_the_gate_waits(client, tmp_path: Path):
     ran = tmp_path / "ran"
     workflow = make_workflow(client, "two-branches")
-    make_shell_task(client, workflow["id"], "gated", f'printf g >> "{ran}"',
+    make_shell_task(client, workflow["id"], "gated", append("g", ran),
                     requires_approval=True)
-    make_shell_task(client, workflow["id"], "free", f'printf f >> "{ran}"')
-    make_shell_task(client, workflow["id"], "after-free", f'printf a >> "{ran}"',
+    make_shell_task(client, workflow["id"], "free", append("f", ran))
+    make_shell_task(client, workflow["id"], "after-free", append("a", ran),
                     depends_on=["free"])
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_next_run(client)
@@ -84,9 +86,9 @@ def test_a_parallel_branch_finishes_while_the_gate_waits(client, tmp_path: Path)
 def test_approving_continues_the_run_to_success(client, tmp_path: Path):
     ran = tmp_path / "ran"
     workflow = make_workflow(client, "approved")
-    make_shell_task(client, workflow["id"], "publish", f'printf p >> "{ran}"',
+    make_shell_task(client, workflow["id"], "publish", append("p", ran),
                     requires_approval=True)
-    make_shell_task(client, workflow["id"], "announce", f'printf a >> "{ran}"',
+    make_shell_task(client, workflow["id"], "announce", append("a", ran),
                     depends_on=["publish"])
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_next_run(client)
@@ -120,11 +122,11 @@ def test_rejecting_skips_downstream_and_cancels_the_run(client, tmp_path: Path, 
     ran = tmp_path / "ran"
     workflow = make_workflow(client, "rejected", auto_pause_failures=1,
                              notify_webhook_url="https://hooks.example/x")
-    make_shell_task(client, workflow["id"], "publish", f'printf p >> "{ran}"',
+    make_shell_task(client, workflow["id"], "publish", append("p", ran),
                     requires_approval=True)
-    make_shell_task(client, workflow["id"], "announce", f'printf a >> "{ran}"',
+    make_shell_task(client, workflow["id"], "announce", append("a", ran),
                     depends_on=["publish"])
-    make_shell_task(client, workflow["id"], "sibling", f'printf s >> "{ran}"')
+    make_shell_task(client, workflow["id"], "sibling", append("s", ran))
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_next_run(client)
     gate_id = gates(client, run_id)[0]["id"]
@@ -145,7 +147,7 @@ def test_rejecting_skips_downstream_and_cancels_the_run(client, tmp_path: Path, 
 
 def test_deciding_a_gate_twice_is_a_409(client):
     workflow = make_workflow(client, "double-click")
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_next_run(client)
     gate_id = gates(client, run_id)[0]["id"]
@@ -160,8 +162,8 @@ def test_deciding_a_gate_twice_is_a_409(client):
 def test_two_parallel_gates_re_enter_only_once_both_are_decided(client, tmp_path: Path):
     ran = tmp_path / "ran"
     workflow = make_workflow(client, "two-gates")
-    make_shell_task(client, workflow["id"], "left", f'printf l >> "{ran}"', requires_approval=True)
-    make_shell_task(client, workflow["id"], "right", f'printf r >> "{ran}"', requires_approval=True)
+    make_shell_task(client, workflow["id"], "left", append("l", ran), requires_approval=True)
+    make_shell_task(client, workflow["id"], "right", append("r", ran), requires_approval=True)
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_next_run(client)
     open_gates = {gate["task_name"]: gate["id"] for gate in gates(client, run_id)}
@@ -183,7 +185,7 @@ def test_a_waiting_run_holds_its_workflows_concurrency_slot(client):
     """Otherwise a scheduled workflow launches its next run straight past the
     same gate while a human is still deciding on the first."""
     workflow = make_workflow(client, "serial", max_concurrent_runs=1)
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     first = client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}}).json()
     second = client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}}).json()
 
@@ -203,7 +205,7 @@ def test_a_waiting_run_survives_worker_restart_recovery(client):
     from runrail.worker.service import recover_interrupted_runs
 
     workflow = make_workflow(client, "restarted")
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_next_run(client)
 
@@ -218,7 +220,7 @@ def test_resuming_a_rejected_run_asks_again(client, tmp_path: Path):
     """The 'actually, go ahead' path: a rejection is not a permanent answer."""
     ran = tmp_path / "ran"
     workflow = make_workflow(client, "second-thoughts")
-    make_shell_task(client, workflow["id"], "publish", f'printf p >> "{ran}"',
+    make_shell_task(client, workflow["id"], "publish", append("p", ran),
                     requires_approval=True)
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_next_run(client)
@@ -246,9 +248,9 @@ def test_an_approved_task_that_succeeded_is_reused_by_a_later_resume(client, tmp
     ran = tmp_path / "ran"
     fixed = tmp_path / "fixed"
     workflow = make_workflow(client, "approved-then-broken")
-    make_shell_task(client, workflow["id"], "publish", f'printf p >> "{ran}"',
+    make_shell_task(client, workflow["id"], "publish", append("p", ran),
                     requires_approval=True)
-    make_shell_task(client, workflow["id"], "verify", f'test -f "{fixed}"',
+    make_shell_task(client, workflow["id"], "verify", exists(fixed),
                     depends_on=["publish"])
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run_id = execute_next_run(client)
@@ -273,14 +275,14 @@ def test_editing_a_task_does_not_silently_remove_its_gate(client):
     means unchanged, so only an explicit `false` can remove a gate.
     """
     workflow = make_workflow(client, "editable")
-    task = make_shell_task(client, workflow["id"], "publish", "printf p",
+    task = make_shell_task(client, workflow["id"], "publish", emit("p"),
                            requires_approval=True)
     assert task["requires_approval"] is True
 
     # Exactly the body the edit modal sent before this was fixed: every field
     # it knew about, and nothing about approval.
     unrelated_edit = client.put(f"/api/tasks/{task['id']}", json={
-        "name": "publish", "task_type": "shell", "command": "printf p",
+        "name": "publish", "task_type": "shell", "command": emit("p"),
         "cwd": None, "depends_on_json": [], "parameters_json": None,
         "retries": 2, "retry_delay_seconds": 0, "timeout_seconds": None,
         "project_id": None, "environment_id": None,
@@ -292,7 +294,7 @@ def test_editing_a_task_does_not_silently_remove_its_gate(client):
 
     # Removing a gate stays possible — it just has to be asked for.
     removed = client.put(f"/api/tasks/{task['id']}", json={
-        "name": "publish", "task_type": "shell", "command": "printf p",
+        "name": "publish", "task_type": "shell", "command": emit("p"),
         "requires_approval": False, "approval_prompt": None,
     })
     assert removed.status_code == 200

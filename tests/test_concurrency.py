@@ -3,6 +3,8 @@ is serialized by max_concurrent_runs, and the scheduler coalesces iterations."""
 import threading
 import time
 
+from portable import pause
+
 
 def make_workflow_with_task(client, name, command="echo ok", max_concurrent_runs=1):
     workflow = client.post("/api/workflows", json={
@@ -73,8 +75,8 @@ def test_max_concurrent_runs_above_one_allows_parallel_iterations(client):
 
 
 def test_worker_pool_executes_workflows_concurrently(client):
-    a = make_workflow_with_task(client, "concurrent-a", command="sleep 1")
-    b = make_workflow_with_task(client, "concurrent-b", command="sleep 1")
+    a = make_workflow_with_task(client, "concurrent-a", command=pause(1))
+    b = make_workflow_with_task(client, "concurrent-b", command=pause(1))
     run_a = queue_run(client, a["id"])
     run_b = queue_run(client, b["id"])
 

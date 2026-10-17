@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from portable import emit
+
 
 def build_pending_environment():
     from runrail.db import SessionLocal
@@ -153,7 +155,7 @@ def test_worker_executes_a_queued_workflow(client):
         "name": "worker-test", "enabled": True, "max_concurrent_runs": 1,
     }).json()
     client.post(f"/api/workflows/{workflow['id']}/tasks", json={
-        "name": "hello", "task_type": "shell", "command": "printf hello",
+        "name": "hello", "task_type": "shell", "command": emit("hello"),
         "depends_on_json": [], "retries": 0, "retry_delay_seconds": 0,
     })
     created = client.post(
@@ -228,7 +230,7 @@ def test_daily_stats_aggregates_runs_by_outcome(client):
         "name": "stats-wf", "enabled": True, "max_concurrent_runs": 1,
     }).json()
     client.post(f"/api/workflows/{workflow['id']}/tasks", json={
-        "name": "ok", "task_type": "shell", "command": "printf hi",
+        "name": "ok", "task_type": "shell", "command": emit("hi"),
         "depends_on_json": [], "retries": 0, "retry_delay_seconds": 0,
     })
     for _ in range(2):

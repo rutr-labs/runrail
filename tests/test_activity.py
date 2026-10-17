@@ -3,6 +3,8 @@ the same way notify.py tells it to a webhook."""
 
 from datetime import timedelta
 
+from portable import emit
+
 from runrail.db import SessionLocal
 from runrail.models import RunStatus, TriggerType, Workflow, WorkflowRun, now
 
@@ -114,7 +116,7 @@ def test_failure_transition_and_recovery_match_the_webhooks(client, monkeypatch)
     assert event["run_id"] != failed_run
 
     client.put(f"/api/tasks/{task['id']}", json={
-        "name": "job", "task_type": "shell", "command": "printf ok",
+        "name": "job", "task_type": "shell", "command": emit("ok"),
         "depends_on_json": [], "retries": 0, "retry_delay_seconds": 0})
     recovered_run = run_once(client, workflow["id"])
     run_once(client, workflow["id"])  # steady-state success adds nothing
@@ -167,7 +169,7 @@ def test_auto_pause_names_the_workflow_and_the_run_that_tripped_it(client, monke
 
 def test_an_open_gate_is_an_event_pointing_at_its_run(client):
     workflow = make_workflow(client, "needs-a-human")
-    make_shell_task(client, workflow["id"], "publish", "printf published",
+    make_shell_task(client, workflow["id"], "publish", emit("published"),
                     requires_approval=True, approval_prompt="Row counts right?")
     run_id = run_once(client, workflow["id"])
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "waiting_approval"

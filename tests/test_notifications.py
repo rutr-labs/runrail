@@ -1,5 +1,7 @@
 """Trust package: transition-based webhook notifications, auto-pause, and retry."""
 
+from portable import emit
+
 
 def make_workflow(client, name, **extra):
     return client.post("/api/workflows", json={
@@ -45,7 +47,7 @@ def test_failure_notifies_on_transition_only_and_recovery(client, monkeypatch):
 
     # Fix the task; the next success sends a recovery message.
     client.put(f"/api/tasks/{task['id']}", json={
-        "name": "job", "task_type": "shell", "command": "printf ok",
+        "name": "job", "task_type": "shell", "command": emit("ok"),
         "depends_on_json": [], "retries": 0, "retry_delay_seconds": 0,
     })
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})

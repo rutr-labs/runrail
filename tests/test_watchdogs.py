@@ -3,6 +3,7 @@ silent, and a run that blew its deadline."""
 
 from datetime import datetime, timedelta, timezone
 
+from portable import emit
 from sqlalchemy import func, select
 
 from runrail.db import SessionLocal
@@ -357,7 +358,7 @@ def test_only_the_oldest_in_flight_run_is_blamed(client, monkeypatch):
 def test_a_breached_run_reports_how_late_it_finished(client, monkeypatch):
     sent = capture_webhooks(monkeypatch)
     workflow = make_workflow(client, "late-finisher", sla_minutes=1)
-    make_shell_task(client, workflow["id"], "job", "printf ok")
+    make_shell_task(client, workflow["id"], "job", emit("ok"))
     run = client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}}).json()
     age_run(run["id"], minutes=100)
 

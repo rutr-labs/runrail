@@ -1,6 +1,7 @@
 """Workflow-as-code: YAML export/apply round-trips and declarative task upserts."""
 
 import pytest
+from portable import emit
 
 
 def seed_workflow(client):
@@ -10,12 +11,12 @@ def seed_workflow(client):
         "auto_pause_failures": 3, "missed_run_grace_minutes": 15, "sla_minutes": 90,
     }).json()
     client.post(f"/api/workflows/{workflow['id']}/tasks", json={
-        "name": "extract", "task_type": "shell", "command": "printf extract",
+        "name": "extract", "task_type": "shell", "command": emit("extract"),
         "depends_on_json": [], "retries": 1, "retry_delay_seconds": 5,
         "parameters_json": {"region": "ca"},
     })
     client.post(f"/api/workflows/{workflow['id']}/tasks", json={
-        "name": "load", "task_type": "shell", "command": "printf load",
+        "name": "load", "task_type": "shell", "command": emit("load"),
         "depends_on_json": ["extract"], "retries": 0, "retry_delay_seconds": 0,
         "requires_approval": True, "approval_prompt": "Confirm the QA row counts",
     })
@@ -63,7 +64,7 @@ def test_configuration_round_trips_but_operator_state_does_not(client):
     assert not {"snooze_until", "snooze_pauses_runs", "missed_notified_at"} & exported.keys()
 
     # Omitting the gate fields clears them without writing NULL into a NOT NULL column.
-    exported["tasks"] = [{"name": "load", "task_type": "shell", "command": "printf load"}]
+    exported["tasks"] = [{"name": "load", "task_type": "shell", "command": emit("load")}]
     with SessionLocal() as db:
         apply_workflows(db, data)
     reapplied = client.get(f"/api/workflows/{workflow['id']}/tasks").json()
@@ -79,14 +80,14 @@ def test_apply_updates_removes_and_creates_declaratively(client):
     with SessionLocal() as db:
         data = export_workflows(db)
     spec = data["workflows"][0]
-    spec["tasks"][0]["command"] = "printf changed"          # update
+    spec["tasks"][0]["command"] = emit("changed")          # update
     spec["tasks"] = [spec["tasks"][0], {                     # drop 'load', add 'report'
-        "name": "report", "task_type": "shell", "command": "printf report",
+        "name": "report", "task_type": "shell", "command": emit("report"),
         "depends_on": ["extract"],
     }]
     data["workflows"].append({                               # brand-new workflow
         "name": "fresh", "enabled": False,
-        "tasks": [{"name": "solo", "task_type": "shell", "command": "printf hi"}],
+        "tasks": [{"name": "solo", "task_type": "shell", "command": emit("hi")}],
     })
 
     with SessionLocal() as db:
@@ -95,7 +96,7 @@ def test_apply_updates_removes_and_creates_declaratively(client):
 
     tasks = client.get(f"/api/workflows/{workflow['id']}/tasks").json()
     assert {t["name"]: t.get("command") for t in tasks} == {
-        "extract": "printf changed", "report": "printf report",
+        "extract": emit("changed"), "report": emit("report"),
     }
     flows = {w["name"]: w for w in client.get("/api/workflows").json()}
     assert flows["fresh"]["enabled"] is False

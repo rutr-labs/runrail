@@ -11,6 +11,8 @@ two run states the batch added.
 
 from datetime import date, timedelta
 
+from portable import append, emit, exists, then
+
 from runrail.db import SessionLocal
 from runrail.models import RunStatus, TaskRun, TaskRunStatus, Workflow, WorkflowRun, now
 from runrail.worker.queue import claim_next_run
@@ -112,10 +114,10 @@ def test_a_resumed_run_retakes_its_lock_and_holds_it_while_it_re_executes(client
     fixed = tmp_path / "fixed"
     heavy = make_workflow(client, "monthly-maintenance",
                           lock_resource="warehouse", lock_mode="exclusive")
-    make_shell_task(client, heavy["id"], "vacuum", f'test -f "{fixed}"')
+    make_shell_task(client, heavy["id"], "vacuum", exists(fixed))
     hourly = make_workflow(client, "hourly-load",
                            lock_resource="warehouse", lock_mode="shared")
-    make_shell_task(client, hourly["id"], "load", "printf ok")
+    make_shell_task(client, hourly["id"], "load", emit("ok"))
 
     heavy_run = start_run(client, heavy["id"])
     assert execute_next_run(client) == heavy_run
@@ -143,7 +145,7 @@ def test_a_resume_does_not_jump_the_starvation_barrier(client):
     make_shell_task(client, hourly["id"], "load", "exit 1")
     heavy = make_workflow(client, "monthly-maintenance",
                           lock_resource="warehouse", lock_mode="exclusive")
-    make_shell_task(client, heavy["id"], "vacuum", "printf ok")
+    make_shell_task(client, heavy["id"], "vacuum", emit("ok"))
 
     hourly_run = start_run(client, hourly["id"])
     assert execute_next_run(client) == hourly_run
@@ -165,10 +167,10 @@ def test_cancelling_a_run_parked_inside_a_lock_releases_the_resource(client):
     resource, not just the run."""
     heavy = make_workflow(client, "monthly-maintenance",
                           lock_resource="warehouse", lock_mode="exclusive")
-    make_shell_task(client, heavy["id"], "vacuum", "printf v", requires_approval=True)
+    make_shell_task(client, heavy["id"], "vacuum", emit("v"), requires_approval=True)
     hourly = make_workflow(client, "hourly-load",
                            lock_resource="warehouse", lock_mode="shared")
-    make_shell_task(client, hourly["id"], "load", "printf ok")
+    make_shell_task(client, hourly["id"], "load", emit("ok"))
 
     parked = start_run(client, heavy["id"])
     assert execute_next_run(client) == parked
@@ -190,13 +192,13 @@ def test_approving_inside_a_lock_finishes_the_run_and_frees_the_resource(client,
     ran = tmp_path / "ran"
     heavy = make_workflow(client, "monthly-maintenance",
                           lock_resource="warehouse", lock_mode="exclusive")
-    make_shell_task(client, heavy["id"], "vacuum", f'printf v >> "{ran}"',
+    make_shell_task(client, heavy["id"], "vacuum", append("v", ran),
                     requires_approval=True)
-    make_shell_task(client, heavy["id"], "analyze", f'printf a >> "{ran}"',
+    make_shell_task(client, heavy["id"], "analyze", append("a", ran),
                     depends_on=["vacuum"])
     hourly = make_workflow(client, "hourly-load",
                            lock_resource="warehouse", lock_mode="shared")
-    make_shell_task(client, hourly["id"], "load", "printf ok")
+    make_shell_task(client, hourly["id"], "load", emit("ok"))
 
     parked = start_run(client, heavy["id"])
     assert execute_next_run(client) == parked
@@ -213,12 +215,12 @@ def test_an_approved_run_keeps_its_lock_until_it_is_re_claimed(client, tmp_path)
     ran = tmp_path / "ran"
     hourly = make_workflow(client, "hourly-load",
                            lock_resource="warehouse", lock_mode="shared")
-    make_shell_task(client, hourly["id"], "stage", f'printf s >> "{ran}"')
-    make_shell_task(client, hourly["id"], "load", f'printf l >> "{ran}"',
+    make_shell_task(client, hourly["id"], "stage", append("s", ran))
+    make_shell_task(client, hourly["id"], "load", append("l", ran),
                     depends_on=["stage"], requires_approval=True)
     heavy = make_workflow(client, "monthly-maintenance",
                           lock_resource="warehouse", lock_mode="exclusive")
-    make_shell_task(client, heavy["id"], "vacuum", "printf v")
+    make_shell_task(client, heavy["id"], "vacuum", emit("v"))
 
     parked = start_run(client, hourly["id"])
     assert execute_next_run(client) == parked
@@ -241,7 +243,7 @@ def test_a_parked_run_coalesces_the_schedule_to_one_queued_iteration(client):
     from runrail.scheduler.service import enqueue_scheduled
 
     workflow = make_workflow(client, "gated-nightly", schedule_cron="0 2 * * *")
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     parked = start_run(client, workflow["id"])
     assert execute_next_run(client) == parked
     assert run_status(client, parked) == "waiting_approval"
@@ -269,7 +271,7 @@ def test_the_raw_claim_is_what_withholds_the_slot_from_a_parked_runs_sibling(cli
     claimers racing the same budget.
     """
     workflow = make_workflow(client, "serial-gate")
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     parked = start_run(client, workflow["id"])
     sibling = start_run(client, workflow["id"])
     assert execute_next_run(client) == parked
@@ -284,7 +286,7 @@ def test_a_backfill_of_a_gated_workflow_opens_one_gate_at_a_time(client, tmp_pat
     execute out of order."""
     ran = tmp_path / "ran"
     workflow = make_workflow(client, "gated-backfill")
-    make_shell_task(client, workflow["id"], "publish", f'printf p >> "{ran}"',
+    make_shell_task(client, workflow["id"], "publish", append("p", ran),
                     requires_approval=True)
     days = backfill(client, workflow["id"], date(2026, 1, 1), date(2026, 1, 4))
 
@@ -303,7 +305,7 @@ def test_a_rejected_run_frees_the_slot_for_the_coalesced_iteration(client, tmp_p
     picks up where it left off rather than staying wedged behind the decision."""
     ran = tmp_path / "ran"
     workflow = make_workflow(client, "gated-nightly")
-    make_shell_task(client, workflow["id"], "publish", f'printf p >> "{ran}"',
+    make_shell_task(client, workflow["id"], "publish", append("p", ran),
                     requires_approval=True)
     parked = start_run(client, workflow["id"])
     waiting = start_run(client, workflow["id"])
@@ -327,7 +329,7 @@ def test_resuming_after_the_approved_task_itself_failed_asks_again(client, tmp_p
     resume_index, which is what makes this true."""
     fixed = tmp_path / "fixed"
     workflow = make_workflow(client, "authorised-but-broken")
-    make_shell_task(client, workflow["id"], "publish", f'test -f "{fixed}"',
+    make_shell_task(client, workflow["id"], "publish", exists(fixed),
                     requires_approval=True)
     run_id = start_run(client, workflow["id"])
     assert execute_next_run(client) == run_id
@@ -355,7 +357,7 @@ def test_forcing_a_rerun_of_an_approved_task_re_opens_its_gate(client, tmp_path)
     leaves _gate_decision with no answer for the new segment."""
     ran = tmp_path / "ran"
     workflow = make_workflow(client, "re-authorise")
-    make_shell_task(client, workflow["id"], "publish", f'printf p >> "{ran}"',
+    make_shell_task(client, workflow["id"], "publish", append("p", ran),
                     requires_approval=True)
     make_shell_task(client, workflow["id"], "verify", "exit 1", depends_on=["publish"])
     run_id = start_run(client, workflow["id"])
@@ -382,7 +384,7 @@ def test_a_backfill_against_an_exclusive_resource_drains_one_at_a_time(client):
     and it drains rather than deadlocking."""
     heavy = make_workflow(client, "rebuild-marts", max_concurrent_runs=4,
                           lock_resource="warehouse", lock_mode="exclusive")
-    make_shell_task(client, heavy["id"], "rebuild", "printf r")
+    make_shell_task(client, heavy["id"], "rebuild", emit("r"))
     queued = backfill(client, heavy["id"], date(2026, 1, 1), date(2026, 1, 6))
     assert len(queued) == 6
 
@@ -399,7 +401,7 @@ def test_a_shared_backfill_overlaps_up_to_its_concurrency_limit(client):
     and max_concurrent_runs is then the only budget left."""
     reports = make_workflow(client, "daily-report", max_concurrent_runs=2,
                             lock_resource="warehouse", lock_mode="shared")
-    make_shell_task(client, reports["id"], "render", "printf r")
+    make_shell_task(client, reports["id"], "render", emit("r"))
     queued = backfill(client, reports["id"], date(2026, 1, 1), date(2026, 1, 5))
 
     with SessionLocal() as db:
@@ -417,10 +419,10 @@ def test_an_exclusive_backfill_starves_a_shared_neighbour_for_its_whole_range(cl
     exclusive workflow silently stops every shared workflow on that resource."""
     heavy = make_workflow(client, "rebuild-marts",
                           lock_resource="warehouse", lock_mode="exclusive")
-    make_shell_task(client, heavy["id"], "rebuild", "printf r")
+    make_shell_task(client, heavy["id"], "rebuild", emit("r"))
     hourly = make_workflow(client, "hourly-load",
                            lock_resource="warehouse", lock_mode="shared")
-    make_shell_task(client, hourly["id"], "load", "printf ok")
+    make_shell_task(client, hourly["id"], "load", emit("ok"))
 
     days = backfill(client, heavy["id"], date(2026, 1, 1), date(2026, 1, 4))
     hourly_run = start_run(client, hourly["id"])
@@ -438,12 +440,12 @@ def test_recovery_across_running_parked_and_queued_runs_frees_only_the_dead_ones
     must end exactly the first kind."""
     heavy = make_workflow(client, "monthly-maintenance",
                           lock_resource="warehouse", lock_mode="exclusive")
-    make_shell_task(client, heavy["id"], "vacuum", "printf v")
+    make_shell_task(client, heavy["id"], "vacuum", emit("v"))
     gated = make_workflow(client, "needs-a-human")
-    make_shell_task(client, gated["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, gated["id"], "publish", emit("p"), requires_approval=True)
     hourly = make_workflow(client, "hourly-load",
                            lock_resource="warehouse", lock_mode="shared")
-    make_shell_task(client, hourly["id"], "load", "printf ok")
+    make_shell_task(client, hourly["id"], "load", emit("ok"))
 
     parked = start_run(client, gated["id"])
     assert execute_next_run(client) == parked
@@ -470,10 +472,10 @@ def test_recovery_leaves_a_parked_run_holding_its_lock_and_a_cancel_frees_it(cli
     it is the one hold that survives a process death."""
     heavy = make_workflow(client, "monthly-maintenance",
                           lock_resource="warehouse", lock_mode="exclusive")
-    make_shell_task(client, heavy["id"], "vacuum", "printf v", requires_approval=True)
+    make_shell_task(client, heavy["id"], "vacuum", emit("v"), requires_approval=True)
     hourly = make_workflow(client, "hourly-load",
                            lock_resource="warehouse", lock_mode="shared")
-    make_shell_task(client, hourly["id"], "load", "printf ok")
+    make_shell_task(client, hourly["id"], "load", emit("ok"))
 
     parked = start_run(client, heavy["id"])
     assert execute_next_run(client) == parked
@@ -494,8 +496,8 @@ def test_a_crash_inside_a_resumed_segment_keeps_the_earlier_reuse(client, tmp_pa
     ran = tmp_path / "ran"
     fixed = tmp_path / "fixed"
     workflow = make_workflow(client, "chain")
-    make_shell_task(client, workflow["id"], "extract", f'printf e >> "{ran}"')
-    make_shell_task(client, workflow["id"], "load", f'printf l >> "{ran}"; test -f "{fixed}"',
+    make_shell_task(client, workflow["id"], "extract", append("e", ran))
+    make_shell_task(client, workflow["id"], "load", then(append("l", ran), exists(fixed)),
                     depends_on=["extract"])
     run_id = start_run(client, workflow["id"])
     assert execute_next_run(client) == run_id
@@ -530,8 +532,8 @@ def strand_a_gate(run_id: int) -> None:
 
 def test_a_gate_stranded_by_a_crash_does_not_wedge_the_resumed_run(client):
     workflow = make_workflow(client, "crashed-mid-gate")
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
-    make_shell_task(client, workflow["id"], "sibling", "printf s")
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
+    make_shell_task(client, workflow["id"], "sibling", emit("s"))
     run_id = start_run(client, workflow["id"])
     assert execute_next_run(client) == run_id
     strand_a_gate(run_id)
@@ -553,7 +555,7 @@ def test_a_gate_on_a_crashed_run_is_settled_and_not_offered(client):
     segment's gate is invisible, and recovery settles the row itself — an open
     row would outlive its segment and wedge every later one."""
     workflow = make_workflow(client, "crashed-mid-gate")
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     run_id = start_run(client, workflow["id"])
     assert execute_next_run(client) == run_id
     strand_a_gate(run_id)
@@ -570,7 +572,7 @@ def test_cancelling_a_running_run_settles_the_gate_a_branch_left_open(client):
     still executing, so the run finalizes through the worker and nothing else
     would ever close the gate row."""
     workflow = make_workflow(client, "cancelled-mid-gate")
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     run_id = start_run(client, workflow["id"])
     assert execute_next_run(client) == run_id
     set_status(run_id, RunStatus.running)      # the sibling branch is still going
@@ -591,7 +593,7 @@ def test_a_cancel_that_races_the_gate_open_leaves_no_row_behind(client, monkeypa
     from runrail.worker import service
 
     workflow = make_workflow(client, "cancel-races-the-gate")
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     run_id = start_run(client, workflow["id"])
     opened = service.open_gate
 
@@ -613,7 +615,7 @@ def test_a_gate_left_open_by_a_dead_segment_does_not_count_against_this_one(clie
     database written before gates were settled still carries open rows from dead
     segments, and re-entry must ignore them exactly as _gate_decision does."""
     workflow = make_workflow(client, "stale-gate")
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     run_id = start_run(client, workflow["id"])
     assert execute_next_run(client) == run_id
     set_status(run_id, RunStatus.failed)       # the crash, minus the settling
@@ -650,7 +652,7 @@ def test_a_parked_run_does_not_trip_the_missed_run_watchdog(client, monkeypatch)
     sent = capture_webhooks(monkeypatch)
     workflow = make_workflow(client, "gated-nightly", notify_webhook_url=HOOK,
                              schedule_cron="0 2 * * *", missed_run_grace_minutes=30)
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     run_id = start_run(client, workflow["id"])
     assert execute_next_run(client) == run_id
     sent.clear()
@@ -679,7 +681,7 @@ def test_a_run_parked_far_past_its_sla_is_the_one_reported(client, monkeypatch):
     workflow = make_workflow(client, "gated-nightly", notify_webhook_url=HOOK,
                              schedule_cron="0 2 * * *", missed_run_grace_minutes=30,
                              sla_minutes=30)
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     parked = start_run(client, workflow["id"])
     assert execute_next_run(client) == parked
     sent.clear()
@@ -706,7 +708,7 @@ def test_the_iteration_queued_behind_a_gate_is_not_the_one_blamed(client, monkey
     sent = capture_webhooks(monkeypatch)
     workflow = make_workflow(client, "gated-nightly", notify_webhook_url=HOOK,
                              schedule_cron="0 2 * * *", sla_minutes=30)
-    make_shell_task(client, workflow["id"], "publish", "printf p", requires_approval=True)
+    make_shell_task(client, workflow["id"], "publish", emit("p"), requires_approval=True)
     parked = start_run(client, workflow["id"])
     assert execute_next_run(client) == parked
     enqueue_scheduled(workflow["id"])
@@ -732,10 +734,10 @@ def test_a_lock_blocked_run_breaches_its_sla_while_the_holder_is_silent(client, 
     sent = capture_webhooks(monkeypatch)
     heavy = make_workflow(client, "monthly-maintenance", notify_webhook_url=HOOK,
                           lock_resource="warehouse", lock_mode="exclusive")
-    make_shell_task(client, heavy["id"], "vacuum", "printf v")
+    make_shell_task(client, heavy["id"], "vacuum", emit("v"))
     hourly = make_workflow(client, "hourly-load", notify_webhook_url=HOOK, sla_minutes=15,
                            lock_resource="warehouse", lock_mode="shared")
-    make_shell_task(client, hourly["id"], "load", "printf ok")
+    make_shell_task(client, hourly["id"], "load", emit("ok"))
 
     holder = start_run(client, heavy["id"])
     assert claim_only(client) == holder

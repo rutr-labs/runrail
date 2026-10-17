@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from portable import append, emit, exists, then
+
 
 def make_workflow(client, name, **extra):
     return client.post("/api/workflows", json={
@@ -44,10 +46,10 @@ def test_resume_reuses_successful_upstream(client, tmp_path: Path):
     ran = tmp_path / "ran"
     fixed = tmp_path / "fixed"
     workflow = make_workflow(client, "chain")
-    make_shell_task(client, workflow["id"], "a", f'printf a >> "{ran}"')
-    make_shell_task(client, workflow["id"], "b", f'printf b >> "{ran}"; test -f "{fixed}"',
+    make_shell_task(client, workflow["id"], "a", append("a", ran))
+    make_shell_task(client, workflow["id"], "b", then(append("b", ran), exists(fixed)),
                     depends_on=["a"])
-    make_shell_task(client, workflow["id"], "c", f'printf c >> "{ran}"', depends_on=["b"])
+    make_shell_task(client, workflow["id"], "c", append("c", ran), depends_on=["b"])
     run_id = run_now(client, workflow["id"])
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "failed"
 
@@ -72,11 +74,11 @@ def test_resume_of_a_mid_dag_failure_keeps_the_parallel_branch(client, tmp_path:
     ran = tmp_path / "ran"
     fixed = tmp_path / "fixed"
     workflow = make_workflow(client, "diamond")
-    make_shell_task(client, workflow["id"], "a", f'printf a >> "{ran}"')
-    make_shell_task(client, workflow["id"], "b", f'printf b >> "{ran}"', depends_on=["a"])
-    make_shell_task(client, workflow["id"], "c", f'printf c >> "{ran}"; test -f "{fixed}"',
+    make_shell_task(client, workflow["id"], "a", append("a", ran))
+    make_shell_task(client, workflow["id"], "b", append("b", ran), depends_on=["a"])
+    make_shell_task(client, workflow["id"], "c", then(append("c", ran), exists(fixed)),
                     depends_on=["a"])
-    make_shell_task(client, workflow["id"], "d", f'printf d >> "{ran}"', depends_on=["b", "c"])
+    make_shell_task(client, workflow["id"], "d", append("d", ran), depends_on=["b", "c"])
     run_id = run_now(client, workflow["id"])
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "failed"
 
@@ -104,14 +106,14 @@ def test_resume_after_the_workflow_changed(client, tmp_path: Path):
     gained an upstream it never ran with cannot be reused."""
     ran = tmp_path / "ran"
     workflow = make_workflow(client, "edited")
-    a = make_shell_task(client, workflow["id"], "a", f'printf a >> "{ran}"')
+    a = make_shell_task(client, workflow["id"], "a", append("a", ran))
     make_shell_task(client, workflow["id"], "b", "exit 1", depends_on=["a"])
     run_id = run_now(client, workflow["id"])
     assert client.get(f"/api/runs/{run_id}").json()["status"] == "failed"
 
-    make_shell_task(client, workflow["id"], "guard", f'printf g >> "{ran}"')
+    make_shell_task(client, workflow["id"], "guard", append("g", ran))
     response = client.put(f"/api/tasks/{a['id']}",
-                          json=task_body("a", f'printf a >> "{ran}"', ["guard"]))
+                          json=task_body("a", append("a", ran), ["guard"]))
     assert response.status_code == 200, response.text
 
     plan = client.get(f"/api/runs/{run_id}/resume-plan").json()
@@ -135,8 +137,8 @@ def test_resume_keeps_the_run_date_and_artifacts_directory(client, tmp_path: Pat
     fixed = tmp_path / "fixed"
     workflow = make_workflow(client, "dated")
     make_shell_task(client, workflow["id"], "gate-keeper",
-                    f'printf "{{{{ ds }}}} {{{{ artifacts_dir }}}}\n" >> "{stamps}"; '
-                    f'test -f "{fixed}"')
+                    then(append("{{ ds }} {{ artifacts_dir }}", stamps, newline=True),
+                         exists(fixed)))
     client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}})
     run = client.get("/api/runs").json()[0]
     yesterday = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
@@ -161,8 +163,8 @@ def test_forcing_a_rerun_discards_a_reusable_task(client, tmp_path: Path):
     ran = tmp_path / "ran"
     fixed = tmp_path / "fixed"
     workflow = make_workflow(client, "forced")
-    make_shell_task(client, workflow["id"], "a", f'printf a >> "{ran}"')
-    make_shell_task(client, workflow["id"], "b", f'printf b >> "{ran}"; test -f "{fixed}"',
+    make_shell_task(client, workflow["id"], "a", append("a", ran))
+    make_shell_task(client, workflow["id"], "b", then(append("b", ran), exists(fixed)),
                     depends_on=["a"])
     run_id = run_now(client, workflow["id"])
 
@@ -180,7 +182,7 @@ def test_forcing_a_rerun_discards_a_reusable_task(client, tmp_path: Path):
 
 def test_resume_refuses_runs_that_are_live_successful_or_already_resumed(client):
     workflow = make_workflow(client, "guards")
-    make_shell_task(client, workflow["id"], "ok", "printf ok")
+    make_shell_task(client, workflow["id"], "ok", emit("ok"))
     run = client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}}).json()
 
     queued = client.post(f"/api/runs/{run['id']}/resume")
@@ -206,7 +208,7 @@ def test_a_resumed_run_stays_one_row_in_the_stats(client):
     run_id = run_now(client, workflow["id"])
     assert client.get("/api/stats/summary").json()["failed_24h"] == 1
 
-    client.put(f"/api/tasks/{boom['id']}", json=task_body("boom", "printf ok"))
+    client.put(f"/api/tasks/{boom['id']}", json=task_body("boom", emit("ok")))
     client.post(f"/api/runs/{run_id}/resume")
     execute_queued_run(client)
 
