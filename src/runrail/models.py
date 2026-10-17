@@ -180,6 +180,25 @@ class Workflow(TimestampMixin, Base):
     # wait on and deadlock is structurally impossible.
     lock_resource: Mapped[str | None] = mapped_column(String(255))
     lock_mode: Mapped[LockMode] = mapped_column(Enum(LockMode), default=LockMode.shared)
+    # Alert state, written only by notify.py under a compare-and-set: "ok" or
+    # "failing", and the run that put it there. A failure alerts when it moves
+    # the state to failing, a success when it moves it back — whichever run
+    # finishes first, resumed or not. Reconstructing that from run ids after
+    # the fact lost recoveries on resume and double-sent on concurrent runs.
+    alert_state: Mapped[str | None] = mapped_column(String(16))
+    alert_run_id: Mapped[int | None] = mapped_column(Integer)
+    # When the workflow was last switched on. Auto-pause counts failures from
+    # here, so a workflow re-enabled after a pause is not paused again by the
+    # very next failure on the strength of the streak that paused it before.
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set by the auto-pause that switched the workflow off, cleared when it is
+    # switched on again: the feed's record of the pause.
+    auto_paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    auto_paused_run_id: Mapped[int | None] = mapped_column(Integer)
+    # The last webhook delivery failure, so a revoked or mistyped URL is
+    # visible somewhere instead of failing silently forever.
+    webhook_error: Mapped[str | None] = mapped_column(Text)
+    webhook_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tasks: Mapped[list["Task"]] = relationship(cascade="all, delete-orphan", back_populates="workflow")
 
     @property
@@ -241,6 +260,13 @@ class WorkflowRun(Base):
     # gap inside a segment, not a new one, so open_gate stamps the current
     # value onto its TaskRun.resume_index without bumping it.
     resume_count: Mapped[int] = mapped_column(Integer, default=0)
+    # When the latest resume began. The SLA deadline is measured from here
+    # rather than created_at once a run has been resumed: yesterday's run
+    # resumed today is not twenty-three hours late the moment it starts.
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Which alert this run's outcome sent, if any: "run_failed" or
+    # "run_recovered". Stamped by notify.py when its transition wins.
+    alert_kind: Mapped[str | None] = mapped_column(String(32))
     # Set once when the run passes its workflow's SLA; the marker itself is the
     # repeat guard, and resume must clear it so a second breach can re-alert.
     sla_breached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

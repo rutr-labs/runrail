@@ -118,22 +118,21 @@ def test_daily_stats_buckets_on_the_utc_day(client):
     assert today and today[0]["success"] == 1 and today[0]["failed"] == 1
 
 
-def test_the_activity_feed_window_functions_execute(client):
-    """LAG over a CASE projection and ROW_NUMBER, on a real result set.
-
-    The feed reports a failure only on the transition, which is the LAG's whole
-    job; an empty table would execute the window function without ever proving
-    the projection types line up.
-    """
+def test_the_activity_feed_reads_recorded_alerts(client):
+    """The feed reports a failure only on the transition: the compare-and-set
+    in notify.py and the feed's read of its mark, on a real result set of this
+    backend's types."""
+    from runrail import notify
     from runrail.db import SessionLocal
     from runrail.models import RunStatus, TriggerType, WorkflowRun, now
 
     workflow = make_workflow(client, "transitions")
     with SessionLocal() as db:
         for status in (RunStatus.success, RunStatus.failed, RunStatus.failed):
-            db.add(WorkflowRun(workflow_id=workflow["id"], trigger_type=TriggerType.manual,
-                               status=status, finished_at=now()))
-        db.commit()
+            run = WorkflowRun(workflow_id=workflow["id"], trigger_type=TriggerType.manual,
+                              status=status, finished_at=now())
+            db.add(run); db.commit()
+            notify.notify_run_outcome(db, run)
 
     kinds = [event["kind"] for event in client.get("/api/activity").json()["events"]]
     assert kinds.count("run_failed") == 1  # the transition, not both red runs

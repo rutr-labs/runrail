@@ -1,13 +1,14 @@
 """The activity feed behind the notification bell: noteworthy events, derived.
 
-Derived, never logged. Every event here is reconstructible from rows the app
-already writes, so there is no events table to migrate, retain or clean up, and
-no extra write on the run finalization path that could fail a run.
+Derived, never logged separately. Every event here is read from rows the app
+already writes — and for the transitions, from the marks notify.py leaves at
+the moment it decides (a run's `alert_kind`, a workflow's `auto_paused_at`),
+so the feed and the webhooks cannot tell different stories. There is no events
+table to migrate, retain or clean up.
 
-The rules are notify.py's, deliberately — a kind is named after the `event`
-field of the webhook it mirrors, a failure surfaces on the *transition* rather
-than on every red run, and a snoozed workflow contributes nothing. A feed that
-told a different story from the webhooks would be worse than no feed at all.
+A kind is named after the `event` field of the webhook it mirrors, a failure
+surfaces on the *transition* rather than on every red run, and a snoozed
+workflow contributes nothing.
 
 Read state belongs to the client: it keeps a last-read instant in localStorage
 (single user, one browser) and passes it back as `read_at`. Storing it here
@@ -16,7 +17,7 @@ would mean a column, a migration and a write on every poll of this endpoint.
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from runrail.models import (
@@ -39,14 +40,6 @@ MAX_WINDOW_HOURS = 24 * 30
 #: reading "200" is as actionable as one reading "4000", and this endpoint is
 #: polled.
 _SCAN_LIMIT = 200
-
-#: How far before the window the transition scan reaches for the outcome that
-#: decides whether an in-window failure is a transition. Bounded rather than
-#: unbounded because the cheap alternative — scanning every completed run ever —
-#: is what a polled endpoint must not do. A workflow whose previous outcome is
-#: older than this reads as having none, which is how notify.py treats a
-#: first-ever run: it alerts.
-_PRIOR_LOOKBACK = timedelta(days=30)
 
 #: Severity is the whole vocabulary the panel colours by; keep it to these four.
 SEVERITY = {
@@ -71,104 +64,43 @@ def _event(kind: str, key: int, at: datetime | None, workflow: Workflow, title: 
 
 
 def _outcome_events(db: Session, workflows: dict[int, Workflow], since: datetime) -> list[dict]:
-    """run_failed and run_recovered, on the transition only.
-
-    notify.py's rule expressed in SQL: a failure is news when the workflow's
-    previous completed outcome was not a failure. LAG is what makes the boundary
-    honest — the deciding run usually sits just before the window.
-
-    notify.py's other guard, `not run.resume_count`, has no counterpart here and
-    needs none: it stops a *second post* about a run that already alerted, and a
-    feed keyed on the run row can only ever yield one event for it. Adding the
-    guard would delete the failure the webhook did send, the moment someone
-    resumed the run.
-
-    The transition predicate lives in the database, not in Python, because
-    transitions are rare: a schedule failing every two minutes all night returns
-    one row here, not four hundred.
-    """
-    # Projected to 0/1 and lagged, rather than lagging the status itself: a
-    # window function's output compared against an enum literal is a
-    # portability trap between SQLite's text and PostgreSQL's native enum type.
-    failed = case((WorkflowRun.status == RunStatus.failed, 1), else_=0)
-    ranked = (
-        select(WorkflowRun.id, WorkflowRun.workflow_id, WorkflowRun.created_at,
-               WorkflowRun.finished_at, failed.label("failed"),
-               func.lag(failed).over(partition_by=WorkflowRun.workflow_id,
-                                     order_by=WorkflowRun.id).label("prev_failed"))
-        .where(WorkflowRun.status.in_((RunStatus.success, RunStatus.failed)),
-               WorkflowRun.created_at >= since - _PRIOR_LOOKBACK)
-        .subquery())
+    """The alerts notify.py decided, read back: a run carries `alert_kind` when
+    its outcome moved the workflow's alert state. Reconstructing the transition
+    from run ids instead disagreed with the webhooks whenever a run was resumed
+    or two finished out of order."""
     rows = db.execute(
-        select(ranked)
-        .where(ranked.c.created_at >= since,
-               or_(and_(ranked.c.failed == 1,
-                        # No predecessor coalesces to "did not fail", so a
-                        # first-ever failure is a transition — as notify.py has it.
-                        func.coalesce(ranked.c.prev_failed, 0) == 0),
-                   and_(ranked.c.failed == 0, ranked.c.prev_failed == 1)))
-        .order_by(ranked.c.id.desc()).limit(_SCAN_LIMIT)).all()
+        select(WorkflowRun.id, WorkflowRun.workflow_id, WorkflowRun.created_at,
+               WorkflowRun.finished_at, WorkflowRun.alert_kind)
+        .where(WorkflowRun.alert_kind.is_not(None),
+               func.coalesce(WorkflowRun.finished_at, WorkflowRun.created_at) >= since)
+        .order_by(WorkflowRun.id.desc()).limit(_SCAN_LIMIT)).all()
     events = []
     for row in rows:
         workflow = workflows.get(row.workflow_id)
         if workflow is None:
             continue
-        kind = "run_failed" if row.failed else "run_recovered"
+        failed = row.alert_kind == "run_failed"
         events.append(_event(
-            kind, row.id, row.finished_at or row.created_at, workflow,
-            f"{workflow.name} {'failed' if row.failed else 'recovered'} (run #{row.id})",
+            row.alert_kind, row.id, row.finished_at or row.created_at, workflow,
+            f"{workflow.name} {'failed' if failed else 'recovered'} (run #{row.id})",
             run_id=row.id))
     return events
 
 
 def _auto_pause_events(db: Session, workflows: dict[int, Workflow],
                        since: datetime) -> list[dict]:
-    """A workflow disabled by its own consecutive-failure threshold.
-
-    Nothing records the pause — notify.py flips `enabled` and posts — so the
-    event is the state it leaves behind: a threshold configured, the workflow
-    off, and trailing failures that reach it. A workflow paused by hand on the
-    same failing streak is indistinguishable and reads correctly anyway.
-    """
-    candidates = {workflow_id: workflow for workflow_id, workflow in workflows.items()
-                  if workflow.auto_pause_failures and not workflow.enabled}
-    if not candidates:
-        return []
-    # One query however many candidates there are, capped at the deepest
-    # threshold in play. Mirrors notify._consecutive_failures, which looks back
-    # exactly that far and counts completed outcomes only — a cancelled run is
-    # neutral, not a break in the streak.
-    deepest = max(workflow.auto_pause_failures for workflow in candidates.values())
-    ranked = (
-        select(WorkflowRun.id, WorkflowRun.workflow_id, WorkflowRun.status,
-               WorkflowRun.created_at, WorkflowRun.finished_at,
-               func.row_number().over(partition_by=WorkflowRun.workflow_id,
-                                      order_by=WorkflowRun.id.desc()).label("rn"))
-        .where(WorkflowRun.workflow_id.in_(list(candidates)),
-               WorkflowRun.status.in_((RunStatus.success, RunStatus.failed)))
-        .subquery())
-    trailing: dict[int, list] = {}
-    for row in db.execute(select(ranked).where(ranked.c.rn <= deepest)
-                          .order_by(ranked.c.workflow_id, ranked.c.rn)):
-        trailing.setdefault(row.workflow_id, []).append(row)
+    """A workflow disabled by its own consecutive-failure threshold: the pause
+    stamps auto_paused_at and the run that tripped it, and switching the
+    workflow back on clears them."""
     events = []
-    for workflow_id, rows in trailing.items():
-        workflow = candidates[workflow_id]
-        streak = 0
-        for row in rows:
-            if row.status != RunStatus.failed:
-                break
-            streak += 1
-        if streak < workflow.auto_pause_failures:
-            continue
-        tripped = rows[0]  # newest-first, so this is the run that hit the threshold
-        at = _aware(tripped.finished_at or tripped.created_at)
-        if at < since:
+    for workflow in workflows.values():
+        at = _aware(workflow.auto_paused_at)
+        if at is None or at < since or workflow.enabled:
             continue
         events.append(_event(
-            "workflow_paused", workflow_id, at, workflow,
+            "workflow_paused", workflow.id, at, workflow,
             f"{workflow.name} paused after {workflow.auto_pause_failures} "
-            f"consecutive failures", run_id=tripped.id))
+            f"consecutive failures", run_id=workflow.auto_paused_run_id))
     return events
 
 

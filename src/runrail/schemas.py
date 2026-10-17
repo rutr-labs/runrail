@@ -171,6 +171,9 @@ class WorkflowOut(WorkflowIn, ORMModel):
     snooze_until: UTCDateTime | None = None
     snooze_pauses_runs: bool = False
     snoozed: bool = False  # from the model property, via from_attributes
+    webhook_error: str | None = None
+    webhook_error_at: UTCDateTime | None = None
+    auto_paused_at: UTCDateTime | None = None
 
     @field_validator("schedule_cron")
     @classmethod
