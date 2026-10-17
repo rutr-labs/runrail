@@ -14,8 +14,14 @@ import { useToast } from './components/toast';
 import { FilePicker } from './components/FilePicker';
 import { zoneOptions } from './components/ScheduleBuilder';
 import { zoneTag } from './cron';
-import { WeekEditor, WeekStrip, scheduleSummary, untilLabel } from './components/WeekEditor';
+import { TodayBar, WeekEditor, WeekStrip, scheduleSummary, untilLabel } from './components/WeekEditor';
 import { windowLabel, type ServiceWindow } from './serviceWindows';
+import {
+  STATE_WORD, byAttention, handovers, isLive, serviceCounts, toneOf,
+  type LockMode, type Policy, type Service, type ServiceSession, type StartMode,
+} from './serviceStatus';
+export { serviceCounts };
+export type { Service };
 
 /* ─── Services ─────────────────────────────────────────────
    Long-running processes RunRail keeps up — a model server, a folder sync —
@@ -23,51 +29,6 @@ import { windowLabel, type ServiceWindow } from './serviceWindows';
    about itself here is what the supervisor last decided and wrote down; the
    page never guesses. A click does not touch a process either: it records
    what the person wants, and the supervisor acts on it within a second. */
-
-type StartMode = 'startup' | 'schedule' | 'manual';
-type Policy = 'always' | 'on_failure' | 'never';
-type LockMode = 'shared' | 'exclusive';
-
-interface ServiceSession {
-  id: number;
-  started_at: string;
-  stopped_at: string | null;
-  pid: number | null;
-  exit_code: number | null;
-  stop_reason: string | null;
-  command: string | null;
-}
-
-export interface Service {
-  id: number;
-  key: string;
-  name: string;
-  description: string | null;
-  command: string;
-  cwd: string | null;
-  project_id: number | null;
-  environment_id: number | null;
-  env_vars_json: Record<string, string> | null;
-  start_mode: StartMode;
-  windows: ServiceWindow[];
-  timezone: string | null;
-  restart_policy: Policy;
-  stop_timeout_seconds: number;
-  lock_resource: string | null;
-  lock_mode: LockMode;
-  notify_webhook_url: string | null;
-  override_running: boolean | null;
-  override_until: string | null;
-  override_reason: string | null;
-  state: string;
-  state_detail: string | null;
-  state_since: string | null;
-  next_attempt_at: string | null;
-  should_run: boolean;
-  next_change: string | null;
-  current_session: ServiceSession | null;
-  last_session: ServiceSession | null;
-}
 
 interface Named { id: number; name: string; root_path?: string; status?: string; lock_resource?: string | null }
 
@@ -90,7 +51,6 @@ const REASON_LABEL: Record<string, string> = {
 };
 const TIMEOUT_PRESETS = [10, 30, 60, 180, 600];
 
-const isLive = (s: Service) => ['running', 'starting', 'stopping'].includes(s.state);
 const zoneOf = (s: Service) => s.timezone || 'UTC';
 
 function formatAt(iso: string, zone: string): string {
@@ -147,7 +107,7 @@ export function describe(s: Service, now: number): { text: string; resumable: bo
   return { text: s.state_detail || 'Stopped', resumable: false };
 }
 
-function useServices() {
+export function useServices() {
   const [items, setItems] = useState<Service[] | null>(null);
   const [supervised, setSupervised] = useState(true);
   const load = () => {
@@ -674,7 +634,116 @@ export function ServiceModal({ service, onClose, done }: {
   );
 }
 
-/** For the dashboard and the wallboard: one line per service that matters now. */
-export function serviceUntil(s: Service, now: number): string | null {
-  return s.next_change ? untilLabel(new Date(s.next_change), now) : null;
+/* ─── On the dashboard and the wallboard ─────────────────
+   Services are things that should be up, so the question these answer is
+   "is anything not as it should be?" — the ones that need a person come
+   first, then the ones the supervisor is busy with, then the healthy ones. */
+
+const DASH_ROWS = 6;
+
+/** Dashboard panel. Hidden until there is a service to show. */
+export function ServicesPanel({ items, onChanged }: { items: Service[] | null; onChanged: () => void }) {
+  const live = (items ?? []).some(isLive);
+  const now = useNow(live);
+  const { act, busy } = useServiceActions(onChanged);
+  if (!items || items.length === 0) return null;
+  const { up, down } = serviceCounts(items);
+  const ordered = [...items].sort(byAttention);
+  return (
+    <div className="panel services-panel" style={{ marginBottom: 16 }}>
+      <div className="panel-head">
+        <div>
+          <h2>Services</h2>
+          <p>{up} of {items.length} up{down ? ` · ${down} need${down === 1 ? 's' : ''} you` : ''}</p>
+        </div>
+        <Link className="panel-link" to="/services">All →</Link>
+      </div>
+      <div className="svc-rows">
+        {ordered.slice(0, DASH_ROWS).map(s => {
+          const tone = toneOf(s);
+          const running = s.should_run || isLive(s);
+          return (
+            <div key={s.id} className={clsx('svc-row', `svc-row--${tone}`)}>
+              <span className={clsx('svc-dot', `svc-dot--${tone}`)} aria-hidden="true" />
+              <Link className="svc-row-main" to={`/services/${s.id}`}>
+                <span className="svc-row-name">
+                  <b title={s.name}>{s.name}</b>
+                  <em className={`svc-word svc-word--${tone}`}>{STATE_WORD[s.state] ?? s.state}</em>
+                </span>
+                <small title={describe(s, now).text}>{describe(s, now).text || MODE_LABEL[s.start_mode]}</small>
+                {s.start_mode === 'schedule' && <TodayBar windows={s.windows} zone={zoneOf(s)} />}
+              </Link>
+              <button type="button" className="svc-row-action" disabled={!!busy || s.state === 'stopping'}
+                      onClick={() => act(s, running ? 'stop' : 'start')}
+                      title={running ? `Stop ${s.name}` : `Start ${s.name}`}
+                      aria-label={running ? `Stop ${s.name}` : `Start ${s.name}`}>
+                {running ? <Square size={12} /> : <Play size={12} />}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {items.length > DASH_ROWS && (
+        <Link className="svc-more" to="/services">{items.length - DASH_ROWS} more →</Link>
+      )}
+    </div>
+  );
+}
+
+function clockTime(iso: string, zone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hour12: false })
+      .format(new Date(iso));
+  } catch { return iso; }
+}
+
+/** The wallboard's services band: big enough to read across a room. */
+export function WallboardServices({ items, now }: { items: Service[]; now: number }) {
+  if (!items.length) return null;
+  const ordered = [...items].sort(byAttention);
+  const { up } = serviceCounts(items);
+  const swaps = handovers(items);
+  return (
+    <section className="wb-section wb-services" aria-label="Services">
+      <div className="wb-section-head">
+        <span className="wb-section-title"><Server size={15} /> Services</span>
+        <em className="wb-section-count">{up}/{items.length} up</em>
+        {swaps.map(h => (
+          <span key={h.resource} className="wb-handover" title={`Who has ${h.resource}`}>
+            <Lock size={12} /> <code>{h.resource}</code>
+            {h.holder
+              ? <b className={`wb-handover-holder wb-handover-holder--${toneOf(h.holder)}`}>{h.holder.name}</b>
+              : <span className="wb-handover-free">free</span>}
+            {h.waiting
+              ? <><span className="wb-handover-arrow">→</span><span>{h.waiting.name} waiting</span></>
+              : h.upcoming && <><span className="wb-handover-arrow">→</span>
+                  <span>{h.upcoming.name} at {clockTime(h.upcoming.next_change!, zoneOf(h.upcoming))}</span></>}
+          </span>
+        ))}
+        <span className="wb-section-rule" aria-hidden="true" />
+      </div>
+      <div className="wb-service-grid">
+        {ordered.map(s => {
+          const tone = toneOf(s);
+          const since = s.current_session?.started_at;
+          const detail = s.state === 'running' && since
+            ? `up ${formatDuration((now - new Date(since).getTime()) / 1000)}`
+            : s.state === 'stopped' && s.start_mode === 'schedule' && s.next_change
+              ? `starts ${clockTime(s.next_change, zoneOf(s))} · ${untilLabel(new Date(s.next_change), now)}`
+              : s.state === 'stopped' && s.start_mode === 'manual' ? 'on demand'
+              : s.state_detail || describe(s, now).text;
+          return (
+            <Link key={s.id} to={`/services/${s.id}`} className={clsx('wb-service', `wb-service--${tone}`)}>
+              <span className="wb-service-top">
+                <span className="wb-service-name" title={s.name}>{s.name}</span>
+                <span className="wb-service-state">{STATE_WORD[s.state] ?? s.state}</span>
+              </span>
+              <span className="wb-service-detail" title={detail}>{detail}</span>
+              {s.start_mode === 'schedule' && <TodayBar windows={s.windows} zone={zoneOf(s)} className="today-bar--wb" />}
+            </Link>
+          );
+        })}
+      </div>
+    </section>
+  );
 }

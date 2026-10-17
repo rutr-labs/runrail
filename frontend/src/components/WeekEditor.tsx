@@ -239,3 +239,31 @@ export function WeekEditor({ windows, zone, onChange }: {
     </div>
   );
 }
+
+/** Today's windows as one slim 24-hour bar with a now-marker, in the service's
+ *  zone — for a row in a list, where a whole week would be noise. */
+export function TodayBar({ windows, zone, className }: {
+  windows: ServiceWindow[]; zone: string; className?: string;
+}) {
+  let row = 0;
+  let minute = 0;
+  try {
+    const w = wallParts(new Date(), zone);
+    row = (w.dow + 6) % 7;
+    minute = w.h * 60 + w.mi;
+  } catch { /* unknown zone: draw it as UTC-less, still useful */ }
+  const segments = weekSegments(windows)[row];
+  const label = segments.length
+    ? `Today: ${segments.map(s => `${hhmm(s.from)}–${s.to === 1440 ? '24:00' : hhmm(s.to)}`).join(', ')} (${zone})`
+    : `Not scheduled today (${zone})`;
+  return (
+    <div className={clsx('today-bar', className)} title={label} aria-label={label} role="img">
+      {segments.map((s, i) => (
+        <span key={i} className={clsx('today-bar-seg', `week-bar--c${s.index % 6}`,
+                                      minute >= s.from && minute < s.to && 'is-now')}
+              style={{ left: `${(s.from / 1440) * 100}%`, width: `${((s.to - s.from) / 1440) * 100}%` }} />
+      ))}
+      <span className="today-bar-now" style={{ left: `${(minute / 1440) * 100}%` }} />
+    </div>
+  );
+}
