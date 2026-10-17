@@ -120,7 +120,7 @@ runrail serve                                    # API, UI, scheduler and worker
 runrail run daily-refresh --param region=ca      # queue a run now
 runrail backfill daily-refresh --from 2026-06-01 --to 2026-06-30
 runrail export -o workflows.yml                  # workflows as YAML you can commit
-runrail apply workflows.yml                      # declarative upsert by name
+runrail apply workflows.yml                      # declarative upsert (survives renames)
 runrail import ~/old/.runrail                    # bring an existing setup into this home
 runrail cleanup --older-than-days 30 --dry-run   # prune old runs, logs and artifacts
 runrail status

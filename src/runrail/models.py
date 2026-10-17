@@ -1,4 +1,5 @@
 import enum
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -144,6 +145,11 @@ class Workflow(TimestampMixin, Base):
     __tablename__ = "workflows"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True)
+    #: Identity for workflow-as-code: written into every YAML export and matched
+    #: before the name on apply, so a file applied after a rename updates the
+    #: renamed workflow instead of creating a duplicate that fires alongside it.
+    key: Mapped[str] = mapped_column(String(32), unique=True,
+                                     default=lambda: uuid.uuid4().hex)
     description: Mapped[str | None] = mapped_column(Text)
     schedule_cron: Mapped[str | None] = mapped_column(String(255))
     # IANA name (e.g. "Asia/Dubai"); NULL evaluates the cron in UTC as before.
@@ -218,6 +224,8 @@ class WorkflowRun(Base):
         # IS NOT NULL and nearly every row is NULL; without it that poll costs a
         # full table scan of every run ever.
         Index("ix_workflow_runs_sla_breached_at", "sla_breached_at"),
+        # Ids are permalinks: never hand one out again after retention deletes it.
+        {"sqlite_autoincrement": True},
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"))
@@ -245,6 +253,7 @@ class WorkflowRun(Base):
 
 class TaskRun(Base):
     __tablename__ = "task_runs"
+    __table_args__ = {"sqlite_autoincrement": True}  # see WorkflowRun
     id: Mapped[int] = mapped_column(primary_key=True)
     workflow_run_id: Mapped[int] = mapped_column(ForeignKey("workflow_runs.id", ondelete="CASCADE"), index=True)
     # Indexed for the cascade, not for a read: deleting one task made SQLite
@@ -294,6 +303,7 @@ class RunNote(TimestampMixin, Base):
 
 class Artifact(Base):
     __tablename__ = "artifacts"
+    __table_args__ = {"sqlite_autoincrement": True}  # see WorkflowRun
     id: Mapped[int] = mapped_column(primary_key=True)
     # Same cascade reason as TaskRun.task_id: retention deletes runs, each
     # deleted task run then swept the whole artifacts table for children.

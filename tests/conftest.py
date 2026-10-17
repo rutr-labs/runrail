@@ -1,4 +1,5 @@
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -26,10 +27,44 @@ def _reset(engine) -> None:
         connection.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
 
 
+@pytest.fixture(scope="session")
+def _migrated_sqlite(tmp_path_factory) -> Path | None:
+    """A SQLite database at the head of the migration chain, built once.
+
+    Every test used to run the whole chain into its own fresh file: about
+    0.2s a test here and 1.7s on the Windows runner, most of that job's eight
+    minutes. Each test now gets a copy of this one. The chain itself still runs
+    for real — this is it — and init_db still runs per test against the copy,
+    where it finds nothing left to do.
+    """
+    if TEST_DB_URL:
+        return None
+    from runrail.config import get_settings
+    from runrail.db import init_db
+    directory = tmp_path_factory.mktemp("migrated")
+    template = directory / "template.db"
+    saved = {key: os.environ.get(key) for key in ("RUNRAIL_HOME", "RUNRAIL_DB_URL")}
+    os.environ["RUNRAIL_HOME"] = str(directory / ".runrail")
+    os.environ["RUNRAIL_DB_URL"] = f"sqlite:///{template}"
+    get_settings.cache_clear()
+    try:
+        init_db()
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        get_settings.cache_clear()
+    return template
+
+
 @pytest.fixture()
-def client(tmp_path: Path, monkeypatch):
+def client(tmp_path: Path, monkeypatch, _migrated_sqlite):
     monkeypatch.setenv("RUNRAIL_HOME", str(tmp_path / ".runrail"))
     monkeypatch.setenv("RUNRAIL_DB_URL", TEST_DB_URL or f"sqlite:///{tmp_path / 'test.db'}")
+    if _migrated_sqlite is not None:
+        shutil.copyfile(_migrated_sqlite, tmp_path / "test.db")
     monkeypatch.setenv("RUNRAIL_BROWSE_ROOT", str(tmp_path))
     from runrail.config import get_settings
     get_settings.cache_clear()

@@ -179,6 +179,14 @@ def update_task(object_id: int, data: TaskIn, db: Session = Depends(get_db)):
 @router.delete("/tasks/{object_id}", status_code=204)
 def delete_task(object_id: int, db: Session = Depends(get_db)):
     task = get_or_404(db, Task, object_id)
+    # A running run will reach this task with the definition it started with,
+    # and its attempt could not even be recorded once the row is gone (task
+    # runs reference the task). Edits apply from the next run; a delete waits.
+    if task.workflow_id is not None and db.scalar(select(WorkflowRun.id).where(
+            WorkflowRun.workflow_id == task.workflow_id,
+            WorkflowRun.status == RunStatus.running).limit(1)) is not None:
+        raise HTTPException(409, f"Task '{task.name}' belongs to a run that is executing; "
+                                 "delete it once the run finishes, or cancel the run")
     # A run parked on this task's gate has to be released BEFORE the row goes.
     # TaskRun.task_id cascades on delete, so the gate row disappears with the
     # task while the run stays waiting_approval — a state whose only exits were

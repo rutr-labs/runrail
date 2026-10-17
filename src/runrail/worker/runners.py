@@ -229,22 +229,58 @@ def _asked_to_stop(should_stop: Callable[[], bool]) -> bool:
         return False
 
 
+#: SQLite virtual-machine steps between checks for a timeout or a cancellation.
+_SQL_CHECK_EVERY = 10_000
+
+
 def execute_sql(task: Task, context: dict[str, Any], cwd: Path, stdout: Path,
-                stderr: Path) -> ExecutionResult:
+                stderr: Path, timeout: int | None = None,
+                should_stop: Callable[[], bool] | None = None) -> ExecutionResult:
+    """Run a task's SQL script against a SQLite database, in this process.
+
+    There is no subprocess to kill, so timeouts and cancellation go through
+    SQLite's progress handler, which aborts the statement in flight. Without
+    it a SQL task ignored both: the form promised a timeout that "kills the
+    task", and Cancel waited for the script to finish by itself. As with a
+    killed shell script, statements that already completed stay committed.
+    """
     params = context.get("parameters", {})
     db_path = params.get("sqlite_db_path") or os.environ.get("RUNRAIL_SQLITE_DB_PATH")
     if not db_path: return ExecutionResult(1, "SQL task requires sqlite_db_path parameter or RUNRAIL_SQLITE_DB_PATH")
     if not task.sql_path: return ExecutionResult(1, "SQL task requires sql_path")
+    deadline = time.monotonic() + timeout if timeout else None
+    stopped: list[ExecutionResult] = []
+    next_poll = [0.0]
+
+    def interrupt() -> int:
+        now = time.monotonic()
+        if deadline is not None and now >= deadline:
+            stopped.append(ExecutionResult(124, f"Task timed out after {timeout} seconds"))
+        elif should_stop is not None and now >= next_poll[0]:
+            next_poll[0] = now + POLL_SECONDS  # the check reads the database
+            if _asked_to_stop(should_stop):
+                stopped.append(ExecutionResult(130, "Cancelled while running", cancelled=True))
+        return 1 if stopped else 0
+
+    connection = None
     try:
         script = (cwd / render(task.sql_path, context)).read_text()
-        with sqlite3.connect(db_path) as connection:
+        connection = sqlite3.connect(db_path)
+        connection.set_progress_handler(interrupt, _SQL_CHECK_EVERY)
+        with connection:
             connection.executescript(render(script, context))
         stdout.write_text("SQL script completed successfully\n")
         stderr.write_text("")
         return ExecutionResult(0)
     except Exception as exc:
+        if stopped:
+            stderr.write_text(f"{stopped[0].error}\n")
+            return stopped[0]
         stderr.write_text(f"{type(exc).__name__}: {exc}\n")
         return ExecutionResult(1, str(exc))
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def display_command(spec: CommandSpec) -> str:

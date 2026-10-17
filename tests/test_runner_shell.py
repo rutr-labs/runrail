@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -80,3 +81,33 @@ def test_notebook_artifact_name_cannot_escape_artifacts_directory(tmp_path: Path
     assert spec.artifact is not None
     assert spec.artifact.parent == tmp_path
     assert ".." not in spec.artifact.name
+
+
+_ENDLESS_SQL = ("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) "
+                "SELECT count(*) FROM n;")
+
+
+def _sql_task(tmp_path: Path) -> tuple[Task, dict]:
+    (tmp_path / "endless.sql").write_text(_ENDLESS_SQL)
+    task = Task(name="sql", task_type=TaskType.sql, sql_path="endless.sql")
+    return task, {"parameters": {"sqlite_db_path": str(tmp_path / "data.db")}}
+
+
+def test_a_sql_task_honours_its_timeout(tmp_path: Path):
+    """SQL runs in-process, so there was no subprocess for the timeout to kill:
+    a runaway query ran forever whatever the task's timeout said."""
+    from runrail.worker.runners import execute_sql
+    task, context = _sql_task(tmp_path)
+    started = time.monotonic()
+    result = execute_sql(task, context, tmp_path, tmp_path / "out", tmp_path / "err", 1)
+    assert result.exit_code == 124 and time.monotonic() - started < 5
+    assert "timed out" in (tmp_path / "err").read_text()
+
+
+def test_a_sql_task_stops_when_its_run_is_cancelled(tmp_path: Path):
+    from runrail.worker.runners import execute_sql
+    task, context = _sql_task(tmp_path)
+    asked = time.monotonic() + 0.5
+    result = execute_sql(task, context, tmp_path, tmp_path / "out", tmp_path / "err", None,
+                         should_stop=lambda: time.monotonic() > asked)
+    assert result.exit_code == 130 and result.cancelled

@@ -2,10 +2,13 @@
 
 Files reference projects and environments by *name* (never by id) so a file
 exported on one machine applies cleanly on another. Apply is a declarative
-upsert keyed on workflow name: tasks present in the file are created/updated,
-tasks missing from the file are removed from that workflow.
+upsert keyed on the workflow's `key` — written into every export, so a file
+applied after a rename in the UI updates that workflow (renaming it back) rather
+than creating a duplicate — and on its name when a file has no key. Tasks
+present in the file are created/updated, tasks missing from it are removed.
 """
 
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -27,6 +30,9 @@ _TASK_FIELDS = ("task_type", "command", "script_path", "notebook_path", "sql_pat
 #: the apply loop writes None into them.
 _TASK_DEFAULTS = {"retries": 0, "retry_delay_seconds": 60, "requires_approval": False}
 
+#: What a hand-written `key:` may look like; exports write a uuid4 hex.
+_KEY = re.compile(r"[A-Za-z0-9_-]{1,32}")
+
 
 def _compact(mapping: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in mapping.items()
@@ -45,7 +51,7 @@ def export_workflows(db: Session, name: str | None = None) -> dict[str, Any]:
 
     exported = []
     for workflow in workflows:
-        item: dict[str, Any] = {"name": workflow.name}
+        item: dict[str, Any] = {"name": workflow.name, "key": workflow.key}
         item.update(_compact({field: getattr(workflow, field) for field in _WORKFLOW_FIELDS}))
         item["enabled"] = workflow.enabled  # always explicit, even when False
         # Exported as a pair, and only as a pair: the mode alone is meaningless,
@@ -135,11 +141,22 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
                 "approval_prompt": task_entry.get("approval_prompt"),
             })
 
-        workflow = db.scalar(select(Workflow).where(Workflow.name == wf_name))
+        key = entry.get("key")
+        if key is not None and not (isinstance(key, str) and _KEY.fullmatch(key)):
+            raise ValueError(f"Workflow '{wf_name}': key must be 1-32 letters, digits, - or _")
+        workflow = db.scalar(select(Workflow).where(Workflow.key == key)) if key else None
+        if workflow is None:
+            workflow = db.scalar(select(Workflow).where(Workflow.name == wf_name))
         created = workflow is None
         if created:
-            workflow = Workflow(name=wf_name)
+            workflow = Workflow(name=wf_name, **({"key": key} if key else {}))
             db.add(workflow)
+        elif workflow.name != wf_name:
+            # Matched by key after a rename: the file is the source of truth.
+            if db.scalar(select(Workflow.id).where(Workflow.name == wf_name)) is not None:
+                raise ValueError(f"Workflow '{workflow.name}' is '{wf_name}' in this file, "
+                                 f"but another workflow already has that name")
+            workflow.name = wf_name
         # Through the same schema as the API, like the tasks above. Writing the
         # columns straight from YAML accepted what the API refuses: an unknown
         # time zone the scheduler then skipped, and max_concurrent_runs: 0,

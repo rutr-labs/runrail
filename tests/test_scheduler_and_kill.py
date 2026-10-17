@@ -178,3 +178,40 @@ def test_yaml_apply_refuses_what_the_api_refuses(client, bad):
     with SessionLocal() as db, pytest.raises(ValueError):
         apply_workflows(db, {"workflows": [{"name": "from-yaml", **bad, "tasks": [
             {"name": "t", "task_type": "shell", "command": "exit 0"}]}]})
+
+
+def test_a_run_uses_the_task_definitions_it_started_with(client, tmp_path):
+    """Editing a task mid-run used to change its command for this run while the
+    run kept the old dependency graph. Edits apply from the next run."""
+    from portable import emit, wait_for
+    flag = tmp_path / "go"
+    workflow = make_workflow(client, "edited-mid-run")
+    make_shell_task(client, workflow["id"], "first", wait_for(flag, seconds=20))
+    second = make_shell_task(client, workflow["id"], "second", emit("as-started"),
+                             depends_on=["first"])
+    run_id = start_run(client, workflow["id"])
+
+    def work():
+        with SessionLocal() as db:
+            execute_workflow_run(db, claim_runnable_run(db))
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not client.get(f"/api/runs/{run_id}").json()["task_runs"]:
+        time.sleep(0.05)
+
+    edited = client.put(f"/api/tasks/{second['id']}", json={
+        "name": "second", "task_type": "shell", "command": emit("edited"),
+        "depends_on_json": ["first"], "retries": 0, "retry_delay_seconds": 0})
+    assert edited.status_code == 200, edited.text
+    # Deleting is refused while the run is executing: it will still reach the task.
+    assert client.delete(f"/api/tasks/{second['id']}").status_code == 409
+    flag.touch()
+    worker.join(timeout=30)
+
+    rows = client.get(f"/api/runs/{run_id}").json()["task_runs"]
+    second_row = next(row for row in rows if row["task_name"] == "second")
+    assert client.get(f"/api/task-runs/{second_row['id']}/stdout").text == "as-started"
+    # The edit is what the next run gets, and the task can go now.
+    assert client.delete(f"/api/tasks/{second['id']}").status_code == 204
