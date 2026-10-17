@@ -8,8 +8,8 @@ from runrail.api.crud import apply_update, ensure_environment_ready, get_or_404,
 from runrail.config import get_settings
 from runrail.db import get_db
 from runrail.environments import (
-    managed_environment_path,
-    remove_managed_root,
+    environment_ids_in_use,
+    remove_managed_files,
     validate_external,
     validate_package_specs,
 )
@@ -195,9 +195,14 @@ def delete_environment(object_id: int, db: Session = Depends(get_db)):
     environment = get_or_404(db, Environment, object_id)
     if environment.status in (EnvironmentStatus.creating, EnvironmentStatus.building):
         raise HTTPException(409, "Environment cannot be removed while a build is in progress")
-    # Resolve the on-disk location before the ORM object is invalidated by the delete.
-    managed_root = managed_environment_path(environment) if environment.managed else None
+    # A running task executes from this directory: deleting it would pull the
+    # interpreter out from under the process, and send the run's remaining
+    # tasks to whatever default environment they fall back to.
+    if environment.id in environment_ids_in_use(db):
+        raise HTTPException(409, f"Environment '{environment.name}' is in use by a running "
+                                 "workflow run; remove it once the run finishes")
+    environment_id, managed = environment.id, environment.managed
     db.delete(environment); db.commit()
-    if managed_root is not None:
-        remove_managed_root(managed_root)
+    if managed:
+        remove_managed_files(environment_id)
     return Response(status_code=204)
