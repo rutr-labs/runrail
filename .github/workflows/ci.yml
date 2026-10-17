@@ -84,7 +84,31 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Tests
-        run: pytest -q --durations=25
+        run: pytest -q --durations=10
+
+  # Real notebooks: a managed environment built with papermill and ipykernel
+  # from the network, a kernel per task, reports rendered by nbconvert. Every
+  # other job stands in for that stack, so this is the only place it runs —
+  # and on Windows the kernel takes a transport branch of its own.
+  notebooks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      RUNRAIL_NOTEBOOK_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev,notebook]"
+      - name: Tests
+        run: pytest -q tests/test_notebook_execution.py tests/test_reports.py
 
   frontend:
     runs-on: ubuntu-latest
