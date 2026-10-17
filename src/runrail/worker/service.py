@@ -31,6 +31,7 @@ from runrail.models import (
     TaskRun,
     TaskRunStatus,
     TaskType,
+    TriggerType,
     Workflow,
     WorkflowRun,
     now,
@@ -44,6 +45,7 @@ from runrail.worker.runners import (
     execute_command,
     execute_sql,
     find_project_root,
+    kill_running_tasks,
     python_module_name,
 )
 from runrail.worker.templating import render
@@ -364,8 +366,14 @@ def _cancel_requested(run_id: int) -> bool:
 
 
 def _run_cancelled(db: Session, run_id: int) -> bool:
-    """Fresh read of the run status so API-side cancellations are honoured mid-run."""
-    return db.scalar(select(WorkflowRun.status).where(WorkflowRun.id == run_id)) == RunStatus.cancelled
+    """Fresh read of the run status so API-side cancellations are honoured mid-run.
+
+    A run with no row left counts as cancelled: deleting its workflow cascades
+    the run away, and its task otherwise kept running to the end — unowned, and
+    outside the resource lock the deleted row had held.
+    """
+    status = db.scalar(select(WorkflowRun.status).where(WorkflowRun.id == run_id))
+    return status is None or status == RunStatus.cancelled
 
 
 def _task_job(run_id: int, workflow_id: int, task_id: int) -> bool:
@@ -579,11 +587,44 @@ def claim_runnable_run(db: Session) -> WorkflowRun | None:
     skipped: list[int] = []
     while len(skipped) < _CLAIM_SKIP_LIMIT:
         run = claim_next_run(db, skip=skipped)
+        if run is not None and _schedule_paused_since_queued(db, run):
+            _drop(db, run)
+            skipped.append(run.id)
+            continue
         if run is None or not (_building_environment(db, run) or _over_gate_budget(db, run)):
             return run
         _requeue(db, run)
         skipped.append(run.id)
     return None
+
+
+def _schedule_paused_since_queued(db: Session, run: WorkflowRun) -> bool:
+    """A scheduled iteration, never started, of a workflow that has since been
+    disabled, auto-paused, or snoozed with "pause scheduled runs".
+
+    Those only stopped NEW fires. The one iteration already waiting in the
+    queue still ran — so auto-pause, posting "paused after 5 consecutive
+    failures", was followed by a sixth run of the broken pipeline, and a snooze
+    promising "scheduled runs are skipped outright" ran one anyway. Manual runs,
+    retries and resumes are someone's explicit request and still go ahead.
+    """
+    if run.trigger_type != TriggerType.schedule or run.resume_count:
+        return False
+    workflow = db.get(Workflow, run.workflow_id)
+    if workflow is None:
+        return False
+    db.refresh(workflow)
+    paused = not workflow.enabled or (workflow.snoozed and workflow.snooze_pauses_runs)
+    return paused and not db.scalar(select(func.count()).select_from(TaskRun).where(
+        TaskRun.workflow_run_id == run.id))
+
+
+def _drop(db: Session, run: WorkflowRun) -> None:
+    db.execute(update(WorkflowRun)
+               .where(WorkflowRun.id == run.id, WorkflowRun.status == RunStatus.running)
+               .values(status=RunStatus.cancelled, finished_at=now(), duration_seconds=0))
+    db.commit()
+    _ws_manager.notify({"type": "run_updated", "id": run.id})
 
 
 def _requeue(db: Session, run: WorkflowRun) -> None:
@@ -677,6 +718,7 @@ class WorkerService:
         if not self.running:  # second signal: the user really means it
             print("\nForce quitting — interrupted runs will be marked failed on the next start.",
                   flush=True)
+            kill_running_tasks()
             os._exit(130)
         self.running = False
         executing = len(self.executing_run_ids())

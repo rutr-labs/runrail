@@ -15,10 +15,17 @@ from runrail.maintenance import cleanup_runs
 from runrail.models import RunStatus, TriggerType, Workflow, WorkflowRun, _aware, now
 
 
-def enqueue_scheduled(workflow_id: int) -> None:
+def enqueue_scheduled(workflow_id: int, cron: str | None = None, zone: str | None = None) -> None:
     with SessionLocal() as db:
         workflow = db.get(Workflow, workflow_id)
         if not workflow or not workflow.enabled: return
+        # The job carries the schedule it was installed for. An edit reaches the
+        # scheduler on the next sync, up to 30s later; until then the old job
+        # would still fire, so a change from 09:00 to 09:01 made at 08:59:50 ran
+        # at both. A fire for a schedule the workflow no longer has is dropped.
+        if cron is not None and (cron != workflow.schedule_cron
+                                 or zone != (workflow.schedule_timezone or "UTC")):
+            return
         # Gated here rather than in sync(): the job keeps firing and no-ops, so
         # expiry needs no watcher, no cleanup pass and no state machine — the
         # first fire after snooze_until simply enqueues again.
@@ -243,8 +250,8 @@ class SchedulerService:
                 # unset). APScheduler owns the DST semantics, and they are not the
                 # intuitive ones: a wall time inside a spring-forward gap still
                 # fires, resolved against the offset in force before the jump (so
-                # 02:30 runs at 03:30 on that one day), and a repeated fall-back
-                # time fires twice. ZoneInfo raises KeyError for an unknown zone,
+                # 02:30 runs at 03:30 on that one day). A repeated fall-back time
+                # fires once, at its earlier instant (crontab._OnceAtWallClockTrigger). ZoneInfo raises KeyError for an unknown zone,
                 # hence the broad except alongside ValueError for bad crontabs.
                 tz = workflow.schedule_timezone or "UTC"
                 trigger = cron_trigger(workflow.schedule_cron, tz)
@@ -252,7 +259,14 @@ class SchedulerService:
                 # a firing the moment the process is briefly busy or the host wakes from
                 # sleep. Late enqueueing is safe here — runs are deduped per minute and
                 # coalesced to one queued iteration.
-                self.scheduler.add_job(enqueue_scheduled, trigger, [workflow.id], id=job_id,
+                # Replaced only when the schedule changed: replacing recomputes the
+                # next fire from now, so a sync landing just after a fire time but
+                # before the scheduler handled it dropped that fire.
+                args = [workflow.id, workflow.schedule_cron, tz]
+                existing = self.scheduler.get_job(job_id)
+                if existing is not None and list(existing.args) == args:
+                    continue
+                self.scheduler.add_job(enqueue_scheduled, trigger, args, id=job_id,
                                        replace_existing=True, coalesce=True, max_instances=1,
                                        misfire_grace_time=55)
             except (ValueError, KeyError):

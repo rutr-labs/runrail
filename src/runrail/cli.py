@@ -182,6 +182,8 @@ def _drain_worker(worker_service: WorkerService, thread: threading.Thread) -> No
     """Wait for executing runs after shutdown begins; a second Ctrl+C force-quits."""
     def force(*_):
         typer.echo("\nForce quitting — interrupted runs will be marked failed on the next start.")
+        from runrail.worker.runners import kill_running_tasks
+        kill_running_tasks()
         os._exit(130)
     # Explicit handler: uvicorn/asyncio leave SIGINT dispositions in an
     # unreliable state after their own shutdown dance.

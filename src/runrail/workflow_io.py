@@ -11,9 +11,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from runrail.crontab import validate_cron
 from runrail.models import Environment, LockMode, Project, Task, Workflow
-from runrail.schemas import TaskIn
+from runrail.schemas import TaskIn, WorkflowIn
 
 # Configuration only. Operator state (snooze, notification markers, breach
 # markers) is deliberately absent: a file applied on another machine must not
@@ -141,22 +140,27 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
         if created:
             workflow = Workflow(name=wf_name)
             db.add(workflow)
-        workflow.description = entry.get("description")
-        # The API validates this in WorkflowIn; a YAML apply writes the column
-        # directly, and an expression the scheduler cannot parse is silently
-        # skipped by sync() — the workflow would look scheduled and never run.
-        cron = entry.get("schedule_cron")
-        workflow.schedule_cron = validate_cron(cron) if cron else None
-        workflow.schedule_timezone = entry.get("schedule_timezone")
-        workflow.enabled = bool(entry.get("enabled", True))
-        workflow.max_concurrent_runs = int(entry.get("max_concurrent_runs", 1))
-        workflow.notify_webhook_url = entry.get("notify_webhook_url")
-        workflow.auto_pause_failures = entry.get("auto_pause_failures")
-        workflow.missed_run_grace_minutes = entry.get("missed_run_grace_minutes")
-        workflow.sla_minutes = entry.get("sla_minutes")
-        workflow.lock_resource = entry.get("lock_resource")
-        # ValueError on an unknown label, like _resolve — never a flush-time LookupError.
-        workflow.lock_mode = LockMode(entry.get("lock_mode") or LockMode.shared)
+        # Through the same schema as the API, like the tasks above. Writing the
+        # columns straight from YAML accepted what the API refuses: an unknown
+        # time zone the scheduler then skipped, and max_concurrent_runs: 0,
+        # which queued runs forever while the missed-run watchdog stayed quiet.
+        checked = WorkflowIn(
+            name=wf_name, description=entry.get("description"),
+            schedule_cron=entry.get("schedule_cron"),
+            schedule_timezone=entry.get("schedule_timezone"),
+            enabled=bool(entry.get("enabled", True)),
+            max_concurrent_runs=entry.get("max_concurrent_runs", 1),
+            notify_webhook_url=entry.get("notify_webhook_url"),
+            auto_pause_failures=entry.get("auto_pause_failures"),
+            missed_run_grace_minutes=entry.get("missed_run_grace_minutes"),
+            sla_minutes=entry.get("sla_minutes"),
+            lock_resource=entry.get("lock_resource"),
+            lock_mode=entry.get("lock_mode") or LockMode.shared,
+        )
+        for field in ("description", "schedule_cron", "schedule_timezone", "enabled",
+                      "max_concurrent_runs", "notify_webhook_url", "auto_pause_failures",
+                      "missed_run_grace_minutes", "sla_minutes", "lock_resource", "lock_mode"):
+            setattr(workflow, field, getattr(checked, field))
         workflow.project_id = _resolve(db, Project, entry.get("project"), "project")
         workflow.default_environment_id = _resolve(
             db, Environment, entry.get("default_environment"), "environment")

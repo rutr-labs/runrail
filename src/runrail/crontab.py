@@ -12,6 +12,9 @@ accept an expression the scheduler then skips, which is the silent
 never-runs-again this module exists to prevent.
 """
 
+from datetime import timedelta
+from datetime import timezone as _tz
+
 from apscheduler.triggers.cron import CronTrigger
 
 #: APScheduler's own day names, indexed by the STANDARD-cron digit.
@@ -62,6 +65,39 @@ def _day_of_week(field: str) -> str:
     return ",".join(translated)
 
 
+class _OnceAtWallClockTrigger(CronTrigger):
+    """A cron trigger that fires once at a repeated fall-back wall time.
+
+    On the night clocks go back, 01:30 happens twice, and APScheduler fires at
+    both instants — so a job set for "daily at 01:30" ran twice that night, an
+    hour apart (the two fires land in different UTC minutes, so the per-minute
+    run key never caught it). The schedule builder and its preview have always
+    promised the earlier instant only; this makes that true. Used only for
+    schedules pinned to particular hours: an hourly job owes a run in each of
+    the two 01:00 hours, which really are two hours.
+    """
+
+    def get_next_fire_time(self, previous_fire_time, now):
+        fire = super().get_next_fire_time(previous_fire_time, now)
+        while fire is not None and _is_second_instance(fire):
+            # In UTC: arithmetic on a zone-aware datetime is wall-clock and drops
+            # `fold`, so `fire + 1µs` would land an hour BEFORE the second
+            # instance and find it again, forever.
+            after = fire.astimezone(_tz.utc) + timedelta(microseconds=1)
+            fire = super().get_next_fire_time(after, after)
+        return fire
+
+
+def _is_second_instance(moment) -> bool:
+    """True when this instant is the later of two that share its wall time."""
+    first = moment.replace(tzinfo=None).replace(tzinfo=moment.tzinfo, fold=0)
+    return first.astimezone(_tz.utc) != moment.astimezone(_tz.utc)
+
+
+def _pins_hours(field: str) -> bool:
+    return all(part.replace("-", "").isdigit() for part in field.split(","))
+
+
 def cron_trigger(expr: str, timezone: str = "UTC") -> CronTrigger:
     """The trigger for a standard-crontab expression, in the given IANA zone.
 
@@ -71,7 +107,9 @@ def cron_trigger(expr: str, timezone: str = "UTC") -> CronTrigger:
     fields = expr.split()
     if len(fields) == len(_FIELD_NAMES):
         fields[-1] = _day_of_week(fields[-1])
-    return CronTrigger.from_crontab(" ".join(fields), timezone=timezone)
+    pinned = len(fields) == len(_FIELD_NAMES) and _pins_hours(fields[1])
+    trigger_class = _OnceAtWallClockTrigger if pinned else CronTrigger
+    return trigger_class.from_crontab(" ".join(fields), timezone=timezone)
 
 
 def _explain(expr: str, error: Exception) -> str:

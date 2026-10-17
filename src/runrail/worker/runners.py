@@ -5,6 +5,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -111,18 +112,64 @@ def _terminate(process: subprocess.Popen) -> None:
         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                        capture_output=True, check=False)
     else:
+        group = process.pid  # start_new_session: the leader's pid is the group id
         try:
-            os.killpg(process.pid, signal.SIGTERM)
+            os.killpg(group, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        # Wait for the GROUP, not the leader. `sh -c "python etl.py; ..."` dies
+        # on SIGTERM at once while a python that handles the signal carries on;
+        # waiting on the shell alone skipped the SIGKILL, and the retry started
+        # beside the attempt it was meant to replace.
+        deadline = time.monotonic() + TERMINATE_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            process.poll()  # reap the leader so it does not linger as a zombie
+            if not _group_alive(group):
+                break
+            time.sleep(0.05)
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     process.wait()
+
+
+#: How long a stopped task's processes get to exit on SIGTERM before SIGKILL.
+TERMINATE_GRACE_SECONDS = 5.0
+
+
+def _group_alive(group: int) -> bool:
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+#: Every task process currently running, so a force quit can take them along.
+_LIVE: set[subprocess.Popen] = set()
+_LIVE_LOCK = threading.Lock()
+
+
+def kill_running_tasks() -> None:
+    """Kill every task process still running, at once. For a force quit only:
+    tasks run in sessions of their own, so the terminal's Ctrl+C never reaches
+    them, and os._exit leaves them running — after which the next start marks
+    their runs failed and frees their slots and locks with the work still
+    going."""
+    with _LIVE_LOCK:
+        processes = list(_LIVE)
+    for process in processes:
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               capture_output=True, check=False, timeout=10)
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, subprocess.SubprocessError):
+            pass
 
 
 def execute_command(spec: CommandSpec, cwd: Path, env: dict[str, str], stdout: Path,
@@ -143,23 +190,34 @@ def execute_command(spec: CommandSpec, cwd: Path, env: dict[str, str], stdout: P
                 creationflags=(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                                if os.name == "nt" else 0),
             )
-            deadline = time.monotonic() + timeout if timeout else None
-            while True:
-                slice_seconds = POLL_SECONDS
-                if deadline is not None:
-                    slice_seconds = max(0.0, min(slice_seconds, deadline - time.monotonic()))
-                try:
-                    return ExecutionResult(process.wait(timeout=slice_seconds))
-                except subprocess.TimeoutExpired:
-                    pass
-                if deadline is not None and time.monotonic() >= deadline:
-                    _terminate(process)
-                    return ExecutionResult(124, f"Task timed out after {timeout} seconds")
-                if should_stop is not None and _asked_to_stop(should_stop):
-                    _terminate(process)
-                    return ExecutionResult(130, "Cancelled while running", cancelled=True)
+            with _LIVE_LOCK:
+                _LIVE.add(process)
+            try:
+                return _supervise(process, timeout, should_stop)
+            finally:
+                with _LIVE_LOCK:
+                    _LIVE.discard(process)
     except OSError as exc:
         return ExecutionResult(1, f"Could not start subprocess: {exc}")
+
+
+def _supervise(process: subprocess.Popen, timeout: int | None,
+               should_stop: Callable[[], bool] | None) -> ExecutionResult:
+    deadline = time.monotonic() + timeout if timeout else None
+    while True:
+        slice_seconds = POLL_SECONDS
+        if deadline is not None:
+            slice_seconds = max(0.0, min(slice_seconds, deadline - time.monotonic()))
+        try:
+            return ExecutionResult(process.wait(timeout=slice_seconds))
+        except subprocess.TimeoutExpired:
+            pass
+        if deadline is not None and time.monotonic() >= deadline:
+            _terminate(process)
+            return ExecutionResult(124, f"Task timed out after {timeout} seconds")
+        if should_stop is not None and _asked_to_stop(should_stop):
+            _terminate(process)
+            return ExecutionResult(130, "Cancelled while running", cancelled=True)
 
 
 def _asked_to_stop(should_stop: Callable[[], bool]) -> bool:
