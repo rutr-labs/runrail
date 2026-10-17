@@ -19,6 +19,7 @@ from runrail.environments import (
     environment_usable_now,
     managed_environment_path,
     provision_managed,
+    queue_legacy_rebuilds,
 )
 from runrail.models import (
     Artifact,
@@ -772,6 +773,10 @@ class WorkerService:
             if recovered:
                 print(f"Recovered {recovered} run(s) interrupted by a previous shutdown "
                       "(marked failed).", flush=True)
+            rebuilding = queue_legacy_rebuilds(db)
+            if rebuilding:
+                print(f"Rebuilding {len(rebuilding)} environment(s) made by an older RunRail, "
+                      f"to repair their command-line tools: {', '.join(rebuilding)}", flush=True)
         with ThreadPoolExecutor(max_workers=self.concurrency,
                                 thread_name_prefix="runrail-worker") as pool:
             while self.running:

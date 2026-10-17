@@ -217,3 +217,28 @@ def test_a_long_build_keeps_its_claim(client, monkeypatch):
     (before, after), = seen
     assert after > before, "the claim was not refreshed during the build"
 
+
+
+def test_environments_built_by_an_older_runrail_are_rebuilt_once(client):
+    """0.5.1 built into staging and renamed to env-<id>, leaving every console
+    script pointing at a deleted interpreter. Upgrading queues a rebuild."""
+    environment = _managed(client, "legacy")
+    root = get_settings().environments_dir.resolve()
+    current = Path(environment["executable"]).parents[1]
+    legacy = root / f"env-{environment['id']}"
+    current.rename(legacy)  # the layout 0.5.1 left behind
+    with SessionLocal() as db:
+        row = db.get(Environment, environment["id"])
+        row.executable = str(environments.environment_python(legacy))
+        db.commit()
+    fresh = _managed(client, "fresh")  # already in the new layout: left alone
+
+    with SessionLocal() as db:
+        assert environments.queue_legacy_rebuilds(db) == ["legacy"]
+        assert environments.queue_legacy_rebuilds(db) == [], "queued twice"
+        assert db.get(Environment, fresh["id"]).status == EnvironmentStatus.ready
+    rebuilt = _build(environment["id"])
+    assert rebuilt.status == EnvironmentStatus.ready
+    assert not legacy.exists() and Path(rebuilt.executable).parents[1].name != legacy.name
+    with SessionLocal() as db:
+        assert environments.queue_legacy_rebuilds(db) == []
