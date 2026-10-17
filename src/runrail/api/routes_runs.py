@@ -58,7 +58,8 @@ def get_run(object_id: int, db: Session = Depends(get_db)):
 
 @router.post("/runs/{object_id}/cancel", response_model=WorkflowRunOut)
 def cancel_run(object_id: int, db: Session = Depends(get_db)):
-    """Cancel a queued run immediately; a running run stops before its next task.
+    """Cancel a queued run immediately; a running run's current task is killed
+    within about a second, and nothing after it starts.
 
     A run parked on an approval gate is cancellable too, and must be: approve
     and reject are its only other exits, so without this a gate nobody decides

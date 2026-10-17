@@ -594,8 +594,9 @@ function CancelRunButton({ run, onDone, size = 'sm' }: { run: Run; onDone?: () =
       await post(`/runs/${run.id}/cancel`, {});
       // Only a *running* run has a worker attached; the other two settle inside
       // the request, and the open gate is cancelled with them.
+      // A running task is killed by the worker's next poll, within about a second.
       toast(run.status === 'running'
-        ? 'Cancellation requested — stops before the next task'
+        ? 'Cancelling — the running task is being stopped'
         : run.status === 'waiting_approval'
         ? 'Run cancelled — the open approval was withdrawn'
         : 'Run cancelled', 'info');
