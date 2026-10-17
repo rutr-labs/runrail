@@ -305,6 +305,35 @@ def environment_usable_now(environment: Environment) -> bool:
             and bool(environment.executable) and Path(environment.executable).is_file())
 
 
+def queue_legacy_rebuilds(db: Session) -> list[str]:
+    """Queue a rebuild of every managed environment still in the layout before
+    0.6.0, and return their names.
+
+    Those were built in a staging directory and renamed to env-<id>, which left
+    every console script they contain — pytest, dbt, papermill, the user's own
+    CLIs — pointing at an interpreter path that no longer exists. Only a rebuild
+    repairs them. It waits for runs using the environment like any rebuild, and
+    tasks keep running on the current venv until it starts; if it fails
+    (offline, a package withdrawn) the environment is marked degraded and keeps
+    working exactly as before, and the next start tries again.
+    """
+    root = get_settings().environments_dir.resolve()
+    queued = []
+    for environment in db.scalars(select(Environment).where(
+            Environment.managed.is_(True), Environment.executable.is_not(None),
+            Environment.status.in_((EnvironmentStatus.ready, EnvironmentStatus.degraded)))):
+        if managed_environment_path(environment) != root / f"env-{environment.id}":
+            continue
+        claimed = db.execute(update(Environment).where(
+            Environment.id == environment.id,
+            Environment.status.in_((EnvironmentStatus.ready, EnvironmentStatus.degraded)),
+        ).values(status=EnvironmentStatus.creating, last_error=None))
+        if claimed.rowcount == 1:
+            queued.append(environment.name)
+    db.commit()
+    return queued
+
+
 def claim_next_environment(db: Session) -> Environment | None:
     stale_before = now() - BUILD_STALE_AFTER
     db.execute(
