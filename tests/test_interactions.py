@@ -11,6 +11,7 @@ two run states the batch added.
 
 from datetime import date, timedelta
 
+import pytest
 from portable import append, emit, exists, then
 
 from runrail.db import SessionLocal
@@ -84,7 +85,13 @@ def gates(client, run_id=None):
 
 
 def run_status(client, run_id) -> str:
-    return client.get(f"/api/runs/{run_id}").json()["status"]
+    run = client.get(f"/api/runs/{run_id}").json()
+    for task_run in run["task_runs"]:
+        # A fork() refused under machine load is the environment's doing, not
+        # the lock's; say so instead of failing on a status that reads like a race.
+        if (task_run["error_message"] or "").startswith("Could not start subprocess"):
+            pytest.fail(f"run {run_id}: {task_run['error_message']}")
+    return run["status"]
 
 
 def set_status(run_id: int, status: RunStatus) -> None:

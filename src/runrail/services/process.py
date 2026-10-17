@@ -166,6 +166,38 @@ def same_process(pid: int | None, created_at: float | None) -> bool:
         return False
 
 
+def usage(pid: int) -> tuple[float, int] | None:
+    """CPU percent since the previous call and resident memory in bytes, for
+    the process and everything under it. psutil's cpu_percent measures between
+    calls on the same Process object, so one is kept per pid."""
+    try:
+        root = _tracked.get(pid)
+        if root is None or not root.is_running():
+            root = _tracked[pid] = psutil.Process(pid)
+            root.cpu_percent(None)  # prime; the first reading is always 0
+        members = [root, *root.children(recursive=True)]
+        cpu = 0.0
+        rss = 0
+        for member in members:
+            try:
+                cpu += member.cpu_percent(None)
+                rss += member.memory_info().rss
+            except (psutil.Error, OSError):
+                continue
+        return round(cpu, 1), rss
+    except (psutil.Error, OSError):
+        _tracked.pop(pid, None)
+        return None
+
+
+def forget_usage(pid: int) -> None:
+    _tracked.pop(pid, None)
+
+
+#: Process objects kept between samples, so cpu_percent has an interval to measure.
+_tracked: dict[int, psutil.Process] = {}
+
+
 def descendants(pid: int) -> list[tuple[int, float]]:
     """Every process the service's process has started, as (pid, start time).
     Windows has no process groups: once cmd.exe exits, the program it started

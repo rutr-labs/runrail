@@ -10,6 +10,7 @@ const svc = (id: number, name: string, state: string, extra: Partial<Service> = 
   restart_policy: 'always', stop_timeout_seconds: 30, lock_resource: null, lock_mode: 'exclusive',
   notify_webhook_url: null, override_running: null, override_until: null, override_reason: null,
   state, state_detail: null, state_since: null, next_attempt_at: null, should_run: false,
+  cpu_percent: null, rss_bytes: null, resources_at: null,
   next_change: null, current_session: null, last_session: null, ...extra,
 });
 

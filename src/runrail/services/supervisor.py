@@ -68,6 +68,8 @@ CRASH_LOOP_WINDOW = timedelta(minutes=10)
 #: A process that stayed up this long resets the restart backoff.
 STABLE_AFTER = timedelta(seconds=60)
 MAX_BACKOFF_SECONDS = 300
+#: How often a running service's CPU and memory are recorded.
+RESOURCE_SAMPLE_SECONDS = 5.0
 
 _UNEXPECTED = (ServiceStopReason.exited, ServiceStopReason.crashed,
                ServiceStopReason.failed_to_start)
@@ -238,6 +240,7 @@ class ServiceSupervisor:
                                 "Force-stopping" if live.killed else f"Force stop in {left}s")
             else:
                 self._set_state(db, service, ServiceState.running, None)
+                self._sample(db, service, live, at)
             return
 
         if service.restart_requested:
@@ -322,6 +325,9 @@ class ServiceSupervisor:
         return not proc.same_process(live.pid, live.created)
 
     def _close_session(self, db: Session, live: _Live, at: datetime) -> int | None:
+        proc.forget_usage(live.pid)
+        db.execute(update(Service).where(Service.id == live.service_id).values(
+            cpu_percent=None, rss_bytes=None, resources_at=None, updated_at=Service.updated_at))
         code = live.process.returncode if live.process is not None else None
         if live.process is not None:
             with runners._LIVE_LOCK:
@@ -384,6 +390,20 @@ class ServiceSupervisor:
         delay = min(MAX_BACKOFF_SECONDS, 2 ** max(0, consecutive - 1))
         self._set_state(db, service, ServiceState.backoff, f"{what} · restarting in {delay}s",
                         next_attempt_at=at + timedelta(seconds=delay))
+
+    def _sample(self, db: Session, service: Service, live: _Live, at: datetime) -> None:
+        """Record what the process tree is using, every few seconds."""
+        last = live.extra.get("sampled_at")
+        if last is not None and (at - last).total_seconds() < RESOURCE_SAMPLE_SECONDS:
+            return
+        live.extra["sampled_at"] = at
+        reading = proc.usage(live.pid)
+        if reading is None:
+            return
+        cpu, rss = reading
+        db.execute(update(Service).where(Service.id == service.id).values(
+            cpu_percent=cpu, rss_bytes=rss, resources_at=at, updated_at=Service.updated_at))
+        db.commit()
 
     # ── bookkeeping ────────────────────────────────────────────────────────
     def _set_state(self, db: Session, service: Service, state: ServiceState, detail: str | None,
