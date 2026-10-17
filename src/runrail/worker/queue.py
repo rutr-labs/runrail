@@ -4,6 +4,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
 from runrail.models import LockMode, RunStatus, Workflow, WorkflowRun, now
+from runrail.services.locks import service_blocks_run
 
 #: The statuses that are unconditionally mid-flight. `queued` belongs to the
 #: same window but only sometimes, so it is not a member here — see
@@ -116,6 +117,7 @@ def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | Non
             WorkflowRun.status == RunStatus.queued,
             _running_runs_for_same_workflow() < Workflow.max_concurrent_runs,
             ~_resource_blocked(),
+            ~service_blocks_run(),
             *([WorkflowRun.id.not_in(skip)] if skip else []),
         )
         .order_by(WorkflowRun.created_at)
@@ -132,6 +134,7 @@ def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | Non
         WorkflowRun.status == RunStatus.queued,
         _running_runs_for_same_workflow() < workflow_limit,
         ~_resource_blocked(),
+        ~service_blocks_run(),
     # coalesce, not now(): a run can be claimed more than once — an approval
     # gate releases it back to `queued` while a human decides, and re-entry
     # must not rewrite the run's start time and walk the timeline origin

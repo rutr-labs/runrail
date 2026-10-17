@@ -1,6 +1,7 @@
 import os
 import shutil
 import signal
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
@@ -734,6 +735,12 @@ class WorkerService:
         self.concurrency = max(1, concurrency or get_settings().worker_concurrency)
         self.running = True
         self._active: dict[Future, int | None] = {}  # future -> run id (None for env builds)
+        # Services run beside the run pool, never in it: a process meant to stay
+        # up would hold a worker slot for good. Its own thread; it holds a lease,
+        # so with `serve` and a separate `worker` only one of them supervises.
+        from runrail.services.supervisor import ServiceSupervisor
+        self.supervisor = ServiceSupervisor()
+        self._supervisor_thread: threading.Thread | None = None
 
     def stop(self, *_):
         if not self.running:  # second signal: the user really means it
@@ -742,6 +749,8 @@ class WorkerService:
             kill_running_tasks()
             os._exit(130)
         self.running = False
+        # Services stop now, in parallel with the runs draining below.
+        self.supervisor.stop()
         executing = len(self.executing_run_ids())
         if executing:
             print(f"\nStopping: waiting for {executing} executing run(s) to finish. "
@@ -777,6 +786,9 @@ class WorkerService:
             if rebuilding:
                 print(f"Rebuilding {len(rebuilding)} environment(s) made by an older RunRail, "
                       f"to repair their command-line tools: {', '.join(rebuilding)}", flush=True)
+        self._supervisor_thread = threading.Thread(target=self.supervisor.run,
+                                                   name="runrail-services", daemon=True)
+        self._supervisor_thread.start()
         with ThreadPoolExecutor(max_workers=self.concurrency,
                                 thread_name_prefix="runrail-worker") as pool:
             while self.running:
@@ -800,3 +812,7 @@ class WorkerService:
                 if not claimed:
                     time.sleep(get_settings().worker_poll_seconds)
             # Pool context exit waits for executing runs to finish (stage one).
+        self.supervisor.stop()
+        if self._supervisor_thread is not None:
+            # Each service gets its own stop timeout; this waits for the longest.
+            self._supervisor_thread.join()

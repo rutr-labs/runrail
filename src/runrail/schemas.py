@@ -12,7 +12,17 @@ from pydantic import (
 )
 
 from runrail.crontab import validate_cron
-from runrail.models import EnvironmentStatus, EnvironmentType, LockMode, TaskType
+from runrail.models import (
+    EnvironmentStatus,
+    EnvironmentType,
+    LockMode,
+    RestartPolicy,
+    ServiceStartMode,
+    ServiceState,
+    ServiceStopReason,
+    TaskType,
+)
+from runrail.services.windows import validate_windows
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -312,3 +322,107 @@ class WorkflowRunDetail(WorkflowRunOut):
     # Lazy-loaded from the relationship while the request session is open; the
     # run page reads them here instead of making a second round trip.
     notes: list[RunNoteOut] = Field(default_factory=list)
+
+
+# ─── Services ─────────────────────────────────────────────────────────────
+
+class ServiceIn(BaseModel):
+    """A service's configuration. PUT writes only the fields a client sends
+    (exclude_unset), so nothing here may assign to self in a model validator."""
+
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    command: str = Field(min_length=1)
+    cwd: str | None = None
+    project_id: int | None = None
+    environment_id: int | None = None
+    env_vars_json: dict[str, Any] | None = None
+    start_mode: ServiceStartMode = ServiceStartMode.manual
+    windows: list[dict[str, Any]] = Field(default_factory=list)
+    timezone: str | None = None
+    #: Unset on create means: never for a manual service (it was started by
+    #: hand), always for the others.
+    restart_policy: RestartPolicy | None = None
+    stop_timeout_seconds: int = Field(default=30, ge=1, le=3600)
+    lock_resource: str | None = Field(default=None, max_length=255)
+    lock_mode: LockMode = LockMode.exclusive
+    notify_webhook_url: str | None = None
+
+    @field_validator("command")
+    @classmethod
+    def _command_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Command is required")
+        return value.strip()
+
+    @field_validator("windows")
+    @classmethod
+    def _valid_windows(cls, value: list) -> list:
+        return validate_windows(value)
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            ZoneInfo(value)
+        except Exception as exc:
+            raise ValueError(f"Unknown IANA timezone: {value!r}") from exc
+        return value
+
+    @field_validator("lock_resource")
+    @classmethod
+    def _blank_is_no_lock(cls, value: str | None) -> str | None:
+        return (value or "").strip() or None
+
+    @model_validator(mode="after")
+    def _schedule_needs_windows(self) -> "ServiceIn":
+        if (self.start_mode == ServiceStartMode.schedule and "windows" in self.model_fields_set
+                and not self.windows):
+            raise ValueError("A scheduled service needs at least one window")
+        return self
+
+
+class ServiceSessionOut(ORMModel):
+    id: int
+    started_at: UTCDateTime
+    stopped_at: UTCDateTime | None = None
+    pid: int | None = None
+    exit_code: int | None = None
+    stop_reason: ServiceStopReason | None = None
+    command: str | None = None
+
+
+class ServiceOut(ORMModel):
+    id: int
+    key: str
+    name: str
+    description: str | None = None
+    command: str
+    cwd: str | None = None
+    project_id: int | None = None
+    environment_id: int | None = None
+    env_vars_json: dict[str, Any] | None = None
+    start_mode: ServiceStartMode
+    windows: list[dict[str, Any]] = Field(default_factory=list)
+    timezone: str | None = None
+    restart_policy: RestartPolicy
+    stop_timeout_seconds: int
+    lock_resource: str | None = None
+    lock_mode: LockMode
+    notify_webhook_url: str | None = None
+    override_running: bool | None = None
+    override_until: UTCDateTime | None = None
+    override_reason: str | None = None
+    state: ServiceState
+    state_detail: str | None = None
+    state_since: UTCDateTime | None = None
+    next_attempt_at: UTCDateTime | None = None
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
+    # Computed per request:
+    should_run: bool = False
+    next_change: UTCDateTime | None = None
+    current_session: ServiceSessionOut | None = None
+    last_session: ServiceSessionOut | None = None

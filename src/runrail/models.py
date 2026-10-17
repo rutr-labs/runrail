@@ -316,3 +316,133 @@ class Artifact(Base):
     path: Mapped[str] = mapped_column(Text)
     size_bytes: Mapped[int | None]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ─── Services ─────────────────────────────────────────────────────────────
+# Long-running processes RunRail keeps up — a model server, a folder sync —
+# rather than runs it executes to completion. Separate from workflows on
+# purpose: a run is about finishing (an outcome, a duration, retries, SLAs),
+# and a process meant to stay up would sit "running" forever, skew every
+# duration statistic and hold a worker slot for good. The supervisor in
+# runrail/services/supervisor.py owns their processes.
+#
+# Enums here are stored as plain strings (native_enum=False): they are new,
+# and growing a native PostgreSQL enum needs its own migration per value.
+
+class ServiceStartMode(enum.StrEnum):
+    startup = "startup"    # kept running whenever RunRail is
+    schedule = "schedule"  # running inside its weekly windows
+    manual = "manual"      # running only once someone presses Start
+
+
+class RestartPolicy(enum.StrEnum):
+    always = "always"          # any exit while it should be running is restarted
+    on_failure = "on_failure"  # only a non-zero exit is
+    never = "never"
+
+
+class ServiceState(enum.StrEnum):
+    stopped = "stopped"
+    waiting_lock = "waiting_lock"  # should run; its resource is held elsewhere
+    starting = "starting"          # lock taken, process being launched
+    running = "running"
+    stopping = "stopping"          # asked to stop; force-killed at the timeout
+    backoff = "backoff"            # exited unexpectedly; restarting after a delay
+    crash_loop = "crash_loop"      # kept exiting; held stopped until a person acts
+
+
+class ServiceStopReason(enum.StrEnum):
+    stopped_by_user = "stopped_by_user"
+    window_closed = "window_closed"
+    restarted = "restarted"
+    exited = "exited"                      # on its own, exit code 0
+    crashed = "crashed"                    # on its own, non-zero
+    killed_after_timeout = "killed_after_timeout"
+    failed_to_start = "failed_to_start"
+    runrail_shutdown = "runrail_shutdown"
+    interrupted = "interrupted"            # RunRail died; found afterwards
+    deleted = "deleted"
+
+
+def _str_enum(cls):
+    return Enum(cls, native_enum=False, length=32, values_callable=lambda e: [m.value for m in e])
+
+
+class Service(TimestampMixin, Base):
+    __tablename__ = "services"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    #: YAML identity, as Workflow.key: apply survives a rename.
+    key: Mapped[str] = mapped_column(String(32), unique=True, default=lambda: uuid.uuid4().hex)
+    description: Mapped[str | None] = mapped_column(Text)
+    command: Mapped[str] = mapped_column(Text)
+    cwd: Mapped[str | None] = mapped_column(Text)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"))
+    environment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("environments.id", ondelete="SET NULL"))
+    env_vars_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    start_mode: Mapped[ServiceStartMode] = mapped_column(
+        _str_enum(ServiceStartMode), default=ServiceStartMode.manual)
+    #: [{"days": ["mon", ...], "start": "HH:MM", "end": "HH:MM"}] — see services/windows.py.
+    windows_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    timezone: Mapped[str | None] = mapped_column(String(64))
+    restart_policy: Mapped[RestartPolicy] = mapped_column(
+        _str_enum(RestartPolicy), default=RestartPolicy.always)
+    #: Grace between the polite stop and the forced kill.
+    stop_timeout_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    lock_resource: Mapped[str | None] = mapped_column(String(255))
+    lock_mode: Mapped[LockMode] = mapped_column(_str_enum(LockMode), default=LockMode.exclusive)
+    notify_webhook_url: Mapped[str | None] = mapped_column(Text)
+
+    # Desired-state override: a Start/Stop click, or a hold the supervisor
+    # placed itself (a clean exit under on_failure, a crash loop). NULL is "no
+    # override"; override_until NULL is "until changed again".
+    override_running: Mapped[bool | None] = mapped_column(Boolean)
+    override_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    override_reason: Mapped[str | None] = mapped_column(String(32))
+    restart_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Written by the supervisor, read by the API and the run claim (locks).
+    state: Mapped[ServiceState] = mapped_column(_str_enum(ServiceState),
+                                                default=ServiceState.stopped)
+    state_detail: Mapped[str | None] = mapped_column(Text)
+    state_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    sessions: Mapped[list["ServiceSession"]] = relationship(
+        cascade="all, delete-orphan", passive_deletes=True, back_populates="service")
+
+
+class ServiceSession(Base):
+    """One life of a service's process, start to exit."""
+
+    __tablename__ = "service_sessions"
+    __table_args__ = (
+        Index("ix_service_sessions_service_id_started_at", "service_id", "started_at"),
+        {"sqlite_autoincrement": True},
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    service_id: Mapped[int] = mapped_column(ForeignKey("services.id", ondelete="CASCADE"))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pid: Mapped[int | None]
+    #: psutil create_time of `pid`: a recorded pid is only ever signalled while
+    #: it still names the same process, never one that reused the number.
+    process_created: Mapped[float | None]
+    exit_code: Mapped[int | None]
+    stop_reason: Mapped[ServiceStopReason | None] = mapped_column(_str_enum(ServiceStopReason))
+    command: Mapped[str | None] = mapped_column(Text)
+    log_path: Mapped[str | None] = mapped_column(Text)
+    #: The supervisor that started it.
+    owner: Mapped[str | None] = mapped_column(String(128))
+    service: Mapped[Service] = relationship(back_populates="sessions")
+
+
+class SupervisorLease(Base):
+    """Exactly one process supervises services: `serve` and a separate `worker`
+    may both be running, and two supervisors would each start a copy."""
+
+    __tablename__ = "supervisor_leases"
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(128))
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
