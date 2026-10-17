@@ -1,6 +1,6 @@
 """Per-workflow schedule timezones: API validation, scheduler wiring, YAML round-trip."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def test_workflow_accepts_and_returns_schedule_timezone(client):
@@ -72,3 +72,31 @@ def test_timezone_round_trips_through_export_and_apply(client):
     fetched = client.get("/api/workflows").json()
     flow = next(w for w in fetched if w["name"] == "tz-io")
     assert flow["schedule_timezone"] == "America/New_York"
+
+
+def _fires(expr, zone, start, end):
+    from datetime import datetime as _dt
+    from datetime import timezone as _utc
+
+    from runrail.crontab import cron_trigger
+    trigger, fires, previous = cron_trigger(expr, zone), [], None
+    now = _dt.fromisoformat(start).replace(tzinfo=_utc.utc)
+    while True:
+        fire = trigger.get_next_fire_time(previous, now)
+        if fire is None or fire >= _dt.fromisoformat(end).replace(tzinfo=_utc.utc):
+            return fires
+        fires.append(fire.astimezone(_utc.utc).strftime("%m-%d %H:%M"))
+        # As the scheduler asks: previous fire, and a `now` just after it, in UTC.
+        previous = fire
+        now = fire.astimezone(_utc.utc) + timedelta(seconds=1)
+
+
+def test_a_daily_time_repeated_by_the_fall_back_runs_once():
+    """01:30 happens twice on 1 Nov 2026 in New York. It ran twice."""
+    assert _fires("30 1 * * *", "America/New_York", "2026-10-31T00:00", "2026-11-03T00:00") == [
+        "10-31 05:30", "11-01 05:30", "11-02 06:30"]
+
+
+def test_an_hourly_schedule_still_runs_in_both_repeated_hours():
+    fires = _fires("0 * * * *", "America/New_York", "2026-11-01T04:30", "2026-11-01T07:30")
+    assert fires == ["11-01 05:00", "11-01 06:00", "11-01 07:00"]
