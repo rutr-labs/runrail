@@ -34,15 +34,21 @@ LOG_BACKUPS = 3
 
 @dataclass
 class LaunchSpec:
-    argv: list[str]
+    #: A list on POSIX; on Windows a ready-made command line (see _shell).
+    argv: list[str] | str
     cwd: Path
     env: dict[str, str]
     display: str
 
 
-def _shell(command: str) -> list[str]:
+def _shell(command: str) -> list[str] | str:
     if os.name == "nt":
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", command]
+        # A string, not a list: Popen would quote a list element containing
+        # quotes with backslashes, which cmd.exe does not understand, so any
+        # command with a quoted path in it arrived garbled. /s strips exactly
+        # the outer pair of quotes and keeps everything inside as written —
+        # the same command line a shell task gets from shell=True.
+        return f'"{os.environ.get("COMSPEC", "cmd.exe")}" /d /s /c "{command}"'
     return ["/bin/sh", "-c", command]
 
 
@@ -64,7 +70,9 @@ def launch_spec(db: Session, service: Service) -> LaunchSpec:
             conda = environment.executable or shutil.which("conda")
             if not conda or not environment.conda_env:
                 raise RuntimeError(f"Conda environment '{environment.name}' is incomplete")
-            argv = [conda, "run", "--no-capture-output", "-n", environment.conda_env, *argv]
+            prefix = [conda, "run", "--no-capture-output", "-n", environment.conda_env]
+            argv = (subprocess.list2cmdline(prefix) + " " + argv if isinstance(argv, str)
+                    else [*prefix, *argv])
         else:
             python = (environment_python(managed_environment_path(environment))
                       if environment.managed else
@@ -158,6 +166,17 @@ def same_process(pid: int | None, created_at: float | None) -> bool:
         return False
 
 
+def descendants(pid: int) -> list[tuple[int, float]]:
+    """Every process the service's process has started, as (pid, start time).
+    Windows has no process groups: once cmd.exe exits, the program it started
+    can no longer be found through it, so the supervisor keeps this snapshot."""
+    try:
+        return [(child.pid, child.create_time())
+                for child in psutil.Process(pid).children(recursive=True)]
+    except (psutil.Error, OSError):
+        return []
+
+
 def group_alive(pid: int) -> bool:
     """Whether anything in the process's group is still running (POSIX), or
     the process itself (Windows, where the tree is killed whole)."""
@@ -189,8 +208,16 @@ def ask_to_stop(pid: int) -> None:
         pass
 
 
-def kill(pid: int) -> None:
-    """The forced stop, for the whole group or tree."""
+def kill(pid: int, known: list[tuple[int, float]] = ()) -> None:
+    """The forced stop, for the whole group or tree — and, on Windows, for any
+    process in the last snapshot of its descendants that is still the same
+    process."""
+    for child, started in known:
+        if same_process(child, started):
+            try:
+                psutil.Process(child).kill()
+            except (psutil.Error, OSError):
+                pass
     try:
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],

@@ -215,6 +215,9 @@ class ServiceSupervisor:
         should_run, stop_reason = desired(service, at)
         live = self.live.get(service.id)
 
+        if live is not None and os.name == "nt" and live.process is not None \
+                and live.process.poll() is None:
+            live.extra["descendants"] = proc.descendants(live.pid)
         if live is not None and self._finished(live):
             # Settled on the next pass, from the state this one leaves: a hold,
             # a backoff or a pending restart. Carrying on here would act on the
@@ -293,7 +296,7 @@ class ServiceSupervisor:
 
     def _progress_stop(self, live: _Live, at: datetime) -> None:
         if live.stop_reason is not None and not live.killed and live.kill_at and at >= live.kill_at:
-            proc.kill(live.pid)
+            proc.kill(live.pid, live.extra.get("descendants", ()))
             live.killed = True
 
     def _finished(self, live: _Live) -> bool:
@@ -307,6 +310,13 @@ class ServiceSupervisor:
                 if live.stop_reason is not None and not live.killed:
                     return False
                 proc.kill(live.pid)
+            if os.name == "nt":
+                left = [(pid, started) for pid, started in live.extra.get("descendants", ())
+                        if proc.same_process(pid, started)]
+                if left:
+                    if live.stop_reason is not None and not live.killed:
+                        return False
+                    proc.kill(live.pid, left)
             return True
         return not proc.same_process(live.pid, live.created)
 

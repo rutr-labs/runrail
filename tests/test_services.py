@@ -107,6 +107,15 @@ def settle(sup: ServiceSupervisor, client, service_id, state: str, seconds=10) -
         time.sleep(0.1)
 
 
+def logged(client, service_id, text: str, seconds=15) -> None:
+    """Wait for the service to write `text`. The stubborn command prints only
+    after installing its handlers, so this is when ignoring a stop is real."""
+    deadline = time.monotonic() + seconds
+    while text not in client.get(f"/api/services/{service_id}/log").text:
+        assert time.monotonic() < deadline, f"{text!r} never reached the log"
+        time.sleep(0.05)
+
+
 def sessions(client, service_id) -> list[dict]:
     return client.get(f"/api/services/{service_id}/sessions").json()
 
@@ -122,10 +131,7 @@ def test_a_manual_service_starts_and_stops_on_request(client, supervisor):
     running = settle(sup, client, svc["id"], "running")
     pid = running["current_session"]["pid"]
     assert process_alive(pid)
-    deadline = time.monotonic() + 5
-    while "up" not in client.get(f"/api/services/{svc['id']}/log").text:
-        assert time.monotonic() < deadline, "the service's output never reached its log"
-        time.sleep(0.1)
+    logged(client, svc["id"], "up")
 
     client.post(f"/api/services/{svc['id']}/stop")
     settle(sup, client, svc["id"], "stopped")
@@ -137,7 +143,7 @@ def test_a_process_that_ignores_the_polite_stop_is_killed_at_the_timeout(client,
     sup = supervisor()
     svc = create(client, command=STUBBORN, start_mode="startup", stop_timeout_seconds=180)
     pid = settle(sup, client, svc["id"], "running")["current_session"]["pid"]
-    time.sleep(0.5)  # let it install its signal handlers
+    logged(client, svc["id"], "up")
 
     client.post(f"/api/services/{svc['id']}/stop")
     sup.tick()
@@ -241,6 +247,7 @@ def test_two_services_on_one_exclusive_lock_take_turns(client, supervisor, clock
     night = create(client, "llama-night", command=STUBBORN, start_mode="startup",
                    lock_resource="gpu", stop_timeout_seconds=180)
     settle(sup, client, night["id"], "running")
+    logged(client, night["id"], "up")
     day = create(client, "llama-day", start_mode="startup", lock_resource="gpu")
     waiting = settle(sup, client, day["id"], "waiting_lock")
     assert waiting["state_detail"] == "Waiting for gpu · held by service llama-night"
