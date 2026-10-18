@@ -686,3 +686,19 @@ def test_usage_counts_the_work_of_child_processes(supervisor):
             child.kill()
         parent.kill(); parent.wait()
         proc.forget_usage(parent.pid)
+
+
+def test_usage_reports_memory_a_process_holds_even_while_it_idles():
+    """macOS compresses an idle process's pages within seconds and RSS drops
+    with them; a model's 400 MB of weights do not stop being its memory."""
+    import subprocess
+    parent = subprocess.Popen([sys.executable, "-c",
+                               "import os, time; cache = os.urandom(128 << 20); time.sleep(600)"])
+    try:
+        time.sleep(4)
+        assert proc.usage(parent.pid).rss_bytes > 100 << 20
+    finally:
+        for child in psutil.Process(parent.pid).children(recursive=True):
+            child.kill()
+        parent.kill(); parent.wait()
+        proc.forget_usage(parent.pid)

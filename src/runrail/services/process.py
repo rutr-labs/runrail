@@ -7,10 +7,13 @@ environment. The process gets a process group of its own, so a stop reaches
 whatever the shell started, not just the shell.
 """
 
+import ctypes
+import ctypes.util
 import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -192,6 +195,30 @@ class Usage:
     threads: int
 
 
+def _memory(member: psutil.Process) -> int:
+    """Resident memory as the platform's own monitor would show it. On macOS
+    that is the physical footprint (Activity Monitor's "Memory"), not RSS: the
+    kernel compresses an idle process's pages within seconds, after which RSS
+    reports a 400 MB cache as 15 MB while the footprint still says 400."""
+    if sys.platform == "darwin" and _libproc is not None:
+        buffer = ctypes.create_string_buffer(160)  # struct rusage_info_v2
+        if _libproc.proc_pid_rusage(ctypes.c_int(member.pid), ctypes.c_int(2), buffer) == 0:
+            return int.from_bytes(buffer.raw[72:80], sys.byteorder)  # ri_phys_footprint
+    return member.memory_info().rss
+
+
+def _load_libproc():
+    if sys.platform != "darwin":
+        return None
+    try:
+        return ctypes.CDLL(ctypes.util.find_library("proc"))
+    except OSError:
+        return None
+
+
+_libproc = _load_libproc()
+
+
 def usage(pid: int) -> Usage | None:
     """What the process and everything under it are using: CPU percent since
     the previous call, resident memory, and how many processes and threads
@@ -218,7 +245,7 @@ def usage(pid: int) -> Usage | None:
         for member in members.values():
             try:
                 cpu += member.cpu_percent(None)
-                rss += member.memory_info().rss
+                rss += _memory(member)
                 threads += member.num_threads()
                 processes += 1
             except (psutil.Error, OSError):
