@@ -473,6 +473,34 @@ def server_alive(settings: Settings, within: timedelta = timedelta(seconds=30)) 
     return now() - beat < within
 
 
+#: How long a restore waits for Windows to let go of the database file.
+REPLACE_PATIENCE_SECONDS = 5.0
+
+
+def _replace_patiently(source: Path, target: Path) -> None:
+    """Move the restored database into place. Windows refuses while anything
+    holds the file open — an antivirus scan, the search indexer, a connection
+    another process has not let go of yet — and those usually pass in a moment,
+    so the move is retried briefly. A file still held after that is a process
+    using it, and the message says so rather than showing a traceback."""
+    _patiently(lambda: source.replace(target), target)
+
+
+def _patiently(action, target: Path) -> None:
+    deadline = time.monotonic() + REPLACE_PATIENCE_SECONDS
+    delay = 0.1
+    while True:
+        try:
+            action()
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise BackupError(f"{target} is open in another process — is RunRail (or "
+                                  "something else) still using it? Stop it and try again") from None
+            time.sleep(delay)
+            delay = min(delay * 2, 1.0)
+
+
 def restore_database(archive_path: Path, settings: Settings) -> list[str]:
     """Offline: replace the SQLite database with the one in a backup. Refuses
     while a server is alive, checks the copy's integrity and that its schema
@@ -513,8 +541,8 @@ def restore_database(archive_path: Path, settings: Settings) -> list[str]:
         # already holds everything they contained, so losing them between here
         # and the rename costs nothing.
         for sidecar in (target.with_name(target.name + "-wal"), target.with_name(target.name + "-shm")):
-            sidecar.unlink(missing_ok=True)
-        staging.replace(target)
+            _patiently(lambda path=sidecar: path.unlink(missing_ok=True), target)
+        _replace_patiently(staging, target)
         lines.append(f"Restored {target} (schema {revision}); migrations run on the next start")
     finally:
         staging.unlink(missing_ok=True)
