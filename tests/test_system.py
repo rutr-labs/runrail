@@ -140,36 +140,49 @@ def test_a_restore_point_is_taken_before_a_schema_upgrade(tmp_path, monkeypatch,
 def test_restoring_a_database_offline_swaps_the_file_and_keeps_the_old_one(client, tmp_path):
     """Backup, lose a workflow, restore: the backup's database is back in
     place, the one it replaced is a restore point, and a running server would
-    have been refused."""
+    have been refused.
+
+    Restored into a stopped home, as `runrail restore` requires — not over the
+    database this test's own app is using. On Windows any connection still open
+    in this process (the last request's, a thread an earlier test left behind)
+    holds that file, and the swap raced it."""
+    import contextlib
+
+    def rows(path):
+        with contextlib.closing(sqlite3.connect(path)) as conn:  # closed: Windows holds open files
+            return conn.execute("SELECT name FROM workflows").fetchall()
+
     workflow = make_workflow(client, "precious")
     archive = tmp_path / "b.zip"
     with SessionLocal() as db:
         system.write_backup(db, archive)
     assert client.delete(f"/api/workflows/{workflow['id']}").status_code == 204
-    settings = get_settings()
-    db_file = system._sqlite_path(settings)
-    # Another engine must not be holding the file: close ours.
-    from runrail import db as database
-    database.engine.dispose()
+    # The home being restored: a stopped copy of this one, the workflow gone.
+    stopped = Settings(home=tmp_path / "stopped-home", db_url=None)
+    stopped.home.mkdir(parents=True)
+    db_file = system._sqlite_path(stopped)
+    with contextlib.closing(sqlite3.connect(system._sqlite_path(get_settings()))) as source, \
+            contextlib.closing(sqlite3.connect(db_file)) as copy:
+        source.backup(copy)
+    assert rows(db_file) == []
 
-    lines = system.restore_database(archive, settings)
+    lines = system.restore_database(archive, stopped)
     assert any("Restored" in line for line in lines)
-    with sqlite3.connect(db_file) as conn:
-        assert conn.execute("SELECT name FROM workflows").fetchall() == [("precious",)]
-    assert len(system.list_restore_points(settings)) == 1
+    assert rows(db_file) == [("precious",)]
+    assert len(system.list_restore_points(stopped)) == 1
 
     # A live server (a fresh supervisor heartbeat) blocks it.
-    with sqlite3.connect(db_file) as conn:
+    with contextlib.closing(sqlite3.connect(db_file)) as conn:
         conn.execute("INSERT OR REPLACE INTO supervisor_leases (name, owner, heartbeat_at) "
                      "VALUES ('services', 'x', ?)", (datetime.now(UTC).replace(tzinfo=None),))
+        conn.commit()
     with pytest.raises(system.BackupError, match="running"):
-        system.restore_database(archive, settings)
+        system.restore_database(archive, stopped)
 
     # Onto a machine that has never run RunRail: the home does not exist yet.
     fresh = Settings(home=tmp_path / "new-machine" / "home", db_url=None)
     assert any("Restored" in line for line in system.restore_database(archive, fresh))
-    with sqlite3.connect(system._sqlite_path(fresh)) as conn:
-        assert conn.execute("SELECT name FROM workflows").fetchall() == [("precious",)]
+    assert rows(system._sqlite_path(fresh)) == [("precious",)]
 
 
 def test_a_restore_waits_out_a_file_lock_that_passes(tmp_path, monkeypatch):
