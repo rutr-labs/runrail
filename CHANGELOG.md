@@ -2,6 +2,77 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] — 2026-10-18
+
+Settings you can change without a restart, an operator panel to go with
+them, and a full audit of services. Two migrations run on first start; on
+SQLite, RunRail now takes a restore point of the database before any schema
+upgrade, so this is the first upgrade with one.
+
+### Added
+- **Settings that apply without a restart.** Concurrent runs, tasks per run,
+  how long finished runs are kept, the default webhook, which alerts go out,
+  and quiet hours, saved from the Settings page. An environment variable
+  still wins: the page shows that setting locked and names the variable, so a
+  deployment configured in a unit file or `.env` stays exactly that.
+- **Retention you can see before it deletes.** Choosing how long to keep runs
+  shows how many would be deleted and how much space that frees, before it
+  can be saved. Saving starts the cleanup straight away (it used to wait for
+  the six-hourly pass) and the page follows it to the end.
+- **Pause everything new.** One switch on Settings stops new runs from being
+  claimed and services from being started, and holds the missed-schedule and
+  deadline alerts, while what is already executing finishes. Resume picks up
+  where it left off.
+- **Backups.** `runrail backup` (or the button on Settings) writes a zip with
+  the configuration as YAML, a consistent snapshot of the SQLite database and
+  a manifest. The configuration can be restored from the page while RunRail
+  runs; the database is restored with `runrail restore <zip>` while it is
+  stopped, keeping the database it replaces.
+- **Restore points before schema upgrades** under `$RUNRAIL_HOME/backups/`
+  (the newest three are kept), so going back to the previous version has
+  something to return to.
+- An operator view on Settings: the system's state, worker slots, services,
+  the next scheduled run, the database and what the home folder holds.
+- **Services show CPU and memory**: the share of the machine and the cores
+  it amounts to, resident memory (Activity Monitor's figure on macOS),
+  processes and threads.
+- A webhook test button on the workflow form and on Settings, and a warning
+  on a workflow whose alerts are not being delivered.
+- Full YAML exports carry projects and environments, so an export can be
+  applied to a fresh home.
+- An alert for a service in a crash loop (`service_crash_loop`).
+
+### Changed
+- **Requests from other websites are refused.** RunRail has no accounts, so
+  any page open in your browser could send it a request; state-changing
+  requests whose `Origin` is another site now get a 403. The UI, the CLI,
+  `curl` and the Vite dev proxy are unaffected.
+- Deleting a service is refused while it is running; stop it first.
+- A run waiting for approval is amber everywhere: the dashboard, the run page
+  and the wallboard, where it also opens the run. The run timeline draws an
+  approval wait apart from the run and labels the two separately.
+
+### Fixed
+- Editing any field of a service from the UI dropped a Start or Stop you had
+  pressed, stopping a service you had started by hand.
+- A shared service waiting for its lock and an exclusive run waiting behind
+  it could wait for each other forever; whoever began waiting first now goes
+  first. An always-on shared service no longer holds back every shared run.
+- A restart released the service's lock for a moment, long enough for a
+  queued run to take the GPU.
+- A service whose environment was still being built went into a crash loop;
+  it now waits for the build. Pressing Start after a crash loop gives it a
+  fresh run of attempts.
+- After a takeover, a service whose shell ignored the stop was taken for
+  gone and started a second time beside itself.
+- A deleted service's id could be reused, and the new service inherited the
+  old one's process.
+- A window starting inside a spring-forward gap opened an hour late.
+- A full disk or a deleted log folder could make a service hang once its
+  output pipe filled.
+- On PostgreSQL, a service and a run could both take an exclusive resource.
+- A service's CPU figure left out its child processes.
+
 ## [0.7.1] — 2026-10-17
 
 A repair release from the second audit pass: backfills, imports, log search,
