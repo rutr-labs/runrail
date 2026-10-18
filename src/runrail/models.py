@@ -455,6 +455,20 @@ class Service(TimestampMixin, Base):
         cascade="all, delete-orphan", passive_deletes=True, back_populates="service")
 
 
+class CleanupPass(Base):
+    """One retention cleanup, so the Settings page can say what the last one
+    did after a restart, and a pass the scheduler ran overnight is on record."""
+
+    __tablename__ = "cleanup_passes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    days: Mapped[int]
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    runs_deleted: Mapped[int]
+    files_deleted: Mapped[int]
+    errors: Mapped[int]
+
+
 class AppSetting(Base):
     """One setting saved from the Settings page; see runrail.runtime_settings."""
 

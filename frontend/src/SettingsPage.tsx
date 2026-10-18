@@ -10,10 +10,10 @@ import { formatDate, timeAgo, viewerZone } from './format';
 import { Button, PageHeader } from './components/ui';
 import { useToast } from './components/toast';
 import {
-  RETENTION_PRESETS, basename, cleanupLine, eventLabel, formatCountdown, formatSize, formatUptime, groupEvents,
+  RETENTION_PRESETS, basename, cleanupLine, eventLabel, lastCleanupLine, formatCountdown, formatSize, formatUptime, groupEvents,
   lockedNote, parseCount, parseDays, pausedBanner, provenance, quietSpans, restoreSummaryLine,
   retentionSentence, sameValue, settledSentence, storageSegments, systemHeadline,
-  type BackupPreview, type CleanupState, type NotifyTestResult, type QuietHours, type RestorePoint,
+  type BackupPreview, type CleanupState, type LastCleanup, type NotifyTestResult, type QuietHours, type RestorePoint,
   type RestoreSummary, type RetentionPreview, type Setting, type SettingKey,
   type SettingValues, type SettingsResponse, type SystemStatus,
 } from './settingsModel';
@@ -99,7 +99,8 @@ export function SettingsPage() {
       {settings && (
         <div className="settings-grid">
           <WorkersGroup settings={settings} now={now} onSaved={onSaved} />
-          <RetentionGroup settings={settings} now={now} onSaved={onSaved} cleanup={status?.retention.cleanup} />
+          <RetentionGroup settings={settings} now={now} onSaved={onSaved} cleanup={status?.retention.cleanup}
+                          last={status?.retention.last} />
           <NotificationsGroup settings={settings} eventKinds={eventKinds} now={now} onSaved={onSaved} />
         </div>
       )}
@@ -426,7 +427,9 @@ function WorkersGroup({ settings, now, onSaved }: GroupProps) {
    said before it can be saved. */
 type RetentionChoice = 'forever' | 'custom' | number;
 
-function RetentionGroup({ settings, now, onSaved, cleanup }: GroupProps & { cleanup?: CleanupState }) {
+function RetentionGroup({ settings, now, onSaved, cleanup, last }: GroupProps & {
+  cleanup?: CleanupState; last?: LastCleanup | null;
+}) {
   const setting = settings.get('retention_days');
   const saved = valueOf(settings, 'retention_days');
   const choiceFor = (days: number | null | undefined): RetentionChoice =>
@@ -458,6 +461,8 @@ function RetentionGroup({ settings, now, onSaved, cleanup }: GroupProps & { clea
     return () => window.clearTimeout(timer);
   }, [wanted, cleaned]);
   const cleaning = cleanupLine(cleanup, now);
+  // The fresh notice says it louder; otherwise the record says it quietly.
+  const lastLine = cleaning ? null : lastCleanupLine(last, now);
 
   if (!setting) return null;
   const dirty = !parsed.ok || wanted !== saved;
@@ -509,6 +514,7 @@ function RetentionGroup({ settings, now, onSaved, cleanup }: GroupProps & { clea
             {cleaning.text}
           </p>
         )}
+        {lastLine && <p className="retention-last">{lastLine}</p>}
         {!setting.locked && !cleanup?.running && (
           <div className={clsx('retention-card', !settled && shown && shown.runs > 0 && 'is-destructive',
                                wanted === null && 'is-forever', settled && 'is-settled')}>
