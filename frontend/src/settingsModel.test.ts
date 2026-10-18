@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import {
+  settledSentence,
+  cleanupLine,
+  basename, groupEvents, quietSpans, storageSegments, systemHeadline,
   EVENT_LABELS, eventLabel, formatCountdown, formatSize, formatUptime, lockedNote, parseCount, parseDays,
-  pausedBanner, provenance, restoreSummaryLine, retentionSentence, sameValue, updateLine,
+  pausedBanner, provenance, restoreSummaryLine, retentionSentence, sameValue,
   type RetentionPreview, type Setting,
 } from './settingsModel';
 
@@ -152,21 +155,6 @@ describe('pausedBanner', () => {
   });
 });
 
-describe('updateLine', () => {
-  const update = (over: Partial<Parameters<typeof updateLine>[0]>) => updateLine({
-    latest: null, available: null, checked_at: null, error: null, enabled: true, ...over }, '0.7.1');
-
-  test('a newer release says how to get it', () => {
-    expect(update({ latest: '0.8.0', available: true })).toEqual({ tone: 'warning', text: '0.8.0 available · pip install -U runrail' });
-  });
-  test('up to date, could not check, switched off, still asking', () => {
-    expect(update({ latest: '0.7.1', available: false })).toEqual({ tone: 'default', text: 'Up to date' });
-    expect(update({ error: 'URLError: no route' })).toEqual({ tone: 'warning', text: 'Could not check: URLError: no route' });
-    expect(update({ enabled: false })).toEqual({ tone: 'default', text: 'Update check is off' });
-    expect(update({})).toEqual({ tone: 'default', text: 'Checking for updates…' });
-  });
-});
-
 describe('restoreSummaryLine', () => {
   test('lists only the buckets that had something in them', () => {
     expect(restoreSummaryLine({ created: ['a', 'b'], updated: ['c'], skipped: [] })).toBe('2 created · 1 updated');
@@ -181,5 +169,77 @@ describe('sameValue', () => {
     expect(sameValue(['a'], ['a', 'b'])).toBe(false);
     expect(sameValue(null, '')).toBe(false);
     expect(sameValue(4, 4)).toBe(true);
+  });
+});
+
+describe('presentation helpers', () => {
+  test('a path chip shows only the last segment', () => {
+    expect(basename('/private/tmp/rr-demo/runrail.db')).toBe('runrail.db');
+    expect(basename('/private/tmp/rr-demo/')).toBe('rr-demo');
+    expect(basename('C:\\Users\\me\\RunRail')).toBe('RunRail');
+    expect(basename('db.internal:5432/runrail')).toBe('runrail');
+  });
+
+  test('the storage bar shares one, and waits for every figure', () => {
+    const base = { measured_at: null, measuring: false };
+    const bar = storageSegments({ ...base, logs_bytes: 300, artifacts_bytes: 100, environments_bytes: 0, backups_bytes: 600 });
+    expect(bar?.total).toBe(1000);
+    expect(bar?.segments.map(s => [s.key, s.share])).toEqual([
+      ['logs', 0.3], ['artifacts', 0.1], ['environments', 0], ['backups', 0.6]]);
+    expect(storageSegments({ ...base, logs_bytes: 1, artifacts_bytes: null, environments_bytes: 0, backups_bytes: 0 })).toBeNull();
+    expect(storageSegments({ ...base, logs_bytes: 0, artifacts_bytes: 0, environments_bytes: 0, backups_bytes: 0 })
+      ?.segments.every(s => s.share === 0)).toBe(true);
+  });
+
+  test('quiet hours become one span, or two across midnight', () => {
+    expect(quietSpans('09:00', '17:00')).toEqual([[0.375, 17 / 24]]);
+    expect(quietSpans('22:00', '06:00')).toEqual([[22 / 24, 1], [0, 0.25]]);
+    expect(quietSpans('22:00', '22:00')).toEqual([]);
+    expect(quietSpans('9:00', '17:00')).toEqual([]);
+  });
+
+  test('alert kinds are grouped, and an unknown kind is kept under Other', () => {
+    expect(groupEvents(['run_failed', 'sla_breached', 'new_kind']).map(g => [g.title, g.kinds])).toEqual([
+      ['Runs', ['run_failed']], ['Deadlines', ['sla_breached']], ['Other', ['new_kind']]]);
+  });
+
+  test('the headline says running, paused, or unsupervised', () => {
+    const status = {
+      worker: { running: 2, queued: 1, waiting_approval: 0, paused: false, concurrency: 4, task_parallelism: 4 },
+      services: { supervised: true, total: 3, running: 3 },
+    } as unknown as Parameters<typeof systemHeadline>[0];
+    expect(systemHeadline(status)).toEqual({ tone: 'ok', title: 'Running', detail: '2 running · 1 queued' });
+    expect(systemHeadline({ ...status, worker: { ...status.worker, paused: true, waiting_approval: 4 } }))
+      .toEqual({ tone: 'paused', title: 'Paused', detail: '2 running · 1 queued · 4 waiting approval' });
+    expect(systemHeadline({ ...status, services: { supervised: false, total: 3, running: 0 } }).tone).toBe('warning');
+    expect(systemHeadline({ ...status, services: { supervised: false, total: 0, running: 0 } }).tone).toBe('ok');
+  });
+});
+
+describe('cleanupLine', () => {
+  const at = Date.parse('2026-10-18T12:00:00Z');
+  const base = { running: false, days: 30, started_at: '2026-10-18T11:58:00Z', finished_at: '2026-10-18T11:59:00Z',
+                 runs_deleted: 23800, files_deleted: 47600, errors: 0 };
+  test('says what is happening while it runs, and what it did after', () => {
+    expect(cleanupLine({ ...base, running: true, finished_at: null, runs_deleted: 4200 }, at))
+      .toEqual({ tone: 'busy', text: 'Deleting runs older than 30 days… 4,200 runs so far' });
+    expect(cleanupLine(base, at)).toEqual({ tone: 'done', text: 'Deleted 23,800 runs and 47,600 files' });
+    expect(cleanupLine({ ...base, runs_deleted: 0, files_deleted: 0 }, at)?.text).toBe('Cleaned up: nothing was old enough to delete');
+    expect(cleanupLine({ ...base, errors: 2 }, at)?.tone).toBe('warning');
+  });
+  test('stays quiet when none ran, or the last one is old news', () => {
+    expect(cleanupLine(undefined, at)).toBeNull();
+    expect(cleanupLine({ ...base, started_at: null }, at)).toBeNull();
+    expect(cleanupLine({ ...base, finished_at: '2026-10-18T11:00:00Z' }, at)).toBeNull();
+  });
+});
+
+describe('settledSentence', () => {
+  const base = { days: 90, cutoff: '', files: 0, bytes: 0, runs_total: 100, runs_kept: 99 };
+  test('a saved figure reads as up to date, with what the next pass takes', () => {
+    expect(settledSentence({ ...base, runs: 0, runs_kept: 100 })).toBe('Up to date; 100 runs kept');
+    expect(settledSentence({ ...base, runs: 1 })).toBe(
+      'Up to date; 99 runs kept. 1 run has aged past 90 days since the last pass, and the next one, within six hours, removes it');
+    expect(settledSentence({ ...base, runs: 3, runs_kept: 97 })).toContain('3 runs have aged past 90 days');
   });
 });

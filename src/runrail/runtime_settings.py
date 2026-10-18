@@ -126,9 +126,6 @@ def _quiet_hours(value: Any) -> dict | None:
 
 
 DEFINITIONS: tuple[Definition, ...] = (
-    Definition("public_url", "public_url", None, _optional_url, "Public URL",
-               "Where this RunRail is reached from elsewhere; used for links in exported "
-               "files, reports and alerts. Leave empty to use the listening address."),
     Definition("notify_webhook_url", "notify_webhook_url", None, _optional_url,
                "Default webhook",
                "Where alerts go unless a workflow or service names its own. Slack and "
@@ -152,9 +149,6 @@ DEFINITIONS: tuple[Definition, ...] = (
                "While paused nothing new starts: queued runs wait, services are not "
                "started, and alerts about missed schedules and deadlines are held. "
                "What is executing finishes."),
-    Definition("update_check", None, True, _flag, "Check for updates",
-               "Ask PyPI, a few times a day, whether a newer RunRail exists, and say so on "
-               "this page. Nothing else is sent."),
 )
 _BY_KEY = {definition.key: definition for definition in DEFINITIONS}
 
@@ -277,11 +271,6 @@ def _load(previous: dict[str, Any]) -> dict[str, Any]:
         if locked:
             values[item.key] = env_value
     return values
-
-
-def base_url() -> str:
-    settings = get_settings()
-    return (current("public_url") or f"http://{settings.host}:{settings.port}").rstrip("/")
 
 
 def alerts_allowed(event: str | None, at: datetime | None = None) -> bool:

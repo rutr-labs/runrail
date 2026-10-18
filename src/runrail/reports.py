@@ -26,7 +26,7 @@ from markupsafe import escape
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from runrail import __version__, runtime_settings
+from runrail import __version__
 from runrail.config import get_settings
 from runrail.models import (
     Artifact,
@@ -449,7 +449,7 @@ def _log_sections(task_runs, mode: str, budget: int) -> dict[int, dict[str, str]
     """
     if mode == "none":
         return {}
-    base = runtime_settings.base_url()
+    base = get_settings().base_url
     remaining, sections = budget, {}
     for task_run in sorted(task_runs, key=lambda tr: (tr.status != TaskRunStatus.failed, tr.id)):
         streams = {}
@@ -584,7 +584,8 @@ def export_run_html(db: Session, run: WorkflowRun, logs: str = "tail",
     workflow = db.get(Workflow, run.workflow_id)
     task_runs = db.scalars(select(TaskRun).where(TaskRun.workflow_run_id == run.id)
                            .order_by(TaskRun.id)).all()
-    run_url = f"{runtime_settings.base_url()}/runs/{run.id}"
+    settings = get_settings()
+    run_url = f"{settings.base_url}/runs/{run.id}"
 
     budget = max(0, min(_LOG_TOTAL_BYTES, max_bytes - _SHELL_BYTES))
     sections = _log_sections(task_runs, logs, budget)
@@ -603,9 +604,9 @@ def export_run_html(db: Session, run: WorkflowRun, logs: str = "tail",
         run=run, workflow=workflow, task_runs=task_runs, sections=sections,
         timeline=_timeline(run, task_runs), report_html=report_html, report_note=report_note,
         exported_at=_stamp(now()), run_url=run_url, version=__version__,
-        # Without a public URL the link is a loopback address — the
+        # Without RUNRAIL_PUBLIC_URL the link is a loopback address — the
         # recipient's own machine, not the one that ran this.
-        run_url_reachable=bool(runtime_settings.current("public_url")), report_csp=REPORT_CSP,
+        run_url_reachable=bool(settings.public_url), report_csp=REPORT_CSP,
         started=_stamp(run.started_at), finished=_stamp(run.finished_at),
         duration=_duration(run.duration_seconds), stamp=_stamp, fmt_duration=_duration)
 

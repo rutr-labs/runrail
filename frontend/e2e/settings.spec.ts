@@ -11,14 +11,18 @@ interface Status { version: string; worker: { paused: boolean; concurrency: numb
 const status = async (request: import('@playwright/test').APIRequestContext): Promise<Status> =>
   (await request.get('/api/system/status')).json();
 
-test('the status cards show this server', async ({ page, request }) => {
+test('the hero and the tiles show this server', async ({ page, request }) => {
   const { version } = await status(request);
   await page.goto('/settings');
+  const hero = page.getByRole('region', { name: 'System' });
+  await expect(hero).toContainText('Running');
+  await expect(hero).toContainText(/Up \d+[smhd]/);
   const cards = page.locator('.settings-status');
-  await expect(cards.locator('.sys-card', { hasText: 'Version' })).toContainText(`v${version}`);
-  await expect(cards.locator('.sys-card', { hasText: 'Uptime' })).toContainText(/\d+[smhd]/);
-  await expect(cards.locator('.sys-card', { hasText: 'Database' })).toContainText('sqlite');
+  await expect(cards.locator('.sys-card', { hasText: 'Database' })).toContainText('SQLite');
   await expect(cards.locator('.sys-card', { hasText: 'Worker' })).toContainText('running');
+  // The version is in the footer, quietly; paths are chips, not text.
+  await expect(page.locator('.settings-footer')).toContainText(`RunRail v${version}`);
+  await expect(cards.locator('.path-chip').first()).toHaveAttribute('aria-label', /Copy the database path: \//);
 });
 
 test('a worker setting saved from its group survives a reload and says so', async ({ page, request }) => {
@@ -46,16 +50,35 @@ test('the retention group previews what a number would delete before it can be s
   const group = page.getByRole('region', { name: 'Retention' });
   const save = group.getByRole('button', { name: 'Save' });
   await expect(save).toBeDisabled();
-  await group.getByLabel('Keep forever').uncheck();
-  await group.getByLabel('Keep runs for').fill('30');
+  await group.getByText('30 days', { exact: true }).click();
   const preview = group.locator('.retention-preview');
   await expect(preview).toContainText(/runs? kept/);
   await expect(preview).toContainText(/Would delete|Nothing to delete/);
   await expect(save).toBeEnabled();
-  // Back to never: the number is irrelevant and nothing needs previewing.
-  await group.getByLabel('Keep forever').check();
+  // A custom figure is typed, and previewed in turn.
+  await group.getByText('Custom', { exact: true }).click();
+  await group.getByLabel('Days to keep runs').fill('45');
+  await expect(preview).toContainText(/runs? kept/);
+  // Back to forever: nothing needs previewing, and nothing is unsaved.
+  await group.getByText('Forever', { exact: true }).click();
   await expect(preview).toHaveText('Nothing is ever deleted.');
   await expect(save).toBeDisabled();
+});
+
+test('saving a retention figure cleans up now, and says so', async ({ page }) => {
+  page.on('dialog', dialog => void dialog.accept());
+  await page.goto('/settings');
+  const group = page.getByRole('region', { name: 'Retention' });
+  await group.getByText('1 year', { exact: true }).click();
+  await expect(group.locator('.retention-preview')).toContainText(/runs? kept/);
+  await group.getByRole('button', { name: 'Save' }).click();
+  // Not "within six hours": the cleanup runs at once and reports back.
+  await expect(group.locator('.retention-cleanup')).toContainText(/Cleaned up|Deleted/);
+  await expect(group.locator('.retention-preview')).toContainText(/Up to date/);
+  // Leave the home as the other tests expect it.
+  await group.getByText('Forever', { exact: true }).click();
+  await group.getByRole('button', { name: 'Save' }).click();
+  await expect(group.locator('.settings-provenance')).toContainText('saved');
 });
 
 test('pausing asks first, shows a banner, and resuming clears it', async ({ page, request }) => {

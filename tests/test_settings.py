@@ -26,12 +26,12 @@ def test_defaults_then_saved_values_with_their_source(client):
          "locked": False, "env_var": "RUNRAIL_WORKER_CONCURRENCY", "updated_at": None,
          "title": "Concurrent runs"} | {"help": setting(client, "worker_concurrency")["help"]})
     assert client.put("/api/settings", json={"worker_concurrency": 8,
-                                             "public_url": "https://rail.example/"}).status_code == 200
+                                             "notify_webhook_url": "https://hooks.example/x/"}
+                      ).status_code == 200
     assert setting(client, "worker_concurrency")["source"] == "saved"
     assert setting(client, "worker_concurrency")["value"] == 8
-    assert setting(client, "public_url")["value"] == "https://rail.example"
+    assert setting(client, "notify_webhook_url")["value"] == "https://hooks.example/x"
     assert runtime_settings.current("worker_concurrency") == 8
-    assert runtime_settings.base_url() == "https://rail.example"
 
 
 def test_an_environment_variable_pins_a_setting(client, monkeypatch):
@@ -53,7 +53,8 @@ def test_an_environment_variable_pins_a_setting(client, monkeypatch):
     ({"retention_days": -1}, "Keep runs for"),
     ({"retention_days": 0}, "Keep runs for"),
     ({"quiet_hours": {"start": "22:00", "end": "07:00", "timezone": 5}}, "Quiet hours"),
-    ({"public_url": "rail.example"}, "Public URL"),
+    ({"notify_webhook_url": "hooks.example"}, "Default webhook"),
+    ({"notify_webhook_url": "https://"}, "Default webhook"),
     ({"notify_events": ["run_failed", "nope"]}, "Events to send"),
     ({"quiet_hours": {"start": "22:00", "end": "22:00", "timezone": "UTC"}}, "Quiet hours"),
     ({"quiet_hours": {"start": "22:00", "end": "07:00", "timezone": "Mars/Olympus"}}, "Quiet hours"),
@@ -111,7 +112,10 @@ def test_retention_reads_the_saved_setting_without_a_restart(client):
         db.commit()
     SchedulerService._cleanup()  # retention unset: nothing happens
     assert len(client.get("/api/runs?limit=10").json()) == 2
-    client.put("/api/settings", json={"retention_days": 30})
+    # Saved without the API (which would also start a cleanup of its own), so
+    # this is the scheduler's pass reading the setting.
+    with SessionLocal() as db:
+        runtime_settings.save(db, {"retention_days": 30})
     SchedulerService._cleanup()
     assert len(client.get("/api/runs?limit=10").json()) == 1
 
@@ -187,9 +191,9 @@ def test_a_zero_in_the_environment_means_never_like_the_cleanup_says(client, mon
 
 
 def test_an_empty_environment_value_is_not_a_pin(client, monkeypatch):
-    monkeypatch.setenv("RUNRAIL_PUBLIC_URL", "")
+    monkeypatch.setenv("RUNRAIL_NOTIFY_WEBHOOK_URL", "")
     get_settings.cache_clear(); runtime_settings.invalidate()
-    assert setting(client, "public_url")["locked"] is False
+    assert setting(client, "notify_webhook_url")["locked"] is False
 
 
 def test_state_changing_requests_from_another_site_are_refused(client):
@@ -211,3 +215,33 @@ def test_state_changing_requests_from_another_site_are_refused(client):
     assert client.get("/api/system/status", headers={"Origin": "https://evil.example"}
                       ).status_code == 200, "reads are protected by the browser itself (no CORS)"
     assert client.post("/api/system/pause", json={"paused": False}).status_code == 200
+
+
+def test_saving_a_retention_figure_applies_it_now(client):
+    """Waiting for the scheduler's pass, hours away, looked like the setting
+    had done nothing: the preview kept saying what it would delete."""
+    from runrail import system
+    workflow = make_workflow(client, "old")
+    with SessionLocal() as db:
+        for days_ago in (40, 35, 1):
+            db.add(WorkflowRun(workflow_id=workflow["id"], status=RunStatus.failed, trigger_type="manual",
+                               created_at=datetime.now(UTC) - timedelta(days=days_ago),
+                               finished_at=datetime.now(UTC) - timedelta(days=days_ago)))
+        db.commit()
+    assert client.get("/api/system/retention-preview?days=30").json()["runs"] == 2
+    assert client.put("/api/settings", json={"retention_days": 30}).status_code == 200
+    deadline = time.monotonic() + 10
+    while client.get("/api/system/status").json()["retention"]["cleanup"]["running"]:
+        assert time.monotonic() < deadline, "the cleanup never finished"
+        time.sleep(0.05)
+    done = client.get("/api/system/status").json()["retention"]["cleanup"]
+    assert done["runs_deleted"] == 2 and done["days"] == 30 and done["finished_at"]
+    assert client.get("/api/system/retention-preview?days=30").json()["runs"] == 0
+    assert len(client.get("/api/runs?limit=10").json()) == 1
+    # Saving something else does not start another.
+    client.put("/api/settings", json={"task_parallelism": 3})
+    assert client.get("/api/system/status").json()["retention"]["cleanup"]["started_at"] == done["started_at"]
+    # Only one at a time, whoever asks.
+    assert system.cleanup._claim(30)
+    assert system.cleanup.start(30) is False and system.cleanup.run(30, claimed=False) is None
+    system.cleanup.state["running"] = False

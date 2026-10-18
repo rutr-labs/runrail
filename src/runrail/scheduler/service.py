@@ -10,7 +10,6 @@ from runrail import notify, runtime_settings
 from runrail.api.ws import manager as _ws_manager
 from runrail.crontab import cron_trigger
 from runrail.db import SessionLocal
-from runrail.maintenance import cleanup_runs
 from runrail.models import RunStatus, TriggerType, Workflow, WorkflowRun, _aware, now
 
 
@@ -296,11 +295,13 @@ class SchedulerService:
 
     @staticmethod
     def _cleanup() -> None:
+        from runrail import system
         retention_days = runtime_settings.current("retention_days")
         if not retention_days:
             return
-        with SessionLocal() as db:
-            stats = cleanup_runs(db, retention_days)
+        stats = system.cleanup.run(retention_days, claimed=False)
+        if stats is None:
+            return  # one is already running (started from Settings)
         # Nobody watches this job, so what it could not delete has to be said.
         if stats.runs_deleted or stats.errors:
             print(f"Retention: deleted {stats.runs_deleted} run(s) and "
@@ -318,10 +319,13 @@ class SchedulerService:
         self.scheduler.add_job(self._watchdog, "interval", seconds=60, id="watchdog",
                                replace_existing=True, coalesce=True, max_instances=1,
                                misfire_grace_time=55)
-        # Always scheduled: retention can be switched on from Settings at any time.
+        # Always scheduled: retention can be switched on from Settings at any
+        # time. The first pass comes a minute after start rather than six
+        # hours, so a home that was over its retention is brought back soon.
         self.scheduler.add_job(self._cleanup, "interval", hours=6, id="cleanup",
                                replace_existing=True, coalesce=True, max_instances=1,
-                               misfire_grace_time=3600)
+                               misfire_grace_time=3600,
+                               next_run_time=datetime.now(timezone.utc) + timedelta(minutes=1))
 
     def shutdown(self) -> None:
         if self.scheduler.running: self.scheduler.shutdown(wait=False)

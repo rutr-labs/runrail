@@ -1,6 +1,7 @@
 """Retention cleanup for finished runs and their log/artifact files."""
 
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -118,7 +119,8 @@ def _sweep_orphans(db: Session, logs_root: Path, artifacts_root: Path,
 
 
 def cleanup_runs(db: Session, older_than_days: int, dry_run: bool = False,
-                 budget_seconds: float | None = None) -> CleanupStats:
+                 budget_seconds: float | None = None,
+                 progress: Callable[[CleanupStats], None] | None = None) -> CleanupStats:
     """Delete finished runs older than the cutoff along with their files on disk.
 
     Only terminal runs (success/failed/cancelled) that FINISHED before the
@@ -192,6 +194,8 @@ def cleanup_runs(db: Session, older_than_days: int, dry_run: bool = False,
                 _remove_file(path, stats)
             for path in directories:
                 _remove_dir(path, stats)
+        if progress is not None:
+            progress(stats)
     if not dry_run:
         _sweep_orphans(db, logs_root, artifacts_root, stats)
         db.rollback()

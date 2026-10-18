@@ -1,13 +1,12 @@
 """What the Settings page says about this RunRail, and what it can do to it.
 
-Status: version and whether a newer one exists, uptime, where the data is and
-how big, what the worker and the supervisor are doing. Controls: pause,
+Status: version, uptime, where the data is and how big, what the worker and
+the supervisor are doing. Controls: pause,
 backups, a restore point before every schema upgrade, and a preview of what a
 retention setting would delete before it is allowed to.
 
-Anything slow — walking the logs tree, asking PyPI — runs on its own thread
-and the page shows the last answer with its age; a status request never
-blocks on the disk or the network.
+Anything slow — walking the logs tree — runs on its own thread and the page
+shows the last answer with its age; a status request never blocks on the disk.
 """
 
 import contextlib
@@ -20,7 +19,6 @@ import sqlite3
 import tempfile
 import threading
 import time
-import urllib.request
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,10 +45,8 @@ from runrail.models import (
 log = logging.getLogger("runrail.system")
 
 STARTED_AT = now()
-#: How often the disk is walked for the storage figures, and PyPI asked.
+#: How often the disk is walked for the storage figures.
 STORAGE_MAX_AGE = timedelta(minutes=10)
-UPDATE_MAX_AGE = timedelta(hours=6)
-PYPI_URL = "https://pypi.org/pypi/runrail/json"
 #: Restore points kept under <home>/backups before schema upgrades.
 RESTORE_POINTS_KEPT = 3
 #: A backup's text members are read into memory; a deflate stream inflates a
@@ -118,55 +114,8 @@ def _measure_storage() -> dict[str, int]:
             "backups_bytes": _tree_size(backups_dir(settings))}
 
 
-def _ask_pypi() -> dict[str, Any]:
-    """{"version": "0.7.2", "error": None}, or the reason PyPI could not be
-    asked — a machine without CA certificates, say — kept as an answer so
-    the page can say so and the question is not retried every second."""
-    request = urllib.request.Request(PYPI_URL, headers={"User-Agent": f"runrail/{__version__}"})
-    try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            return {"version": json.load(response)["info"]["version"], "error": None}
-    except Exception as exc:  # network, TLS, a surprising body: all "could not check"
-        log.info("update check: %s", exc)
-        return {"version": None, "error": _short_reason(exc)}
-
-
-def _short_reason(exc: Exception) -> str:
-    """One readable line for the page, not a Python repr."""
-    import ssl
-    import urllib.error
-    reason = getattr(exc, "reason", None)
-    if isinstance(reason, ssl.SSLError) or isinstance(exc, ssl.SSLError):
-        return "this Python has no CA certificates to verify pypi.org (macOS: run Install Certificates.command)"
-    if isinstance(exc, urllib.error.HTTPError):
-        return f"pypi.org answered HTTP {exc.code}"
-    if isinstance(exc, urllib.error.URLError):
-        return f"could not reach pypi.org ({reason})"
-    if isinstance(exc, TimeoutError):
-        return "pypi.org did not answer in time"
-    return f"{type(exc).__name__}: {exc}"[:160]
-
-
-# Looked up at call time (not bound at import), so a test can stand in for either.
+# Looked up at call time (not bound at import), so a test can stand in for it.
 storage = _Background(lambda: _measure_storage(), STORAGE_MAX_AGE)
-latest_release = _Background(lambda: _ask_pypi(), UPDATE_MAX_AGE)
-
-
-def _version_key(version: str) -> tuple:
-    parts = []
-    for piece in version.split("."):
-        digits = "".join(ch for ch in piece if ch.isdigit())
-        parts.append(int(digits) if digits else 0)
-    return tuple(parts)
-
-
-def newer(latest: str | None, current: str) -> bool | None:
-    if not latest:
-        return None
-    try:
-        return _version_key(latest) > _version_key(current)
-    except ValueError:
-        return None
 
 
 def backups_dir(settings: Settings | None = None) -> Path:
@@ -198,11 +147,6 @@ def status(db: Session, refresh: bool = False) -> dict[str, Any]:
             database["size_bytes"] = db.scalar(text("SELECT pg_database_size(current_database())"))
         except Exception:
             db.rollback()
-    try:
-        usage = shutil.disk_usage(home)
-        disk = {"total_bytes": usage.total, "free_bytes": usage.free}
-    except OSError:
-        disk = {"total_bytes": None, "free_bytes": None}
     sizes, measured_at, measuring = storage.get(refresh)
     counts = {status: count for status, count in db.execute(
         select(WorkflowRun.status, func.count()).where(WorkflowRun.status.in_(
@@ -214,21 +158,14 @@ def status(db: Session, refresh: bool = False) -> dict[str, Any]:
     supervised = beat is not None and now() - beat < LEASE_STALE_AFTER + timedelta(seconds=5)
     service_states = {state: count for state, count in db.execute(
         select(Service.state, func.count()).group_by(Service.state))}
-    asked, checked_at, _ = (latest_release.get(refresh) if runtime_settings.current("update_check")
-                            else (None, None, False))
-    latest = (asked or {}).get("version")
     at = now()
     return {
         "version": __version__,
-        "update": {"latest": latest, "available": newer(latest, __version__),
-                   "checked_at": checked_at, "error": (asked or {}).get("error"),
-                   "enabled": bool(runtime_settings.current("update_check"))},
         "started_at": STARTED_AT,
         "python": platform.python_version(),
         "platform": f"{platform.system()} {platform.release()} ({platform.machine()})",
         "home": str(home),
         "database": database,
-        "disk": disk,
         "storage": {**(sizes or {"logs_bytes": None, "artifacts_bytes": None,
                                  "environments_bytes": None, "backups_bytes": None}),
                     "measured_at": measured_at, "measuring": measuring},
@@ -241,7 +178,8 @@ def status(db: Session, refresh: bool = False) -> dict[str, Any]:
         "services": {"supervised": supervised, "total": sum(service_states.values()),
                      "running": service_states.get(ServiceState.running, 0)},
         "scheduler": {"next_fire_at": _next_fire(db, at)},
-        "retention": {"days": runtime_settings.current("retention_days")},
+        "retention": {"days": runtime_settings.current("retention_days"),
+                      "cleanup": cleanup.snapshot()},
         "now": at,
     }
 
@@ -255,6 +193,71 @@ def _next_fire(db: Session, at: datetime) -> datetime | None:
         if fire is not None and (soonest is None or fire < soonest):
             soonest = fire
     return soonest
+
+
+# ── retention cleanup, now ─────────────────────────────────────────────────
+class _Cleanup:
+    """The retention cleanup, one at a time per process, with its progress
+    kept for the Settings page. Saving a retention figure starts one at once:
+    waiting up to six hours for the scheduler's pass looked like the setting
+    had done nothing. The scheduler's own pass goes through here too, so the
+    two never run side by side in one process."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.state: dict[str, Any] = {"running": False, "days": None, "started_at": None,
+                                      "finished_at": None, "runs_deleted": 0,
+                                      "files_deleted": 0, "errors": 0}
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self.state)
+
+    def _claim(self, days: int) -> bool:
+        with self._lock:
+            if self.state["running"]:
+                return False
+            self.state = {"running": True, "days": days, "started_at": now(), "finished_at": None,
+                          "runs_deleted": 0, "files_deleted": 0, "errors": 0}
+            return True
+
+    def start(self, days: int) -> bool:
+        """Begin a cleanup on its own thread; False if one is already running."""
+        if not self._claim(days):
+            return False
+        threading.Thread(target=self.run, args=(days,), name="runrail-retention",
+                         daemon=True).start()
+        return True
+
+    def run(self, days: int, claimed: bool = True) -> Any:
+        """Run a cleanup here and now (the scheduler calls this directly with
+        claimed=False). Returns the stats, or None if another one is running."""
+        from runrail.db import SessionLocal
+        from runrail.maintenance import cleanup_runs
+        if not claimed and not self._claim(days):
+            return None
+
+        def progress(stats) -> None:
+            with self._lock:
+                self.state.update(runs_deleted=stats.runs_deleted,
+                                  files_deleted=stats.files_deleted, errors=len(stats.errors))
+        stats = None
+        try:
+            with SessionLocal() as db:
+                stats = cleanup_runs(db, days, progress=progress)
+            progress(stats)
+        except Exception:
+            log.exception("retention cleanup failed")
+            with self._lock:
+                self.state["errors"] += 1
+        finally:
+            with self._lock:
+                self.state.update(running=False, finished_at=now())
+            storage.reset()  # the home folder just got smaller
+        return stats
+
+
+cleanup = _Cleanup()
 
 
 # ── retention preview ──────────────────────────────────────────────────────

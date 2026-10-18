@@ -14,7 +14,6 @@ export interface QuietHours { start: string; end: string; timezone: string }
 
 /** Every setting's value type, keyed as runtime_settings.DEFINITIONS names them. */
 export interface SettingValues {
-  public_url: string | null;
   notify_webhook_url: string | null;
   notify_events: string[];
   quiet_hours: QuietHours | null;
@@ -22,7 +21,6 @@ export interface SettingValues {
   worker_concurrency: number;
   task_parallelism: number;
   paused: boolean;
-  update_check: boolean;
 }
 export type SettingKey = keyof SettingValues;
 export type SettingValue = SettingValues[SettingKey];
@@ -41,23 +39,13 @@ export interface Setting {
 
 export interface SettingsResponse { settings: Setting[]; event_kinds: string[] }
 
-export interface UpdateInfo {
-  latest: string | null;
-  available: boolean | null;
-  checked_at: string | null;
-  error: string | null;
-  enabled: boolean;
-}
-
 export interface SystemStatus {
   version: string;
-  update: UpdateInfo;
   started_at: string;
   python: string;
   platform: string;
   home: string;
   database: { backend: string; location: string; size_bytes: number | null };
-  disk: { total_bytes: number | null; free_bytes: number | null };
   storage: {
     logs_bytes: number | null; artifacts_bytes: number | null;
     environments_bytes: number | null; backups_bytes: number | null;
@@ -69,8 +57,15 @@ export interface SystemStatus {
   };
   services: { supervised: boolean; total: number; running: number };
   scheduler: { next_fire_at: string | null };
-  retention: { days: number | null };
+  retention: { days: number | null; cleanup: CleanupState };
   now: string;
+}
+
+/** The retention cleanup the server is running, or last ran. */
+export interface CleanupState {
+  running: boolean; days: number | null;
+  started_at: string | null; finished_at: string | null;
+  runs_deleted: number; files_deleted: number; errors: number;
 }
 
 export interface RetentionPreview {
@@ -226,21 +221,124 @@ export function sameValue(a: unknown, b: unknown): boolean {
 
 export interface Line { tone: 'default' | 'warning'; text: string }
 
-/** The version card's second line. */
-export function updateLine(update: UpdateInfo, version: string): Line {
-  if (!update.enabled) return { tone: 'default', text: 'Update check is off' };
-  if (update.available && update.latest) {
-    return { tone: 'warning', text: `${update.latest} available · pip install -U runrail` };
-  }
-  if (update.error) return { tone: 'warning', text: `Could not check: ${update.error}` };
-  if (update.latest) return { tone: 'default', text: update.latest === version || update.available === false ? 'Up to date' : `Latest is ${update.latest}` };
-  return { tone: 'default', text: 'Checking for updates…' };
-}
-
 /** "2 created · 1 updated" from a restore summary, skipping empty buckets. */
 export function restoreSummaryLine(summary: RestoreSummary): string {
   const parts = Object.entries(summary)
     .filter(([, names]) => names.length > 0)
     .map(([bucket, names]) => `${names.length} ${bucket}`);
   return parts.length ? parts.join(' · ') : 'Nothing changed';
+}
+
+/* ── Presentation helpers for the redesigned page ─────── */
+
+/** The last segment of a path, for a chip that shows little and copies all. */
+export function basename(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  const parts = trimmed.split(/[\\/]/);
+  return parts[parts.length - 1] || trimmed || path;
+}
+
+export type StorageKey = 'logs' | 'artifacts' | 'environments' | 'backups';
+export interface StorageSegment { key: StorageKey; label: string; bytes: number; share: number }
+
+/** The storage bar: one segment per folder, in a fixed order, sharing 1.
+ *  Null while any figure is still being measured. */
+export function storageSegments(storage: SystemStatus['storage']): { total: number; segments: StorageSegment[] } | null {
+  const parts: [StorageKey, string, number | null][] = [
+    ['logs', 'Logs', storage.logs_bytes], ['artifacts', 'Artifacts', storage.artifacts_bytes],
+    ['environments', 'Environments', storage.environments_bytes], ['backups', 'Backups', storage.backups_bytes],
+  ];
+  if (parts.some(([, , bytes]) => bytes == null)) return null;
+  const total = parts.reduce((sum, [, , bytes]) => sum + (bytes ?? 0), 0);
+  return {
+    total,
+    segments: parts.map(([key, label, bytes]) => ({
+      key, label, bytes: bytes ?? 0, share: total > 0 ? (bytes ?? 0) / total : 0,
+    })),
+  };
+}
+
+/** Where the quiet span falls on a 24-hour bar, as fractions of the day: one
+ *  span, or two when it crosses midnight. Empty for a malformed time. */
+export function quietSpans(start: string, end: string): [number, number][] {
+  const minutes = (hhmm: string): number | null => {
+    const match = /^(\d{2}):(\d{2})$/.exec(hhmm);
+    if (!match) return null;
+    const value = Number(match[1]) * 60 + Number(match[2]);
+    return value < 24 * 60 ? value : null;
+  };
+  const from = minutes(start);
+  const to = minutes(end);
+  if (from == null || to == null || from === to) return [];
+  const day = 24 * 60;
+  return from < to ? [[from / day, to / day]] : [[from / day, 1], [0, to / day]];
+}
+
+/** Retention presets offered as one click each; anything else is Custom. */
+export const RETENTION_PRESETS: { days: number; label: string }[] = [
+  { days: 7, label: '7 days' }, { days: 30, label: '30 days' },
+  { days: 90, label: '90 days' }, { days: 365, label: '1 year' },
+];
+
+/** The alert kinds, grouped the way a person thinks about them. A kind this
+ *  build does not know lands in "Other" rather than vanishing. */
+export const EVENT_GROUPS: { title: string; kinds: string[] }[] = [
+  { title: 'Runs', kinds: ['run_failed', 'run_recovered', 'workflow_paused'] },
+  { title: 'Approvals', kinds: ['approval_requested', 'approval_rejected'] },
+  { title: 'Schedules', kinds: ['run_missed', 'run_missed_recovered'] },
+  { title: 'Deadlines', kinds: ['sla_breached', 'sla_finished_late'] },
+  { title: 'Services', kinds: ['service_crash_loop'] },
+];
+
+export function groupEvents(kinds: string[]): { title: string; kinds: string[] }[] {
+  const known = new Set(EVENT_GROUPS.flatMap(group => group.kinds));
+  const groups = EVENT_GROUPS
+    .map(group => ({ title: group.title, kinds: group.kinds.filter(kind => kinds.includes(kind)) }))
+    .filter(group => group.kinds.length > 0);
+  const other = kinds.filter(kind => !known.has(kind));
+  return other.length ? [...groups, { title: 'Other', kinds: other }] : groups;
+}
+
+/** The hero's headline: what state the whole system is in, in one look. */
+export function systemHeadline(status: SystemStatus): { tone: 'ok' | 'paused' | 'warning'; title: string; detail: string } {
+  const { worker, services } = status;
+  const queue = [
+    `${worker.running.toLocaleString('en-US')} running`,
+    `${worker.queued.toLocaleString('en-US')} queued`,
+    ...(worker.waiting_approval ? [`${worker.waiting_approval.toLocaleString('en-US')} waiting approval`] : []),
+  ].join(' · ');
+  if (worker.paused) return { tone: 'paused', title: 'Paused', detail: queue };
+  if (services.total > 0 && !services.supervised) {
+    return { tone: 'warning', title: 'Running · services unsupervised', detail: queue };
+  }
+  return { tone: 'ok', title: 'Running', detail: queue };
+}
+
+/** What the cleanup is doing, or did lately, in one line; null when there is
+ *  nothing worth saying (none ran, or the last one is old news). */
+export function cleanupLine(cleanup: CleanupState | undefined, now = Date.now()): { tone: 'busy' | 'done' | 'warning'; text: string } | null {
+  if (!cleanup || !cleanup.started_at) return null;
+  const runs = `${cleanup.runs_deleted.toLocaleString('en-US')} run${cleanup.runs_deleted === 1 ? '' : 's'}`;
+  if (cleanup.running) {
+    return { tone: 'busy', text: `Deleting runs older than ${cleanup.days} days… ${runs} so far` };
+  }
+  const finished = cleanup.finished_at ? new Date(cleanup.finished_at).getTime() : 0;
+  if (now - finished > 15 * 60_000) return null;
+  const files = `${cleanup.files_deleted.toLocaleString('en-US')} file${cleanup.files_deleted === 1 ? '' : 's'}`;
+  if (cleanup.errors > 0) {
+    return { tone: 'warning', text: `Deleted ${runs} and ${files}; ${cleanup.errors} could not be removed and will be retried` };
+  }
+  return { tone: 'done', text: cleanup.runs_deleted === 0 ? 'Cleaned up: nothing was old enough to delete'
+    : `Deleted ${runs} and ${files}` };
+}
+
+/** The preview for the figure already saved: not a warning about what a
+ *  choice would do, but what is waiting for the next six-hourly pass — runs
+ *  that have aged past the line since the last one. */
+export function settledSentence(preview: RetentionPreview): string {
+  const kept = `${count(preview.runs_kept, 'run')} kept`;
+  if (preview.runs === 0) return `Up to date; ${kept}`;
+  const aged = preview.runs === 1 ? '1 run has' : `${preview.runs.toLocaleString('en-US')} runs have`;
+  return `Up to date; ${kept}. ${aged} aged past ${preview.days} days since the last pass, `
+    + `and the next one, within six hours, removes ${preview.runs === 1 ? 'it' : 'them'}`;
 }

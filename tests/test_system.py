@@ -19,14 +19,13 @@ from runrail.db import SessionLocal
 from runrail.models import RunStatus, TriggerType, WorkflowRun
 
 
-def test_status_reports_the_machine_and_the_work(client, monkeypatch):
-    monkeypatch.setattr(system, "_ask_pypi", lambda: {"version": "99.0.0", "error": None})
-    system.latest_release.reset(); system.storage.reset()
+def test_status_reports_the_machine_and_the_work(client):
+    system.storage.reset()
     make_workflow(client, "nightly", schedule_cron="0 3 * * *")
     first = client.get("/api/system/status").json()
     assert first["version"] and first["home"] == str(get_settings().home.resolve())
     assert first["database"]["backend"] in ("sqlite", "postgresql")
-    assert first["disk"]["free_bytes"] > 0
+    assert "disk" not in first
     assert first["worker"] == {"concurrency": 4, "task_parallelism": 4, "running": 0, "queued": 0,
                                "waiting_approval": 0, "paused": False}
     assert first["services"] == {"supervised": False, "total": 0, "running": 0}
@@ -35,15 +34,11 @@ def test_status_reports_the_machine_and_the_work(client, monkeypatch):
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         later = client.get("/api/system/status").json()
-        if later["storage"]["logs_bytes"] is not None and later["update"]["latest"]:
+        if later["storage"]["logs_bytes"] is not None:
             break
         time.sleep(0.1)
     assert later["storage"]["measured_at"] and later["storage"]["logs_bytes"] >= 0
-    assert later["update"] == {"latest": "99.0.0", "available": True, "error": None,
-                               "checked_at": later["update"]["checked_at"], "enabled": True}
-    # Switched off, PyPI is not asked and nothing is claimed.
-    client.put("/api/settings", json={"update_check": False})
-    assert client.get("/api/system/status").json()["update"]["latest"] is None
+    assert "update" not in later, "RunRail does not phone home"
 
 
 def test_the_retention_preview_counts_what_a_setting_would_delete(client):

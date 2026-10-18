@@ -47,6 +47,11 @@ def update_settings(values: dict[str, Any], db: Session = Depends(get_db)):
         raise HTTPException(409, str(exc)) from None
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
+    # A retention figure applies now, not at the scheduler's next pass hours
+    # away; the page follows the cleanup through /system/status.
+    days = runtime_settings.current("retention_days")
+    if "retention_days" in values and days:
+        system.cleanup.start(days)
     return {"settings": saved, "event_kinds": list(runtime_settings.EVENT_KINDS)}
 
 

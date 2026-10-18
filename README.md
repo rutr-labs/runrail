@@ -173,7 +173,7 @@ Docker is available (`docker compose up --build` starts RunRail with PostgreSQL 
 
 ## Configuration
 
-Most of what you would tune lives on the **Settings** page and applies without a restart: the default webhook and which alerts go out, quiet hours, how long runs are kept (with a preview of what that would delete before it does), how many runs and tasks execute at once, the public URL, and an update check. The same page shows the machine — version, uptime, database and disk, what the worker and the supervisor are doing — and has the operator controls: **pause everything new** while what is executing finishes, **download a backup**, and restore one.
+Most of what you would tune lives on the **Settings** page and applies without a restart: the default webhook and which alerts go out, quiet hours, how long runs are kept (with a preview of what that would delete before it does), and how many runs and tasks execute at once. The same page shows the machine — version, uptime, database and disk, what the worker and the supervisor are doing — and has the operator controls: **pause everything new** while what is executing finishes, **download a backup**, and restore one.
 
 An environment variable pins a setting: the page shows it locked and names the variable, so a deployment that configures RunRail in a unit file or `.env` stays exactly what that file says.
 
