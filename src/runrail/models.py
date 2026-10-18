@@ -397,6 +397,9 @@ def _str_enum(cls):
 
 class Service(TimestampMixin, Base):
     __tablename__ = "services"
+    # The supervisor keeps processes by service id: a recycled id would hand a
+    # new service the old one's process.
+    __table_args__ = {"sqlite_autoincrement": True}
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True)
     #: YAML identity, as Workflow.key: apply survives a rename.
@@ -428,6 +431,9 @@ class Service(TimestampMixin, Base):
     override_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     override_reason: Mapped[str | None] = mapped_column(String(32))
     restart_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Exits before this instant do not count toward a crash loop: set when a
+    #: person clears a hold, so their Start gets a fresh run of attempts.
+    attempts_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # What the process tree is using, sampled by the supervisor every few
     # seconds while the service runs: the first thing you want to know about a

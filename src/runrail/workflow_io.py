@@ -24,6 +24,7 @@ from runrail.models import (
     ServiceState,
     Task,
     Workflow,
+    now,
 )
 from runrail.schemas import ServiceIn, TaskIn, WorkflowIn
 
@@ -397,10 +398,17 @@ def _apply_service(db: Session, entry: dict[str, Any]) -> tuple[bool, str]:
             raise ValueError(f"Service '{service.name}' is '{name}' in this file, "
                              f"but another service already has that name")
         service.name = name
+    schedule_before = (service.start_mode, service.windows_json, service.timezone)
     for field in ("description", "command", "cwd", "env_vars_json", "start_mode", "timezone",
                   "stop_timeout_seconds", "lock_resource", "lock_mode", "notify_webhook_url"):
         setattr(service, field, getattr(checked, field))
     service.windows_json = checked.windows
+    if not created and schedule_before != (service.start_mode, service.windows_json,
+                                           service.timezone):
+        # The same rule as the API: a Start measured against the old windows
+        # would otherwise outlive them, permanently on a now-scheduled service.
+        from runrail.services.supervisor import clear_hold
+        clear_hold(service, now())
     service.restart_policy = checked.restart_policy or (
         RestartPolicy.never if checked.start_mode == ServiceStartMode.manual
         else RestartPolicy.always)

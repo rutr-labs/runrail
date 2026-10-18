@@ -64,9 +64,26 @@ def validate_windows(windows: object) -> list[dict]:
 
 def _local(day: date, at: time, zone: ZoneInfo) -> datetime:
     """A wall time on a date, as a UTC instant. Inside a spring-forward gap the
-    wall time does not exist; fold=0 resolves it with the offset before the
-    jump, which lands on the far side of the gap (02:30 → 03:30)."""
-    return datetime.combine(day, at, tzinfo=zone).astimezone(UTC)
+    wall time does not exist: it becomes the instant the clocks jump, the
+    first one that does. (fold=0 alone would use the offset from before the
+    jump and land an hour into the far side, 02:30 → 03:30.)"""
+    wall = datetime.combine(day, at)
+    first = wall.replace(tzinfo=zone)
+    instant = first.astimezone(UTC)
+    if instant.astimezone(zone).replace(tzinfo=None) == wall:
+        return instant
+    # In the gap. The two folds straddle the transition; find it to the minute.
+    after = first.replace(fold=1).astimezone(UTC)
+    low, high = min(instant, after), max(instant, after)
+    offset_after = max(first.utcoffset(), first.replace(fold=1).utcoffset())
+    while high - low > timedelta(minutes=1):
+        middle = low + (high - low) // 2
+        middle = middle.replace(second=0, microsecond=0)
+        if middle.astimezone(zone).utcoffset() == offset_after:
+            high = middle
+        else:
+            low = middle + timedelta(minutes=1)
+    return high if high.astimezone(zone).utcoffset() == offset_after else low
 
 
 def intervals(windows: Sequence[dict], zone: ZoneInfo, first: date,
@@ -82,7 +99,9 @@ def intervals(windows: Sequence[dict], zone: ZoneInfo, first: date,
                 continue
             start, end = parse_time(window["start"]), parse_time(window["end"])
             end_day = day if end > start else day + timedelta(days=1)
-            spans.append((_local(day, start, zone), _local(end_day, end, zone)))
+            opens, closes = _local(day, start, zone), _local(end_day, end, zone)
+            if closes > opens:  # a window lying wholly inside the gap never happens
+                spans.append((opens, closes))
     spans.sort()
     merged: list[list[datetime]] = []
     for start, end in spans:

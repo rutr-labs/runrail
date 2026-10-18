@@ -77,6 +77,31 @@ export function scheduleSummary(windows: ServiceWindow[], zone: string, now = Da
 export const crossesMidnight = (w: ServiceWindow): boolean =>
   minutesOf(w.end) <= minutesOf(w.start);
 
+/** A wall time in the zone as an instant (ms). A time inside a spring-forward
+ *  gap does not exist; it becomes the instant the clocks jump, the first one
+ *  that does — as windows.py does. (zonedTimeToUtc alone keeps the offset from
+ *  before the jump and lands an hour into the far side, 02:30 → 03:30.) */
+function wallInstant(y: number, mo: number, d: number, h: number, mi: number, zone: string): number {
+  const instant = zonedTimeToUtc(y, mo, d, h, mi, zone).getTime();
+  const reads = (t: number): boolean => {
+    const w = wallParts(new Date(t), zone);
+    return w.y === y && w.mo === mo && w.d === d && w.h === h && w.mi === mi;
+  };
+  if (reads(instant)) return instant;
+  const offsetAt = (t: number): number => {
+    const w = wallParts(new Date(t), zone);
+    return Date.UTC(w.y, w.mo - 1, w.d, w.h, w.mi) - t;
+  };
+  // The two offsets straddle the transition; find it to the minute.
+  const after = offsetAt(instant + 86_400_000);
+  let low = instant - 86_400_000, high = instant;
+  while (high - low > 60_000) {
+    const middle = low + Math.floor((high - low) / 2 / 60_000) * 60_000;
+    if (offsetAt(middle) === after) high = middle; else low = middle + 60_000;
+  }
+  return high;
+}
+
 /* Monday-first weekday index (0 = Monday) of a civil date. */
 const mondayIndex = (y: number, mo: number, d: number): number =>
   (new Date(Date.UTC(y, mo - 1, d)).getUTCDay() + 6) % 7;
@@ -99,8 +124,9 @@ export function intervals(windows: ServiceWindow[], zone: string,
       const [sh, sm] = w.start.split(':').map(Number);
       const [eh, em] = w.end.split(':').map(Number);
       const end = crossesMidnight(w) ? addDays(y, mo, d, 1) : [y, mo, d] as const;
-      spans.push([zonedTimeToUtc(y, mo, d, sh, sm, zone).getTime(),
-                  zonedTimeToUtc(end[0], end[1], end[2], eh, em, zone).getTime()]);
+      const opens = wallInstant(y, mo, d, sh, sm, zone);
+      const closes = wallInstant(end[0], end[1], end[2], eh, em, zone);
+      if (closes > opens) spans.push([opens, closes]); // wholly inside a gap: never happens
     }
   }
   spans.sort((a, b) => a[0] - b[0]);

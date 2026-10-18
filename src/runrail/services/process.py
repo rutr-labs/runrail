@@ -108,23 +108,40 @@ def start(spec: LaunchSpec, log_path: Path) -> tuple[subprocess.Popen, threading
 
 
 def _pump(stream, path: Path) -> None:
-    """Copy a process's output to its log, rolling the file over by size."""
-    out = path.open("ab")
-    written = out.tell()
+    """Copy a process's output to its log, rolling the file over by size.
+
+    The pipe is drained whatever happens to the file: a full disk or a log
+    directory that has gone must not stop the reads, or the service blocks on
+    its next write once the pipe fills, still showing as running. Output is
+    dropped until the file can be opened again."""
+    out = None
+    written = 0
     try:
         for chunk in iter(lambda: stream.read1(65536), b""):
-            if written + len(chunk) > LOG_MAX_BYTES and written:
-                out.close()
-                _rotate(path)
-                out = path.open("ab")
-                written = 0
-            out.write(chunk)
-            out.flush()
-            written += len(chunk)
+            try:
+                if out is None:
+                    out = path.open("ab")
+                    written = out.tell()
+                if written + len(chunk) > LOG_MAX_BYTES and written:
+                    out.close()
+                    _rotate(path)
+                    out = path.open("ab")
+                    written = 0
+                out.write(chunk)
+                out.flush()
+                written += len(chunk)
+            except OSError:
+                if out is not None:
+                    try:
+                        out.close()
+                    except OSError:
+                        pass
+                out = None
     except (OSError, ValueError):
-        pass
+        pass  # the pipe closed: the process is gone, or the supervisor let go
     finally:
-        out.close()
+        if out is not None:
+            out.close()
 
 
 def _rotate(path: Path) -> None:
@@ -222,8 +239,16 @@ def group_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
-    return True
+        pass  # a group of only zombies answers this way on macOS
+    # Something answered — but a zombie does too, and the group leader is one
+    # until its parent reaps it. Only a member still running counts.
+    for member in psutil.process_iter(["status"]):
+        try:
+            if os.getpgid(member.pid) == pid and member.info["status"] != psutil.STATUS_ZOMBIE:
+                return True
+        except (OSError, psutil.Error):
+            continue
+    return False
 
 
 def ask_to_stop(pid: int) -> None:

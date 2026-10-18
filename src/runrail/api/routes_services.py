@@ -31,10 +31,12 @@ from runrail.models import (
     now,
 )
 from runrail.schemas import ServiceIn, ServiceOut, ServiceSessionOut
+from runrail.services.locks import HOLDING
 from runrail.services.process import log_directory
 from runrail.services.supervisor import (
     LEASE_NAME,
     LEASE_STALE_AFTER,
+    clear_hold,
     desired,
     log_tail,
     set_override,
@@ -45,7 +47,13 @@ router = APIRouter(prefix="/api", tags=["services"])
 
 #: Columns whose meaning a stored override was relative to: change one and the
 #: override no longer means what the person who clicked meant.
-_SCHEDULE_FIELDS = {"start_mode", "windows", "timezone"}
+_SCHEDULE_FIELDS = ("start_mode", "windows_json", "timezone")
+
+
+def _supervised(db: Session) -> bool:
+    lease = db.get(SupervisorLease, LEASE_NAME)
+    beat = _aware(lease.heartbeat_at) if lease else None
+    return beat is not None and now() - beat < LEASE_STALE_AFTER + timedelta(seconds=5)
 
 
 def _out(db: Session, service: Service) -> ServiceOut:
@@ -95,9 +103,8 @@ def supervisor_status(db: Session = Depends(get_db)):
     """Whether anything is supervising services. `runrail api` alone does not:
     services then hold whatever state they were last left in."""
     lease = db.get(SupervisorLease, LEASE_NAME)
-    beat = _aware(lease.heartbeat_at) if lease else None
-    active = beat is not None and now() - beat < LEASE_STALE_AFTER + timedelta(seconds=5)
-    return {"active": active, "heartbeat_at": beat if active else None}
+    active = _supervised(db)
+    return {"active": active, "heartbeat_at": _aware(lease.heartbeat_at) if active else None}
 
 
 @router.post("/services", response_model=ServiceOut, status_code=201)
@@ -132,23 +139,32 @@ def update_service(service_id: int, data: ServiceIn, db: Session = Depends(get_d
         values["windows_json"] = values.pop("windows")
     if values.get("restart_policy", ...) is None:
         values.pop("restart_policy")
-    rescheduled = bool(_SCHEDULE_FIELDS & data.model_fields_set)
+    # The form sends every field on every save, so compare values, not keys:
+    # a description edit must not stop a service someone started by hand.
+    before = [getattr(service, field) for field in _SCHEDULE_FIELDS]
     apply_update(service, values)
     _check_complete(service)
+    rescheduled = before != [getattr(service, field) for field in _SCHEDULE_FIELDS]
     # A changed schedule voids an override measured against the old one; any
     # edit lifts the supervisor's own holds (crash loop, clean exit), since
     # editing is how someone fixes what caused them.
     if rescheduled or service.override_reason in ("crash_loop", "exited"):
-        service.override_running = service.override_until = service.override_reason = None
+        clear_hold(service, now())
     service.next_attempt_at = None
     return _out(db, save(db, service))
 
 
 @router.delete("/services/{service_id}", status_code=204)
 def delete_service(service_id: int, db: Session = Depends(get_db)):
-    """The supervisor stops a deleted service's process within a second, with
-    its stop timeout like any stop."""
-    db.delete(get_or_404(db, Service, service_id))
+    """Only a stopped service can go. Deleting the row would release its lock
+    while the process still holds the GPU, and leave the process with no
+    session for any supervisor to find and stop."""
+    service = get_or_404(db, Service, service_id)
+    if service.state in HOLDING:
+        raise HTTPException(409, "Stop the service before deleting it"
+                            + ("" if _supervised(db) else
+                               " — no supervisor is running to stop it; start `runrail serve`"))
+    db.delete(service)
     db.commit()
     # Its logs go with it; nothing else would ever clean them up.
     shutil.rmtree(log_directory(service_id), ignore_errors=True)
@@ -158,9 +174,8 @@ def delete_service(service_id: int, db: Session = Depends(get_db)):
 def _action(db: Session, service_id: int, running: bool | None) -> ServiceOut:
     service = get_or_404(db, Service, service_id)
     at = now()
-    if running is None:
-        service.override_running = service.override_until = service.override_reason = None
-    else:
+    clear_hold(service, at)
+    if running is not None:
         set_override(service, running, "user", at)
     # A person pressing Start means now, not after the backoff a crash earned.
     service.next_attempt_at = None
@@ -186,7 +201,12 @@ def resume_schedule(service_id: int, db: Session = Depends(get_db)):
 @router.post("/services/{service_id}/restart", response_model=ServiceOut)
 def restart_service(service_id: int, db: Session = Depends(get_db)):
     service = get_or_404(db, Service, service_id)
-    if service.state in (ServiceState.running, ServiceState.stopping, ServiceState.starting):
+    if service.state in HOLDING:
+        # Pressed mid-stop, it also means "and do run": the Stop that began
+        # the stop would otherwise hold the restarted service down.
+        if service.state == ServiceState.stopping:
+            clear_hold(service, now())
+            set_override(service, True, "user", now())
         service.restart_requested = True
         service.next_attempt_at = None
         return _out(db, save(db, service))

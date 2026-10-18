@@ -62,8 +62,13 @@ class Clock:
 
 @pytest.fixture()
 def clock():
-    # Monday 2026-10-19, 12:00 UTC.
-    return Clock(datetime(2026, 10, 19, 12, 0, tzinfo=UTC))
+    # A Monday at 12:00 UTC, at least a week ago: a service's state_since (this
+    # clock) is ordered against runs' created_at (the real clock) in the lock
+    # code, so the test clock must not run ahead of the real one.
+    real = datetime.now(UTC)
+    monday = (real - timedelta(days=real.weekday() + 7)).replace(hour=12, minute=0, second=0,
+                                                                  microsecond=0)
+    return Clock(monday)
 
 
 @pytest.fixture()
@@ -159,7 +164,9 @@ def test_a_process_that_ignores_the_polite_stop_is_killed_at_the_timeout(client,
     client.post(f"/api/services/{svc['id']}/stop")
     sup.tick()
     stopping = service(client, svc["id"])
-    assert stopping["state"] == "stopping" and "Force stop in 180s" in stopping["state_detail"]
+    # The detail is written once; the UI counts down from state_since itself,
+    # so the row is not rewritten (and broadcast) every second.
+    assert stopping["state"] == "stopping" and stopping["state_detail"] == "Asked to stop"
     time.sleep(0.5)
     sup.tick()
     assert process_alive(pid), "killed before its stop timeout"
@@ -346,19 +353,26 @@ def test_shutting_down_stops_services_and_they_return_on_the_next_start(client, 
     settle(supervisor(), client, svc["id"], "running")
 
 
-def test_deleting_a_running_service_stops_its_process(client, supervisor):
+def test_a_live_service_cannot_be_deleted_until_it_has_stopped(client, supervisor):
+    """Deleting the row would free its lock while the process still holds the
+    GPU, and nothing could ever adopt or stop that process again."""
     sup = supervisor()
     svc = create(client, start_mode="startup")
-    pid = settle(sup, client, svc["id"], "running")["current_session"]["pid"]
+    settle(sup, client, svc["id"], "running")
+    refused = client.delete(f"/api/services/{svc['id']}")
+    assert refused.status_code == 409 and "Stop" in refused.json()["detail"]
+    client.post(f"/api/services/{svc['id']}/stop")
+    settle(sup, client, svc["id"], "stopped")
     assert client.delete(f"/api/services/{svc['id']}").status_code == 204
-    deadline = time.monotonic() + 10
-    # Until the supervisor has let go, not merely until the pid reads as dead:
-    # on Windows an exited process reads as dead before it has been reaped.
-    while (process_alive(pid) or sup.live) and time.monotonic() < deadline:
-        sup.tick()
-        time.sleep(0.1)
-    assert not process_alive(pid)
-    assert not sup.live
+    assert client.get(f"/api/services/{svc['id']}").status_code == 404
+
+
+def test_a_deleted_service_s_id_is_never_handed_out_again(client):
+    """The supervisor keeps its processes by service id; a new service with a
+    recycled id would inherit the old one's process."""
+    first = create(client, name="one")["id"]
+    assert client.delete(f"/api/services/{first}").status_code == 204
+    assert create(client, name="two")["id"] != first
 
 
 def test_an_environment_a_service_runs_from_counts_as_in_use(client, supervisor):
@@ -476,3 +490,175 @@ def test_a_running_service_reports_what_it_is_using(client, supervisor):
     settle(sup, client, svc["id"], "stopped")
     stopped = service(client, svc["id"])
     assert stopped["cpu_percent"] is None and stopped["rss_bytes"] is None
+
+
+def test_editing_an_unrelated_field_keeps_the_start_override(client, supervisor):
+    """The UI's form sends every schedule field on every save; only a changed
+    one voids the override. A description edit used to stop the service."""
+    sup = supervisor()
+    svc = create(client)
+    client.post(f"/api/services/{svc['id']}/start")
+    settle(sup, client, svc["id"], "running")
+    body = {**svc, "description": "now with a description"}
+    assert client.put(f"/api/services/{svc['id']}", json=body).status_code == 200
+    sup.tick(); sup.tick()
+    current = service(client, svc["id"])
+    assert current["state"] == "running" and current["override_running"] is True
+
+
+def test_restart_while_stopping_brings_the_service_back(client, supervisor, clock):
+    sup = supervisor()
+    svc = create(client, command=STUBBORN, stop_timeout_seconds=60)
+    client.post(f"/api/services/{svc['id']}/start")
+    settle(sup, client, svc["id"], "running")
+    old_pid = stubborn_pid(client, svc["id"])
+    client.post(f"/api/services/{svc['id']}/stop")
+    sup.tick()
+    assert service(client, svc["id"])["state"] == "stopping"
+    client.post(f"/api/services/{svc['id']}/restart")  # changed their mind
+    clock.advance(seconds=61)
+    running = settle(sup, client, svc["id"], "running")
+    assert running["current_session"]["pid"] != old_pid and gone(old_pid)
+
+
+def test_a_hold_keeps_its_explanation(client, supervisor, clock):
+    """A manual service's clean exit matched its default (not running), so the
+    hold was not stored and the next tick wiped the reason it had stopped."""
+    sup = supervisor()
+    svc = create(client, command=python("print('done')"))
+    client.post(f"/api/services/{svc['id']}/start")
+    settled = settle(sup, client, svc["id"], "stopped")
+    assert settled["state_detail"] == "Exited with code 0; not restarted (never)"
+    clock.advance(minutes=1)
+    sup.tick(); sup.tick()
+    assert service(client, svc["id"])["state_detail"] == settled["state_detail"]
+
+
+def test_a_start_by_hand_begins_the_crash_count_afresh(client, supervisor, clock):
+    """After a crash loop, Start gave exactly one attempt: the old exits still
+    counted, so the next failure was a crash loop again, with no backoff."""
+    sup = supervisor()
+    svc = create(client, command=python("raise SystemExit(3)"), start_mode="startup")
+    deadline = time.monotonic() + 30
+    while service(client, svc["id"])["state"] != "crash_loop" and time.monotonic() < deadline:
+        sup.tick()
+        current = service(client, svc["id"])
+        if current["state"] == "backoff":
+            clock.advance(seconds=(datetime.fromisoformat(current["next_attempt_at"])
+                                   - clock.now).total_seconds())
+        time.sleep(0.05)
+    client.post(f"/api/services/{svc['id']}/start")
+    clock.advance(seconds=1)  # the attempt comes after the click, as it does in life
+    settled = settle(sup, client, svc["id"], "backoff")
+    assert "restarting in 1s" in settled["state_detail"], settled
+
+
+def test_a_restart_never_lets_go_of_the_lock(client, supervisor):
+    """Between the old process ending and the new one starting the service read
+    as stopped for a tick, and a queued GPU job took the GPU."""
+    sup = supervisor()
+    svc = create(client, start_mode="startup", lock_resource="gpu")
+    settle(sup, client, svc["id"], "running")
+    workflow = make_workflow(client, "train", lock_resource="gpu", lock_mode="exclusive")
+    make_shell_task(client, workflow["id"], "job", "echo")
+    start_run(client, workflow["id"])
+    client.post(f"/api/services/{svc['id']}/restart")
+    old = sessions(client, svc["id"])[0]["id"]
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        sup.tick()
+        with SessionLocal() as db:
+            assert claim_next_run(db) is None, "a run took the GPU during the restart"
+        current = service(client, svc["id"])
+        if current["state"] == "running" and current["current_session"]["id"] != old:
+            break
+        time.sleep(0.1)
+    assert service(client, svc["id"])["state"] == "running"
+    assert sessions(client, svc["id"])[1]["stop_reason"] == "restarted"
+
+
+@pytest.mark.skipif(WINDOWS, reason="process groups")
+def test_an_adopted_process_gets_its_grace_period_too(client, supervisor, clock):
+    """A supervisor that takes over knows only the leader pid. When that is a
+    shell that dies on SIGTERM, the program under it looked gone: the session
+    closed, the lock was released and a second copy was started beside it."""
+    dead = supervisor()
+    svc = create(client, command=f"{STUBBORN}; true", start_mode="startup",
+                 stop_timeout_seconds=120)
+    settle(dead, client, svc["id"], "running")
+    stubborn = stubborn_pid(client, svc["id"])
+    dead.live.clear()
+    with SessionLocal() as db:
+        db.get(SupervisorLease, "services").heartbeat_at = clock.now - timedelta(minutes=1)
+        db.commit()
+    heir = supervisor()
+    for _ in range(5):
+        heir.tick()
+        time.sleep(0.1)
+    assert process_alive(stubborn), "killed before its stop timeout"
+    assert service(client, svc["id"])["state"] == "stopping"
+    assert len(sessions(client, svc["id"])) == 1, "a second copy was started beside the first"
+    clock.advance(seconds=121)
+    deadline = time.monotonic() + 10
+    while (process_alive(stubborn) or heir.live and heir.live[svc["id"]].stop_reason) \
+            and time.monotonic() < deadline:
+        heir.tick()
+        time.sleep(0.1)
+    assert not process_alive(stubborn)
+    settle(heir, client, svc["id"], "running")
+    assert [s["stop_reason"] for s in sessions(client, svc["id"])] == [None, "killed_after_timeout"]
+
+
+def test_a_service_waiting_for_its_environment_is_not_a_crash(client, supervisor, clock):
+    """A managed environment still building made every start fail, and five
+    failures in fifteen seconds was a crash loop — after a routine rebuild."""
+    environment = client.post("/api/environments", json={"name": "building", "create_venv": True,
+                                                         "packages": []}).json()
+    sup = supervisor()
+    svc = create(client, start_mode="startup", environment_id=environment["id"])
+    for _ in range(6):
+        sup.tick()
+        clock.advance(seconds=5)
+    current = service(client, svc["id"])
+    assert current["state"] == "backoff" and "Waiting for environment" in current["state_detail"]
+    assert sessions(client, svc["id"]) == [], "start attempts were recorded against a missing env"
+
+
+def test_one_broken_service_does_not_stall_the_others(client, supervisor, monkeypatch):
+    sup = supervisor()
+    broken = create(client, name="broken", start_mode="startup")
+    fine = create(client, name="fine", start_mode="startup")
+    real_start = proc.start
+
+    def start(spec, log_path):
+        if f"/{broken['id']}/" in str(log_path).replace("\\", "/"):
+            raise RuntimeError("the launch itself blew up")
+        return real_start(spec, log_path)
+
+    monkeypatch.setattr(proc, "start", start)
+    monkeypatch.setattr(proc, "note", lambda path, message: (_ for _ in ()).throw(OSError("read-only")))
+    settle(sup, client, fine["id"], "running")
+    assert service(client, broken["id"])["state"] != "running"
+
+
+def test_a_stop_inside_an_all_week_window_is_not_blamed_on_the_windows(client, supervisor):
+    sup = supervisor()
+    svc = create(client, start_mode="schedule", windows=[
+        {"days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], "start": "00:00", "end": "00:00"}])
+    settle(sup, client, svc["id"], "running")
+    client.post(f"/api/services/{svc['id']}/stop")
+    assert settle(sup, client, svc["id"], "stopped")["state_detail"] is None
+
+
+def test_applying_a_changed_schedule_from_yaml_drops_the_override(client, supervisor):
+    sup = supervisor()
+    svc = create(client, name="model")
+    client.post(f"/api/services/{svc['id']}/start")
+    settle(sup, client, svc["id"], "running")
+    from runrail.workflow_io import apply_workflows, export_workflows
+    with SessionLocal() as db:
+        exported = export_workflows(db)
+        exported["services"][0].update(start_mode="schedule", windows=[
+            {"days": ["mon"], "start": "01:00", "end": "02:00"}])
+        apply_workflows(db, exported)
+    assert service(client, svc["id"])["override_running"] is None

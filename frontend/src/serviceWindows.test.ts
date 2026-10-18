@@ -51,6 +51,16 @@ describe('windows', () => {
     const closed = nextChange(night, 'America/New_York', opened)!;
     expect((closed.getTime() - opened.getTime()) / 3_600_000).toBe(9);
   });
+
+  test('a window starting inside the spring gap opens when the clocks jump', () => {
+    // Los Angeles, 8 March 2026: 02:00 PST becomes 03:00 PDT (10:00Z).
+    const w: ServiceWindow[] = [{ days: ['sun'], start: '02:30', end: '04:00' }];
+    expect(isActive(w, 'America/Los_Angeles', at('2026-03-08T10:00'))).toBe(true);
+    expect(nextChange(w, 'America/Los_Angeles', at('2026-03-08T09:00'))).toEqual(at('2026-03-08T10:00'));
+    const swallowed: ServiceWindow[] = [{ days: ['sun'], start: '02:00', end: '03:00' }];
+    expect(isActive(swallowed, 'America/Los_Angeles', at('2026-03-08T10:00'))).toBe(false);
+    expect(nextChange(swallowed, 'America/Los_Angeles', at('2026-03-08T09:00'))).toEqual(at('2026-03-15T09:00'));
+  });
 });
 
 describe('the week view', () => {

@@ -86,3 +86,16 @@ def test_invalid_windows_are_refused(bad):
 def test_valid_windows_are_normalised():
     assert validate_windows([{"days": ["fri", "mon", "mon"], "start": "08:00", "end": "17:30"}]) \
         == [{"days": ["mon", "fri"], "start": "08:00", "end": "17:30"}]
+
+
+def test_a_window_starting_inside_the_spring_gap_opens_when_the_clocks_jump():
+    """Los Angeles, 8 March 2026: 02:00 PST becomes 03:00 PDT (10:00Z). A
+    02:30 start has no instant of its own; it opens at the jump, not an hour
+    after it. A window lying entirely inside the gap never happens that day."""
+    windows = [{"days": ["sun"], "start": "02:30", "end": "04:00"}]
+    assert is_active(windows, "America/Los_Angeles", at("2026-03-08T10:00"))
+    assert next_change(windows, "America/Los_Angeles", at("2026-03-08T09:00")) == at("2026-03-08T10:00")
+    swallowed = [{"days": ["sun"], "start": "02:00", "end": "03:00"}]
+    assert not is_active(swallowed, "America/Los_Angeles", at("2026-03-08T10:00"))
+    # Next Sunday, 02:00 PDT is 09:00Z.
+    assert next_change(swallowed, "America/Los_Angeles", at("2026-03-08T09:00")) == at("2026-03-15T09:00")

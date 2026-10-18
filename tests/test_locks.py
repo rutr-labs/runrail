@@ -11,7 +11,17 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from runrail.db import Base
-from runrail.models import LockMode, RunStatus, TriggerType, Workflow, WorkflowRun, now
+from runrail.models import (
+    LockMode,
+    RunStatus,
+    Service,
+    ServiceState,
+    TriggerType,
+    Workflow,
+    WorkflowRun,
+    now,
+)
+from runrail.services.locks import try_claim
 from runrail.worker.queue import claim_next_run
 
 RELEASED = (RunStatus.success, RunStatus.failed, RunStatus.cancelled)
@@ -271,3 +281,44 @@ def test_lock_configuration_round_trips_through_export_and_apply(client):
     with SessionLocal() as db:
         apply_workflows(db, data)
     assert client.get(f"/api/workflows/{locked['id']}").json()["lock_resource"] is None
+
+
+def add_service(db, name, resource, mode, state, *, since_seconds_ago=0) -> Service:
+    service = Service(name=name, command="true", lock_resource=resource, lock_mode=mode,
+                      state=state, state_since=now() - timedelta(seconds=since_seconds_ago),
+                      restart_requested=False)
+    db.add(service); db.commit()
+    return service
+
+
+def test_a_waiting_shared_service_and_a_queued_exclusive_run_take_turns_by_arrival():
+    """Each side's starvation guard barred the other: the service would not
+    overtake the queued exclusive run, and the waiting service barred the run.
+    Neither ever started. Whoever began waiting first goes first."""
+    with open_db() as db:
+        heavy = add_workflow(db, "train", "gpu", LockMode.exclusive)
+        model = add_service(db, "model", "gpu", LockMode.shared, ServiceState.waiting_lock,
+                            since_seconds_ago=60)
+        enqueue(db, heavy)  # queued after the service began waiting
+        assert claim_next_run(db) is None, "the run overtook the service that was waiting first"
+        assert try_claim(db, model, now())
+        assert db.get(Service, model.id).state == ServiceState.starting
+    with open_db() as db:
+        heavy = add_workflow(db, "train", "gpu", LockMode.exclusive)
+        first = enqueue(db, heavy, age_seconds=60)
+        model = add_service(db, "model", "gpu", LockMode.shared, ServiceState.waiting_lock)
+        assert not try_claim(db, model, now()), "the service overtook the run queued before it"
+        assert claim_next_run(db).id == first.id
+
+
+def test_the_exclusive_barrier_does_not_hold_while_a_service_has_the_resource():
+    """An always-on shared model server plus one queued exclusive job froze
+    every shared GPU run: the job waited on the server, the runs on the job.
+    The barrier only helps when the exclusive run is waiting on runs."""
+    with open_db() as db:
+        add_service(db, "model", "gpu", LockMode.shared, ServiceState.running)
+        heavy = add_workflow(db, "train", "gpu", LockMode.exclusive)
+        light = add_workflow(db, "infer", "gpu", LockMode.shared)
+        enqueue(db, heavy, age_seconds=60)
+        shared = enqueue(db, light)
+        assert claim_next_run(db).id == shared.id

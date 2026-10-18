@@ -38,7 +38,9 @@ from runrail import notify
 from runrail.api.ws import manager as _ws_manager
 from runrail.config import get_settings
 from runrail.db import SessionLocal
+from runrail.environments import environment_usable_now
 from runrail.models import (
+    Environment,
     RestartPolicy,
     Service,
     ServiceSession,
@@ -113,15 +115,26 @@ def override_until(service: Service, at: datetime) -> datetime | None:
     return next_change(service.windows_json or [], service.timezone, at)
 
 
-def set_override(service: Service, running: bool, reason: str, at: datetime) -> None:
+def set_override(service: Service, running: bool, reason: str, at: datetime,
+                 keep: bool = False) -> None:
     """Make the service run (or not) until its next scheduled change. Where the
-    override would only restate the service's own default, it is cleared."""
+    override would only restate the service's own default, it is cleared —
+    unless `keep`: the supervisor's own holds are also the record of WHY the
+    service is stopped, and a manual service's clean exit is one even though
+    "not running" is already its default."""
     service.override_running, service.override_until, service.override_reason = None, None, None
-    if desired(service, at)[0] == running:
+    if desired(service, at)[0] == running and not keep:
         return
     service.override_running = running
     service.override_until = override_until(service, at)
     service.override_reason = reason
+
+
+def clear_hold(service: Service, at: datetime) -> None:
+    """A person acted (Start, Resume, an edit): drop any override, and start
+    the crash count afresh so the exits before now do not decide the next one."""
+    service.override_running = service.override_until = service.override_reason = None
+    service.attempts_from = at
 
 
 class ServiceSupervisor:
@@ -157,7 +170,11 @@ class ServiceSupervisor:
         while self.live:
             at = self.clock()
             with SessionLocal() as db:
+                # A stop can take minutes; without heartbeats a standby
+                # supervisor would take over and restart everything mid-stop.
+                self._lease(db, at)
                 for service_id, live in list(self.live.items()):
+                    self._snapshot(live)
                     self._progress_stop(live, at)
                     if self._finished(live):
                         self._close_session(db, live, at)
@@ -197,7 +214,11 @@ class ServiceSupervisor:
                     self._begin_stop(live, ServiceStopReason.deleted, at)
             self._progress_all_without_rows(db, at, keep=set(services))
             for service in services.values():
-                self._reconcile(db, service, at)
+                try:
+                    self._reconcile(db, service, at)
+                except Exception:  # one service's trouble is not the others'
+                    db.rollback()
+                    log.exception("reconciling service %s failed", service.id)
 
     def _progress_all_without_rows(self, db: Session, at: datetime, keep=frozenset()) -> None:
         for service_id, live in list(self.live.items()):
@@ -218,15 +239,20 @@ class ServiceSupervisor:
         should_run, stop_reason = desired(service, at)
         live = self.live.get(service.id)
 
-        if live is not None and os.name == "nt" and live.process is not None \
-                and live.process.poll() is None:
-            live.extra["descendants"] = proc.descendants(live.pid)
+        if live is not None:
+            self._snapshot(live)
+        restarting = False
         if live is not None and self._finished(live):
+            restarting = live.stop_reason == ServiceStopReason.restarted and should_run
+            self._finish(db, service, live, at)
             # Settled on the next pass, from the state this one leaves: a hold,
             # a backoff or a pending restart. Carrying on here would act on the
-            # decision made before the exit and start it straight back up.
-            self._finish(db, service, live, at)
-            return
+            # decision made before the exit and start it straight back up. A
+            # restart is the exception: it goes straight on to the start, still
+            # holding its lock, or a queued run takes the GPU in the gap.
+            if not restarting:
+                return
+            live = None
         if live is not None:
             if live.stop_reason is None:
                 if service.restart_requested:
@@ -235,9 +261,9 @@ class ServiceSupervisor:
                     self._begin_stop(live, stop_reason, at)
             if live.stop_reason is not None:
                 self._progress_stop(live, at)
-                left = max(0, int((live.kill_at - at).total_seconds())) if live.kill_at else 0
+                # Written once: the UI counts down from state_since itself.
                 self._set_state(db, service, ServiceState.stopping,
-                                "Force-stopping" if live.killed else f"Force stop in {left}s")
+                                "Force-stopping" if live.killed else "Asked to stop")
             else:
                 self._set_state(db, service, ServiceState.running, None)
                 self._sample(db, service, live, at)
@@ -258,8 +284,19 @@ class ServiceSupervisor:
             self._set_state(db, service, ServiceState.backoff, service.state_detail,
                             next_attempt_at=retry_at)
             return
-        if not try_claim(db, service, at):
+        waiting_for = self._environment_wait(db, service)
+        if waiting_for:
+            # Not a start attempt: a build in progress is not the service's
+            # fault, and five of these in fifteen seconds is not a crash loop.
+            self._set_state(db, service, ServiceState.backoff, waiting_for, next_attempt_at=None)
+            return
+        if not try_claim(db, service, at, restarting=restarting):
             db.refresh(service)
+            if not service.lock_resource:
+                # Nothing to wait for: the row is stale (left mid-start by an
+                # error); a stopped state lets the next pass try again.
+                self._set_state(db, service, ServiceState.stopped, None)
+                return
             holder = holder_description(db, service)
             self._set_state(db, service, ServiceState.waiting_lock,
                             f"Waiting for {service.lock_resource}"
@@ -267,6 +304,28 @@ class ServiceSupervisor:
             return
         db.refresh(service)
         self._start(db, service, at)
+
+    def _environment_wait(self, db: Session, service: Service) -> str | None:
+        if not service.environment_id:
+            return None
+        environment = db.get(Environment, service.environment_id)
+        if environment is None or environment_usable_now(environment):
+            return None
+        return (f"Waiting for environment '{environment.name}' to be ready "
+                f"({environment.last_error or environment.status.value})")
+
+    def _snapshot(self, live: _Live) -> None:
+        """Windows only: remember every process under the service's, merged
+        across ticks. A child whose parent has exited drops out of the tree
+        and could not be found again; the last snapshot alone also missed a
+        program started by a `cmd /c start` that was gone before the first
+        tick. Entries are kept only while they still name the same process."""
+        if os.name != "nt":
+            return
+        known = dict(live.extra.get("descendants", ()))
+        known.update(proc.descendants(live.pid))
+        live.extra["descendants"] = [(pid, started) for pid, started in known.items()
+                                     if proc.same_process(pid, started)]
 
     # ── starting and stopping ──────────────────────────────────────────────
     def _start(self, db: Session, service: Service, at: datetime) -> None:
@@ -290,6 +349,7 @@ class ServiceSupervisor:
             runners._LIVE.add(process)  # a force quit takes services with it
         self.live[service.id] = _Live(service.id, session.id, process.pid, session.process_created,
                                       at, service.stop_timeout_seconds, process, pump)
+        self._snapshot(self.live[service.id])
         db.commit()
         self._set_state(db, service, ServiceState.running, None, next_attempt_at=None)
 
@@ -307,22 +367,25 @@ class ServiceSupervisor:
         if live.process is not None:
             if live.process.poll() is None:
                 return False
-            # The shell is gone; a program it started may not be. While a stop is
-            # in progress that program gets its grace period; otherwise (an
-            # unexpected exit) whatever is left is killed before any restart.
-            if os.name != "nt" and proc.group_alive(live.pid):
+        elif proc.same_process(live.pid, live.created):  # adopted: known by pid and start time
+            return False
+        # The shell is gone; a program it started may not be. While a stop is
+        # in progress that program gets its grace period; otherwise (an
+        # unexpected exit) whatever is left is killed before any restart. The
+        # same for an adopted process: read as gone the moment its shell died,
+        # the model server under it was left running and a second copy started.
+        if os.name != "nt" and proc.group_alive(live.pid):
+            if live.stop_reason is not None and not live.killed:
+                return False
+            proc.kill(live.pid)
+        if os.name == "nt":
+            left = [(pid, started) for pid, started in live.extra.get("descendants", ())
+                    if proc.same_process(pid, started)]
+            if left:
                 if live.stop_reason is not None and not live.killed:
                     return False
-                proc.kill(live.pid)
-            if os.name == "nt":
-                left = [(pid, started) for pid, started in live.extra.get("descendants", ())
-                        if proc.same_process(pid, started)]
-                if left:
-                    if live.stop_reason is not None and not live.killed:
-                        return False
-                    proc.kill(live.pid, left)
-            return True
-        return not proc.same_process(live.pid, live.created)
+                proc.kill(live.pid, left)
+        return True
 
     def _close_session(self, db: Session, live: _Live, at: datetime) -> int | None:
         proc.forget_usage(live.pid)
@@ -334,6 +397,13 @@ class ServiceSupervisor:
                 runners._LIVE.discard(live.process)
             if live.pump is not None:
                 live.pump.join(timeout=2)
+                if live.pump.is_alive():
+                    # A grandchild kept the pipe open; close our end so the
+                    # pump thread, the pipe and the log handle do not live on.
+                    try:
+                        live.process.stdout.close()
+                    except OSError:
+                        pass
         reason = (ServiceStopReason.killed_after_timeout if live.killed else live.stop_reason)
         if reason is None:
             reason = ServiceStopReason.exited if code == 0 else ServiceStopReason.crashed
@@ -350,7 +420,10 @@ class ServiceSupervisor:
             service.restart_requested = False
         db.commit()
         if expected:
-            self._set_state(db, service, ServiceState.stopped, None)
+            # A restart keeps the row in `stopping` (still holding its lock)
+            # for the start that follows in the same pass.
+            if live.stop_reason != ServiceStopReason.restarted:
+                self._set_state(db, service, ServiceState.stopped, None)
             return
         self._after_unexpected_exit(db, service, at, code,
                                     f"Exited with code {code}" if code is not None else "Exited")
@@ -362,18 +435,22 @@ class ServiceSupervisor:
         restart = policy == RestartPolicy.always or (
             policy == RestartPolicy.on_failure and code != 0)
         if not restart:
-            set_override(service, False, "exited", at)
+            set_override(service, False, "exited", at, keep=True)
             db.commit()
             self._set_state(db, service, ServiceState.stopped,
                             f"{what}; not restarted ({policy.value.replace('_', ' ')})")
             return
-        recent = db.scalars(
+        # Only the attempts since a person last acted count: their Start is a
+        # fresh run of tries, not the sixth exit of the loop they just cleared.
+        since = _aware(service.attempts_from)
+        recent = [s for s in db.scalars(
             select(ServiceSession).where(ServiceSession.service_id == service.id)
-            .order_by(ServiceSession.id.desc()).limit(CRASH_LOOP_EXITS * 2)).all()
+            .order_by(ServiceSession.id.desc()).limit(CRASH_LOOP_EXITS * 2))
+            if since is None or _aware(s.started_at) > since]
         in_window = [s for s in recent if s.stop_reason in _UNEXPECTED
                      and s.stopped_at is not None and _aware(s.stopped_at) >= at - CRASH_LOOP_WINDOW]
         if len(in_window) >= CRASH_LOOP_EXITS:
-            set_override(service, False, "crash_loop", at)
+            set_override(service, False, "crash_loop", at, keep=True)
             detail = (f"Crash loop: exited {len(in_window)} times in "
                       f"{int(CRASH_LOOP_WINDOW.total_seconds() // 60)} minutes · {what}")
             db.commit()
@@ -423,9 +500,11 @@ class ServiceSupervisor:
         if service.override_running is False and service.override_reason == "exited":
             return service.state_detail
         if service.start_mode == ServiceStartMode.schedule:
-            upcoming = next_change(service.windows_json or [], service.timezone, at)
-            return "Outside its windows" if upcoming else "No windows set"
-        return None
+            if not service.windows_json:
+                return "No windows set"
+            if not is_active(service.windows_json, service.timezone, at):
+                return "Outside its windows"
+        return None  # stopped by hand
 
     def _notify(self, service: Service, text: str) -> None:
         url = service.notify_webhook_url or get_settings().notify_webhook_url
@@ -470,6 +549,7 @@ class ServiceSupervisor:
                 live = _Live(service.id, session.id, session.pid, session.process_created,
                              _aware(session.started_at) or at, service.stop_timeout_seconds)
                 self.live[service.id] = live
+                self._snapshot(live)
                 self._begin_stop(live, ServiceStopReason.interrupted, at)
             else:
                 session.stopped_at, session.stop_reason = at, ServiceStopReason.interrupted
