@@ -355,10 +355,6 @@ function Shell() {
           <NavLink to="/settings" className={({ isActive }) => `sidebar-nav-item${isActive ? ' active' : ''}`}>
             <span className="nav-icon"><Settings size={15} /></span>Settings
           </NavLink>
-          <div className="sidebar-status-row">
-            <span className={`live-dot${health === 'online' ? '' : ' offline'}`} />
-            {health === 'online' ? 'Connected' : health === 'offline' ? 'API unreachable' : 'Connecting…'}
-          </div>
         </div>
       </aside>
       <div className="workspace">

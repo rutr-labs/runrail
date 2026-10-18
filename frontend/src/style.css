@@ -297,13 +297,6 @@ body::before {
   flex-direction: column;
   gap: 8px;
 }
-.sidebar-status-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--text-3);
-}
 .live-dot {
   width: 7px;
   height: 7px;
@@ -2522,9 +2515,9 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   border-radius: var(--r-lg);
   border: 1px solid var(--warning-border);
   background: var(--bg-card);
-  /* The amber rail and border carry the state; the outer bloom was doing the
-     same job three times over and read as a halo around the whole card. */
-  box-shadow: var(--shadow-md), inset 3px 0 0 var(--warning);
+  /* An amber frame on every side carries the state: a 1px ring outside the
+     border doubles it without the halo a bloom made. */
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--warning-border);
   animation: gate-arrive .5s var(--ease-out) both;
 }
 .approval-gate--settled {
@@ -2622,9 +2615,9 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 /* The author's question — the loudest text in the card. */
 .approval-gate-prompt {
   margin: 0;
-  padding: 12px 14px 12px 16px;
-  border-left: 2px solid var(--warning);
-  border-radius: 0 var(--r-md) var(--r-md) 0;
+  padding: 12px 14px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--r-md);
   background: var(--warning-soft);
   color: var(--text-1);
   font-size: 14px; line-height: 1.6; white-space: pre-wrap;
@@ -2789,7 +2782,7 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 /* ─── Approval inbox (dashboard) ──────────────────────── */
 .approval-inbox {
   border-color: var(--warning-border);
-  box-shadow: var(--shadow-sm), inset 3px 0 0 var(--warning);
+  box-shadow: var(--shadow-sm), 0 0 0 1px var(--warning-border);
 }
 .approval-inbox-count {
   min-width: 22px; height: 22px; padding: 0 7px;
@@ -3695,7 +3688,8 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 /* ─── Rows ─────────────────────────────────────────────
    Read and unread differ by tint and rail only. Every
    dimension is shared, so nothing shifts when one flips. */
-.notif-group { display: flex; flex-direction: column; }
+.notif-group { display: flex; flex-direction: column; gap: 5px; }
+.notif-group + .notif-group { margin-top: 6px; }
 .notif-group-label {
   position: sticky; top: 0; z-index: 1;
   padding: 8px 8px 5px;
@@ -3723,8 +3717,8 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   border-color: var(--border-focus);
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
-/* Inset rail rather than a real border: the box model stays identical. */
-.notif-item.is-unread { background: var(--sev-soft); box-shadow: inset 2px 0 0 var(--sev); }
+/* Unread is the tint, the dot by the kind and a heavier title — no rail. */
+.notif-item.is-unread { background: var(--sev-soft); }
 .notif-item-disc {
   flex-shrink: 0; width: 24px; height: 24px; margin-top: 1px;
   border-radius: 50%; display: grid; place-items: center;
