@@ -455,6 +455,15 @@ class Service(TimestampMixin, Base):
         cascade="all, delete-orphan", passive_deletes=True, back_populates="service")
 
 
+class AppSetting(Base):
+    """One setting saved from the Settings page; see runrail.runtime_settings."""
+
+    __tablename__ = "app_settings"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class ServiceSession(Base):
     """One life of a service's process, start to exit."""
 

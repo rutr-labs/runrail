@@ -3,7 +3,7 @@ import signal
 import sys
 import threading
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import typer
@@ -100,6 +100,48 @@ def import_data(source: str = typer.Argument(
         ..., help="A previous RunRail data directory, or a YAML file from 'runrail export'")) -> None:
     """Import an existing RunRail data directory or workflows YAML into this home."""
     _import_source(Path(source))
+
+
+@app.command()
+def backup(out: str | None = typer.Option(None, "--out", help="Where to write the zip")) -> None:
+    """Write a backup zip: configuration as YAML, the SQLite database, a manifest."""
+    from runrail import system
+    init_db()
+    path = Path(out) if out else Path(f"runrail-backup-{datetime.now():%Y%m%d-%H%M%S}.zip")
+    with SessionLocal() as db:
+        manifest = system.write_backup(db, path)
+    counts = manifest["counts"]
+    typer.echo(f"Wrote {path} — {counts['workflows']} workflows, {counts['services']} services, "
+               f"{counts['runs']} runs" + ("" if manifest["includes_database"]
+                                          else " (configuration only: PostgreSQL)"))
+
+
+@app.command()
+def restore(archive: str = typer.Argument(..., help="A zip from 'runrail backup'"),
+            yes: bool = typer.Option(False, "--yes", help="Do not ask")) -> None:
+    """Replace this home's database with the one in a backup. Stop RunRail first."""
+    from runrail import system
+    settings = get_settings()
+    path = Path(archive)
+    if not path.is_file():
+        raise typer.BadParameter(f"{path} is not a file")
+    try:
+        found = system.inspect_backup(path)
+    except system.BackupError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    manifest = found["manifest"]
+    typer.echo(f"Backup from {manifest.get('created_at')} by RunRail {manifest.get('runrail_version')}: "
+               f"{manifest.get('counts', {}).get('runs', '?')} runs, "
+               f"{manifest.get('counts', {}).get('workflows', '?')} workflows")
+    typer.echo(f"This replaces the database at {settings.home.resolve()} (kept as a restore point).")
+    if not yes and not typer.confirm("Continue?", default=False):
+        raise typer.Exit(1)
+    try:
+        for line in system.restore_database(path, settings):
+            typer.echo(line)
+    except system.BackupError as exc:
+        typer.echo(f"Not restored: {exc}", err=True)
+        raise typer.Exit(1) from None
 
 
 def _offer_first_run_import() -> None:

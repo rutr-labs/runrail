@@ -23,7 +23,7 @@ from datetime import datetime
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
-from runrail.config import get_settings
+from runrail import runtime_settings
 from runrail.models import RunStatus, TaskRun, Workflow, WorkflowRun, _aware, now
 
 _TIMEOUT_SECONDS = 10
@@ -94,6 +94,8 @@ def _post(url: str, text: str, *, workflow_id: int | None = None, **fields) -> N
     workflow, recorded on it; it used to vanish without trace, so a revoked
     Slack webhook simply never spoke again.
     """
+    if not runtime_settings.alerts_allowed(fields.get("event")):
+        return  # switched off in Settings, or quiet hours; Activity still has it
     threading.Thread(target=_send_and_record, args=(url, text, workflow_id, fields),
                      name="runrail-webhook", daemon=True).start()
 
@@ -124,7 +126,7 @@ def webhook_url(workflow: Workflow | None) -> str | None:
     """
     if workflow is None or workflow.snoozed:
         return None
-    return workflow.notify_webhook_url or get_settings().notify_webhook_url
+    return workflow.notify_webhook_url or runtime_settings.current("notify_webhook_url")
 
 
 def notify_approval_requested(db: Session, task_run: TaskRun) -> None:

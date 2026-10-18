@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from runrail import notify
+from runrail import notify, runtime_settings
 from runrail.api.crud import (
     apply_update,
     create_backfill,
@@ -14,7 +14,6 @@ from runrail.api.crud import (
     save,
 )
 from runrail.api.ws import manager as ws_manager
-from runrail.config import get_settings
 from runrail.db import get_db
 from runrail.models import (
     LockMode,
@@ -136,7 +135,7 @@ def test_notification(object_id: int, db: Session = Depends(get_db)):
     """Post a test message to the workflow's webhook now, and say what happened.
     Delivery failures are otherwise only logged and recorded on the workflow."""
     workflow = get_or_404(db, Workflow, object_id)
-    url = workflow.notify_webhook_url or get_settings().notify_webhook_url
+    url = workflow.notify_webhook_url or runtime_settings.current("notify_webhook_url")
     if not url:
         raise HTTPException(400, "No webhook is configured for this workflow or as the default")
     error = notify.deliver(url, f"🔔 RunRail: test message for workflow '{workflow.name}'.",

@@ -8,7 +8,7 @@ import {
   Clock, Calendar, Zap, GitMerge, Activity,
   AlertTriangle, CheckCircle2, RefreshCw, Trash2, Pencil,
   ArrowLeft, Terminal, Download, Settings, ChevronsRight,
-  Database, FileText, Info, Ban, Menu, X, SlidersHorizontal,
+  Ban, Menu, X, SlidersHorizontal,
   ShieldAlert, ShieldCheck, CircleSlash, Share2, BookOpen, Lock,
 } from 'lucide-react';
 import { api, del, post, put } from './api';
@@ -31,6 +31,7 @@ import { ScheduleGapsPanel, useScheduleGaps, heatmapGapFeed } from './components
 import { ApprovalField, approvalValues } from './components/ApprovalField';
 import { RunRailMark } from './components/Brand';
 import { useNow, useVisibleInterval } from './hooks';
+import { SettingsPage } from './SettingsPage';
 import {
   ServiceDetail, ServicesPage, ServicesPanel, WallboardServices, serviceCounts, useServices,
 } from './Services';
@@ -205,6 +206,13 @@ const timeoutSeconds = (f: FormData): number | null =>
 
 const environmentUsable = (e: Env) => e.status === 'ready' || e.status === 'degraded';
 
+/** "waiting on publish · 3m 12s" for a run parked on a gate. */
+function waitingLine(gate: { task_name: string | null; created_at: string } | undefined, now: number): string {
+  if (!gate) return 'waiting approval';
+  const since = Math.max(0, (now - new Date(gate.created_at).getTime()) / 1000);
+  return `waiting on ${gate.task_name ?? 'approval'} · ${formatDuration(since)}`;
+}
+
 function liveDuration(run: Run, now: number): string {
   if (run.duration_seconds != null) return formatDuration(run.duration_seconds);
   if (run.status === 'running' && run.started_at) {
@@ -354,10 +362,6 @@ function Shell() {
           <NavLink to="/settings" className={({ isActive }) => `sidebar-nav-item${isActive ? ' active' : ''}`}>
             <span className="nav-icon"><Settings size={15} /></span>Settings
           </NavLink>
-          <div className="sidebar-status-row">
-            <span className={`live-dot${health === 'online' ? '' : ' offline'}`} />
-            {health === 'online' ? 'Connected' : health === 'offline' ? 'API unreachable' : 'Connecting…'}
-          </div>
         </div>
       </aside>
       <div className="workspace">
@@ -1774,11 +1778,14 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
                     : isLive(t) ? `running ${formatDuration(spanMs(t) / 1000)}` : null,
                   t.exit_code != null ? `exit ${t.exit_code}` : null,
                 ].filter(Boolean).join('\n');
+                // A gate stops a few pixels short of where it ended, so the
+                // task that ran after it reads as its own bar, not its tip.
+                const span = `${Math.min(width, 100 - left)}%`;
                 return (
                   <div key={t.id}
                        className={clsx('tl-bar', t.status, gate && 'tl-bar--gate',
                                        isWaiting(t) && 'tl-bar--gate-open')}
-                       style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%`, animationDelay: `${Math.min(laneIndex * 30, 240)}ms` }} title={tip}>
+                       style={{ left: `${left}%`, width: gate ? `calc(${span} - 3px)` : span, animationDelay: `${Math.min(laneIndex * 30, 240)}ms` }} title={tip}>
                     {!gate && (t.status === 'running' ? <CometCanvas kind="fill" />
                       : (t.status === 'success' || t.status === 'failed') && <CometCanvas kind="still" />)}
                     {/* Every attempt is labelled once there is more than one:
@@ -1788,9 +1795,7 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
                 );
               })}
             </div>
-            <span className="tl-dur">
-              {formatDuration(attempts.reduce((sum, t) => sum + spanMs(t) / 1000, 0) || null)}
-            </span>
+            <LaneDuration attempts={attempts} isGate={isGate} isWaiting={isWaiting} spanMs={spanMs} />
           </div>
           );
         })}
@@ -1809,6 +1814,27 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
         </div>
     </div>
     </div>
+  );
+}
+
+/** A lane's figure: the time its task actually ran, and — on its own line,
+ *  in the gate's amber — the time it waited for a person. Summed together,
+ *  a 3-second task read as "2m 38s". */
+function LaneDuration({ attempts, isGate, isWaiting, spanMs }: {
+  attempts: TaskRun[]; isGate: (t: TaskRun) => boolean; isWaiting: (t: TaskRun) => boolean;
+  spanMs: (t: TaskRun) => number;
+}) {
+  const ran = attempts.filter(t => !isGate(t)).reduce((sum, t) => sum + spanMs(t) / 1000, 0);
+  const gates = attempts.filter(isGate);
+  const waited = gates.reduce((sum, t) => sum + spanMs(t) / 1000, 0);
+  const open = gates.some(isWaiting);
+  return (
+    <span className="tl-dur">
+      {ran > 0 ? formatDuration(ran) : open ? null : formatDuration(null)}
+      {gates.length > 0 && (
+        <small className="tl-dur-wait">{open ? 'waiting' : 'waited'} {formatDuration(waited)}</small>
+      )}
+    </span>
   );
 }
 
@@ -2322,13 +2348,15 @@ function Workflows() {
                   {/* Renders nothing for the unlocked majority, so the row is
                       unchanged for them. */}
                   <LockBadge resource={w.lock_resource} mode={w.lock_mode} />
-                  {/* Renders nothing unless muted; stops its own click so the
-                      card's navigation never fires from the un-snooze. */}
-                  <SnoozeBadge workflow={w}
-                               onChange={u => setItems(list => list.map(x => x.id === u.id ? u : x))} />
                   <StatusBadge value={w.enabled ? 'enabled' : 'disabled'} />
                 </div>
               </div>
+              {/* A row of its own: squeezed in beside the icon and the other
+                  chips, the mute notice stacked them into a ragged column.
+                  Renders nothing unless muted, and stops its own click so
+                  the card's navigation never fires from the un-snooze. */}
+              <SnoozeBadge workflow={w} className="workflow-mute"
+                           onChange={u => setItems(list => list.map(x => x.id === u.id ? u : x))} />
               <h3 style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties} title={w.name}>{w.name}</h3>
               <p>{w.description || 'No description yet'}</p>
               <div className="workflow-meta">
@@ -3143,82 +3171,6 @@ function Artifacts() {
   );
 }
 
-/* ─── Settings Page ──────────────────────────────────── */
-function SettingsPage() {
-  const [theme, setTheme] = useState<string>(
-    () => document.documentElement.dataset.theme ?? 'dark'
-  );
-
-  const switchTheme = (t: string) => {
-    document.documentElement.dataset.theme = t;
-    localStorage.setItem('runrail-theme', t);
-    setTheme(t);
-  };
-
-  return (
-    <>
-      <PageHeader eyebrow="SYSTEM" title="Settings" subtitle="Configure RunRail and view system information." />
-
-      <div className="settings-grid">
-        <div className="about-card">
-          <div className="about-logo"><RunRailMark size={52} title="" /></div>
-          <div className="about-text">
-            <h2>RunRail</h2>
-            <p>A self-hosted workflow control plane for Python scripts, Jupyter notebooks, SQL tasks, shell commands, schedules, backfills, logs, artifacts, and workflow runs.</p>
-            <div className="about-links">
-              <a className="btn btn-ghost btn-sm" href="https://github.com/rutr-labs/runrail" target="_blank" rel="noreferrer">
-                <Info size={13} /> GitHub
-              </a>
-            </div>
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <h3><Settings size={14} /> Appearance</h3>
-          <div className="settings-row">
-            <span className="settings-label">Theme</span>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {(['dark', 'light'] as const).map(t => (
-                <button
-                  key={t}
-                  className={`btn btn-sm ${theme === t ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => switchTheme(t)}
-                >
-                  {t === 'dark' ? '☾ Dark' : '☀ Light'}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <h3><Database size={14} /> System</h3>
-          <div className="settings-row">
-            <span className="settings-label">API endpoint</span>
-            <span className="settings-value">{window.location.origin}/api</span>
-          </div>
-          <div className="settings-row">
-            <span className="settings-label">Mode</span>
-            <span className="settings-value">Self-hosted</span>
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <h3><FileText size={14} /> Navigation</h3>
-          {NAV.filter(n => n.href !== '/settings').map(({ href, icon: Icon, label }) => (
-            <div className="settings-row" key={href}>
-              <span className="settings-label" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                <Icon size={13} />{label}
-              </span>
-              <Link className="btn btn-ghost btn-sm" to={href}>Open →</Link>
-            </div>
-          ))}
-        </div>
-      </div>
-    </>
-  );
-}
-
 /* ─── Wallboard (TV mode) ─────────────────────────────── */
 function formatEta(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
@@ -3251,6 +3203,10 @@ function Wallboard() {
   const [blooms, setBlooms] = useState<Record<number, string>>({});
   const prevStatuses = useRef(new Map<number, string>());
   const gridRef = useRef<HTMLDivElement>(null);
+  // Open gates by run: which task is waiting, and since when (the run's own
+  // timestamps say when it started, not when it stopped to ask).
+  const approvals = useOpenApprovals();
+  const gates = new Map((approvals ?? []).map(a => [a.run_id, a]));
 
   const load = () => {
     api<Run[]>('/runs?limit=300').then(setRuns).catch(() => {});
@@ -3378,11 +3334,14 @@ function Wallboard() {
               const overRatio = expected ? Math.min(1, Math.max(0, (elapsed / expected - 1) / 0.35)) : 0;
               const flowName = flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`;
               return (
-                <div key={r.id} className={`wallboard-live-card ${r.status}`}>
+                <Link key={r.id} to={`/runs/${r.id}`} className={`wallboard-live-card ${r.status}`}
+                      title={r.status === 'waiting_approval' ? `${flowName} #${r.id} · review the approval` : `${flowName} #${r.id}`}>
                   <span className={`run-pulse ${r.status}`} />
                   <div className="wallboard-live-body">
                     <b title={flowName}>{flowName}</b>
-                    <small>#{r.id} · {r.status.replace(/_/g, ' ')} · {liveDuration(r, now)}</small>
+                    <small>#{r.id} · {r.status === 'waiting_approval'
+                      ? waitingLine(gates.get(r.id), now)
+                      : `${r.status.replace(/_/g, ' ')} · ${liveDuration(r, now)}`}</small>
                     {pct != null && (
                       <div className="wb-progress" style={{ '--over-ratio': overRatio.toFixed(3) } as CSSProperties}>
                         <div className="wb-progress-fill" style={{ width: `${pct}%` }}>
@@ -3396,7 +3355,9 @@ function Wallboard() {
                       {over ? 'running long' : `~${formatEta(Math.max(0, (expected - elapsed) * 1000))} left`}
                     </span>
                   )}
-                </div>
+                  {r.status === 'waiting_approval' && <span className="wb-eta wb-eta--review">Review</span>}
+                  <ChevronRight className="wallboard-live-arrow" size={18} />
+                </Link>
               );
             })}
           </div>

@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from runrail import __version__
+from runrail.api.origin import SameOriginMiddleware
 from runrail.api.routes_activity import router as activity_router
 from runrail.api.routes_insights import router as insights_router
 from runrail.api.routes_reports import router as reports_router
@@ -13,6 +14,7 @@ from runrail.api.routes_resources import router as resources_router
 from runrail.api.routes_runcontrol import router as runcontrol_router
 from runrail.api.routes_runs import router as runs_router
 from runrail.api.routes_services import router as services_router
+from runrail.api.routes_system import router as system_router
 from runrail.api.routes_watchdog import router as watchdog_router
 from runrail.api.routes_workflows import router as workflows_router
 from runrail.api.routes_ws import router as ws_router
@@ -30,6 +32,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="RunRail", version=__version__, lifespan=lifespan)
+    app.add_middleware(SameOriginMiddleware)
     app.include_router(ws_router)
     app.include_router(resources_router); app.include_router(workflows_router); app.include_router(runs_router)
     # Every /api router must be registered before the SPA catch-all below, which
@@ -38,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(reports_router); app.include_router(insights_router)
     app.include_router(activity_router)
     app.include_router(services_router)
+    app.include_router(system_router)
 
     @app.get("/api/health")
     def health(): return {"status": "ok", "service": "runrail"}

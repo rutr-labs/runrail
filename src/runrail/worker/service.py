@@ -11,6 +11,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session, selectinload
 
+from runrail import runtime_settings
 from runrail.api.ws import manager as _ws_manager
 from runrail.config import get_settings
 from runrail.db import SessionLocal
@@ -435,7 +436,7 @@ def _execute_task_graph(db: Session, run: WorkflowRun, workflow: Workflow,
     running: dict[Future, str] = {}
     pending: set[str] = set()
     cancelled = False
-    parallelism = max(1, get_settings().task_parallelism)
+    parallelism = max(1, runtime_settings.current("task_parallelism"))
     with ThreadPoolExecutor(max_workers=parallelism,
                             thread_name_prefix=f"runrail-run-{run.id}") as pool:
         while remaining or running:
@@ -733,6 +734,11 @@ def recover_interrupted_runs(db: Session) -> int:
     return len(stale)
 
 
+#: Threads the run pool is created with when Settings governs concurrency —
+#: the top of the Settings range, so raising the figure never needs a restart.
+_POOL_CAP = 64
+
+
 class WorkerService:
     """Claims queued work and executes it on a bounded thread pool.
 
@@ -748,7 +754,11 @@ class WorkerService:
     """
 
     def __init__(self, concurrency: int | None = None):
-        self.concurrency = max(1, concurrency or get_settings().worker_concurrency)
+        # Given on the command line, the figure is fixed; otherwise it is the
+        # Settings value, re-read before every claim so a change applies to the
+        # next run rather than the next restart. The pool itself is sized once,
+        # to the most Settings allows, and the claim loop keeps to the figure.
+        self._fixed_concurrency = max(1, concurrency) if concurrency else None
         self.running = True
         self._active: dict[Future, int | None] = {}  # future -> run id (None for env builds)
         # Services run beside the run pool, never in it: a process meant to stay
@@ -771,6 +781,10 @@ class WorkerService:
         if executing:
             print(f"\nStopping: waiting for {executing} executing run(s) to finish. "
                   "Press Ctrl+C again to force quit.", flush=True)
+
+    @property
+    def concurrency(self) -> int:
+        return self._fixed_concurrency or max(1, runtime_settings.current("worker_concurrency"))
 
     def executing_run_ids(self) -> list[int]:
         return [run_id for future, run_id in self._active.items()
@@ -805,13 +819,15 @@ class WorkerService:
         self._supervisor_thread = threading.Thread(target=self.supervisor.run,
                                                    name="runrail-services", daemon=True)
         self._supervisor_thread.start()
-        with ThreadPoolExecutor(max_workers=self.concurrency,
+        pool_size = self._fixed_concurrency or max(_POOL_CAP, self.concurrency)
+        with ThreadPoolExecutor(max_workers=pool_size,
                                 thread_name_prefix="runrail-worker") as pool:
             while self.running:
                 self._active = {future: run_id for future, run_id in self._active.items()
                                 if not future.done()}
                 claimed = False
-                if len(self._active) < self.concurrency:
+                # Paused from Settings: nothing new starts; what is executing finishes.
+                if len(self._active) < self.concurrency and not runtime_settings.current("paused"):
                     # Claim in a short-lived session; the job threads open their own.
                     with SessionLocal() as db:
                         environment = claim_next_environment(db)
