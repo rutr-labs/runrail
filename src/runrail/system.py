@@ -128,7 +128,23 @@ def _ask_pypi() -> dict[str, Any]:
             return {"version": json.load(response)["info"]["version"], "error": None}
     except Exception as exc:  # network, TLS, a surprising body: all "could not check"
         log.info("update check: %s", exc)
-        return {"version": None, "error": f"{type(exc).__name__}: {exc}"[:200]}
+        return {"version": None, "error": _short_reason(exc)}
+
+
+def _short_reason(exc: Exception) -> str:
+    """One readable line for the page, not a Python repr."""
+    import ssl
+    import urllib.error
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, ssl.SSLError) or isinstance(exc, ssl.SSLError):
+        return "this Python has no CA certificates to verify pypi.org (macOS: run Install Certificates.command)"
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"pypi.org answered HTTP {exc.code}"
+    if isinstance(exc, urllib.error.URLError):
+        return f"could not reach pypi.org ({reason})"
+    if isinstance(exc, TimeoutError):
+        return "pypi.org did not answer in time"
+    return f"{type(exc).__name__}: {exc}"[:160]
 
 
 # Looked up at call time (not bound at import), so a test can stand in for either.
