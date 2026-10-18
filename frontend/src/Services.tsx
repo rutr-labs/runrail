@@ -19,7 +19,7 @@ import {
   isActive, isKnownZone, scheduleSummary, untilLabel, windowLabel, type ServiceWindow,
 } from './serviceWindows';
 import {
-  STATE_WORD, byAttention, handovers, heldBy, isLive, resumeLabel, serviceCounts, stoppingDetail, toneOf,
+  STATE_WORD, byAttention, cpuLabel, handovers, heldBy, isLive, resumeLabel, serviceCounts, stoppingDetail, toneOf, treeLabel,
   type LockMode, type Policy, type Service, type ServiceSession, type StartMode,
 } from './serviceStatus';
 export { serviceCounts };
@@ -63,10 +63,10 @@ function formatAt(iso: string, zone: string): string {
   } catch { return iso; }
 }
 
-/** " · 12% CPU · 1.3 GB" while a service runs and has been sampled. */
+/** " · 20% CPU (2.0 cores) · 1.3 GB" while a service runs and has been sampled. */
 function resourcesLabel(s: Service): string {
   if (s.cpu_percent == null || s.rss_bytes == null) return '';
-  return ` · ${Math.round(s.cpu_percent)}% CPU · ${formatBytes(s.rss_bytes)}`;
+  return ` · ${cpuLabel(s)} · ${formatBytes(s.rss_bytes)}`;
 }
 
 const timeoutLabel = (seconds: number) =>
@@ -350,7 +350,7 @@ export function ServiceDetail() {
             )}
             {s.current_session?.pid && <><dt>Process</dt><dd>pid {s.current_session.pid}</dd></>}
             {s.cpu_percent != null && s.rss_bytes != null && (
-              <><dt>Using</dt><dd>{Math.round(s.cpu_percent)}% CPU · {formatBytes(s.rss_bytes)} memory</dd></>
+              <><dt>Using</dt><dd>{cpuLabel(s)} of {s.cpu_count} · {formatBytes(s.rss_bytes)} memory{treeLabel(s) && ` · ${treeLabel(s)}`}</dd></>
             )}
           </dl>
         </section>

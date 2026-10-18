@@ -485,11 +485,13 @@ def test_a_running_service_reports_what_it_is_using(client, supervisor):
     current = service(client, svc["id"])
     # Sampled within milliseconds of the exec, so only its existence is certain.
     assert current["cpu_percent"] is not None and current["rss_bytes"] > 0
-    assert current["resources_at"]
+    assert current["resources_at"] and current["process_count"] >= 1
+    assert current["thread_count"] >= 1 and current["cpu_count"] >= 1
     client.post(f"/api/services/{svc['id']}/stop")
     settle(sup, client, svc["id"], "stopped")
     stopped = service(client, svc["id"])
     assert stopped["cpu_percent"] is None and stopped["rss_bytes"] is None
+    assert stopped["process_count"] is None and stopped["thread_count"] is None
 
 
 def test_editing_an_unrelated_field_keeps_the_start_override(client, supervisor):
@@ -675,9 +677,10 @@ def test_usage_counts_the_work_of_child_processes(supervisor):
         time.sleep(1.0)  # the child has started
         proc.usage(parent.pid)
         time.sleep(1.0)
-        cpu, rss = proc.usage(parent.pid)
-        assert cpu > 50, cpu
-        assert rss > 0
+        reading = proc.usage(parent.pid)
+        assert reading.cpu_percent > 50, reading
+        assert reading.rss_bytes > 0
+        assert reading.processes == 2 and reading.threads >= 2, reading
     finally:
         for child in psutil.Process(parent.pid).children(recursive=True):
             child.kill()

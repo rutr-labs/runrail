@@ -438,8 +438,10 @@ class Service(TimestampMixin, Base):
     # What the process tree is using, sampled by the supervisor every few
     # seconds while the service runs: the first thing you want to know about a
     # model server. Cleared when it stops.
-    cpu_percent: Mapped[float | None]
+    cpu_percent: Mapped[float | None]  # per core, as top reports it
     rss_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    process_count: Mapped[int | None]
+    thread_count: Mapped[int | None]
     resources_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Written by the supervisor, read by the API and the run claim (locks).

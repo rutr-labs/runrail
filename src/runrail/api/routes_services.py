@@ -7,6 +7,7 @@ reports about itself (state, detail, retry time) is what the supervisor last
 wrote, so the UI shows the supervisor's view, not a guess.
 """
 
+import os
 import shutil
 from datetime import timedelta
 
@@ -64,6 +65,7 @@ def _out(db: Session, service: Service) -> ServiceOut:
     last = next((s for s in sessions if s.stopped_at is not None), None)
     out = ServiceOut.model_validate(service)
     out.windows = service.windows_json or []
+    out.cpu_count = os.cpu_count() or 1
     out.should_run = desired(service, at)[0]
     out.next_change = (next_change(service.windows_json or [], service.timezone, at)
                        if service.start_mode == ServiceStartMode.schedule else None)

@@ -44,9 +44,12 @@ export interface Service {
   state_detail: string | null;
   state_since: string | null;
   next_attempt_at: string | null;
-  cpu_percent: number | null;
+  cpu_percent: number | null;  // per core, as top reports it
   rss_bytes: number | null;
+  process_count: number | null;
+  thread_count: number | null;
   resources_at: string | null;
+  cpu_count: number;
   should_run: boolean;
   next_change: string | null;
   current_session: ServiceSession | null;
@@ -112,6 +115,24 @@ export function stoppingDetail(s: Service, now: number): string {
   if (!s.state_since) return s.state_detail || 'Stopping';
   const left = Math.ceil(s.stop_timeout_seconds - (now - new Date(s.state_since).getTime()) / 1000);
   return left > 0 ? `Force stop in ${left}s` : 'Force-stopping';
+}
+
+/** The CPU figure as people read it: the machine's share, with the cores it
+ *  amounts to. The supervisor stores it per core (200 = two cores flat out),
+ *  which is what top shows and what confuses everyone. */
+export function cpuLabel(s: Service): string {
+  if (s.cpu_percent == null) return '';
+  const cores = s.cpu_percent / 100;
+  const share = Math.round(cores / Math.max(1, s.cpu_count) * 100);
+  return `${share}% CPU (${cores < 10 ? cores.toFixed(1) : Math.round(cores)} ${cores === 1 ? 'core' : 'cores'})`;
+}
+
+/** The tree's size, for the detail page: a worker pool that did not come up
+ *  shows here before it shows anywhere else. */
+export function treeLabel(s: Service): string {
+  if (s.process_count == null || s.thread_count == null) return '';
+  return `${s.process_count} ${s.process_count === 1 ? 'process' : 'processes'} · `
+    + `${s.thread_count} ${s.thread_count === 1 ? 'thread' : 'threads'}`;
 }
 
 /** Dropping a Start/Stop means going back to the schedule only when there is one. */

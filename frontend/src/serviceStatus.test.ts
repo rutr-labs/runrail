@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
-  byAttention, handovers, heldBy, resumeLabel, serviceCounts, stoppingDetail, type Service,
+  byAttention, cpuLabel, treeLabel, handovers, heldBy, resumeLabel, serviceCounts, stoppingDetail, type Service,
 } from './serviceStatus';
 
 /* What the dashboard and the wallboard say about services: who needs a person
@@ -12,7 +12,8 @@ const svc = (id: number, name: string, state: string, extra: Partial<Service> = 
   restart_policy: 'always', stop_timeout_seconds: 30, lock_resource: null, lock_mode: 'exclusive',
   notify_webhook_url: null, override_running: null, override_until: null, override_reason: null,
   state, state_detail: null, state_since: null, next_attempt_at: null, should_run: false,
-  cpu_percent: null, rss_bytes: null, resources_at: null,
+  cpu_percent: null, rss_bytes: null, process_count: null, thread_count: null, resources_at: null,
+  cpu_count: 10,
   next_change: null, current_session: null, last_session: null, ...extra,
 });
 
@@ -98,5 +99,19 @@ describe('resume wording', () => {
     expect(resumeLabel(svc(1, 'a', 'stopped', { start_mode: 'schedule' }))).toBe('Resume schedule');
     expect(resumeLabel(svc(2, 'b', 'stopped', { start_mode: 'startup' }))).toBe('Resume');
     expect(resumeLabel(svc(3, 'c', 'running', { start_mode: 'manual' }))).toBe('Resume');
+  });
+});
+
+describe('resource figures', () => {
+  test('CPU is shown as the machine share, with the cores it amounts to', () => {
+    expect(cpuLabel(svc(1, 'a', 'running', { cpu_percent: 197, cpu_count: 10 }))).toBe('20% CPU (2.0 cores)');
+    expect(cpuLabel(svc(1, 'a', 'running', { cpu_percent: 100, cpu_count: 4 }))).toBe('25% CPU (1.0 core)');
+    expect(cpuLabel(svc(1, 'a', 'running', { cpu_percent: 0.4, cpu_count: 10 }))).toBe('0% CPU (0.0 cores)');
+    expect(cpuLabel(svc(1, 'a', 'running'))).toBe('');
+  });
+  test('the tree is counted in processes and threads', () => {
+    expect(treeLabel(svc(1, 'a', 'running', { process_count: 3, thread_count: 7 }))).toBe('3 processes · 7 threads');
+    expect(treeLabel(svc(1, 'a', 'running', { process_count: 1, thread_count: 1 }))).toBe('1 process · 1 thread');
+    expect(treeLabel(svc(1, 'a', 'running'))).toBe('');
   });
 });

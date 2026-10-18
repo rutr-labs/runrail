@@ -390,7 +390,8 @@ class ServiceSupervisor:
     def _close_session(self, db: Session, live: _Live, at: datetime) -> int | None:
         proc.forget_usage(live.pid)
         db.execute(update(Service).where(Service.id == live.service_id).values(
-            cpu_percent=None, rss_bytes=None, resources_at=None, updated_at=Service.updated_at))
+            cpu_percent=None, rss_bytes=None, process_count=None, thread_count=None,
+            resources_at=None, updated_at=Service.updated_at))
         code = live.process.returncode if live.process is not None else None
         if live.process is not None:
             with runners._LIVE_LOCK:
@@ -477,9 +478,10 @@ class ServiceSupervisor:
         reading = proc.usage(live.pid)
         if reading is None:
             return
-        cpu, rss = reading
         db.execute(update(Service).where(Service.id == service.id).values(
-            cpu_percent=cpu, rss_bytes=rss, resources_at=at, updated_at=Service.updated_at))
+            cpu_percent=reading.cpu_percent, rss_bytes=reading.rss_bytes,
+            process_count=reading.processes, thread_count=reading.threads,
+            resources_at=at, updated_at=Service.updated_at))
         db.commit()
 
     # ── bookkeeping ────────────────────────────────────────────────────────

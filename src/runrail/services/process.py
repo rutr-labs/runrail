@@ -183,11 +183,21 @@ def same_process(pid: int | None, created_at: float | None) -> bool:
         return False
 
 
-def usage(pid: int) -> tuple[float, int] | None:
-    """CPU percent since the previous call and resident memory in bytes, for
-    the process and everything under it. psutil's cpu_percent measures between
-    calls on the SAME Process object, so the whole tree is kept between
-    samples: a worker process looked up afresh each time read 0% forever."""
+@dataclass
+class Usage:
+    #: Per-core, as top reports it: 200 is two cores' worth of CPU time.
+    cpu_percent: float
+    rss_bytes: int
+    processes: int
+    threads: int
+
+
+def usage(pid: int) -> Usage | None:
+    """What the process and everything under it are using: CPU percent since
+    the previous call, resident memory, and how many processes and threads
+    the tree is. psutil's cpu_percent measures between calls on the SAME
+    Process object, so the whole tree is kept between samples: a worker
+    process looked up afresh each time read 0% forever."""
     try:
         tree = _tracked.setdefault(pid, {})
         root = tree.get(pid)
@@ -204,14 +214,16 @@ def usage(pid: int) -> tuple[float, int] | None:
             members[child.pid] = known
         _tracked[pid] = members
         cpu = 0.0
-        rss = 0
+        rss = threads = processes = 0
         for member in members.values():
             try:
                 cpu += member.cpu_percent(None)
                 rss += member.memory_info().rss
+                threads += member.num_threads()
+                processes += 1
             except (psutil.Error, OSError):
                 continue
-        return round(cpu, 1), rss
+        return Usage(round(cpu, 1), rss, processes, threads)
     except (psutil.Error, OSError):
         _tracked.pop(pid, None)
         return None
