@@ -97,3 +97,34 @@ def test_a_data_directory_import_is_refused_when_the_database_lives_elsewhere(tm
 @pytest.fixture(autouse=True)
 def _utc(monkeypatch):
     monkeypatch.setattr("runrail.worker.service.now", lambda: datetime.now(timezone.utc))
+
+
+@pytest.mark.parametrize("zone, fired, local_day, utc_day", [
+    # 18:00 in Los Angeles is 01:00 UTC the next day.
+    ("America/Los_Angeles", "2026-10-18T01:00:00+00:00", "2026-10-17", "2026-10-18"),
+    # 01:00 in Dubai is 21:00 UTC the day before.
+    ("Asia/Dubai", "2026-10-17T21:00:00+00:00", "2026-10-18", "2026-10-17"),
+    # A UTC workflow — the default — sees no change at all.
+    (None, "2026-10-18T01:00:00+00:00", "2026-10-18", "2026-10-18"),
+])
+def test_a_scheduled_run_is_dated_on_its_workflows_own_calendar(client, zone, fired, local_day, utc_day):
+    """`ds` was the UTC date: the 18:00 Los Angeles run of Oct 17 said Oct 18,
+    while a backfill of Oct 17 said Oct 17 — two partitions for one day. It is
+    the date on the workflow's clock now, as the schedule and the UI already
+    are; `ds_utc` keeps the old value for pipelines built on it, and `ts`
+    stays the exact UTC instant."""
+    from datetime import datetime
+    workflow = make_workflow(client, "dated", schedule_cron="0 18 * * *",
+                             **({"schedule_timezone": zone} if zone else {}))
+    make_shell_task(client, workflow["id"], "t", "exit 0")
+    with SessionLocal() as db:
+        run = WorkflowRun(workflow_id=workflow["id"], trigger_type=TriggerType.schedule, status="running",
+                          created_at=datetime.fromisoformat(fired))
+        db.add(run); db.flush()
+        task = db.query(Task).one()
+        task_run = TaskRun(workflow_run_id=run.id, task_id=task.id, attempt=1, resume_index=0, status="running")
+        db.add(task_run); db.flush()
+        context = _context(run, task_run, task, None, zone)
+    assert context["ds"] == local_day
+    assert context["ds_utc"] == utc_day
+    assert context["ts"] == fired

@@ -9,6 +9,7 @@ import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy import inspect as sa_inspect
@@ -196,13 +197,24 @@ def _python_command(environment: Environment) -> list[str]:
     return [str(Path(environment.executable).expanduser().resolve())]
 
 
-def _context(run: WorkflowRun, task_run: TaskRun, task: Task, project: Project | None) -> dict:
+def _context(run: WorkflowRun, task_run: TaskRun, task: Task, project: Project | None,
+             zone: str | None = None) -> dict:
+    """The template variables. `zone` is the workflow's schedule timezone: `ds`
+    is the run's date on that clock, as the schedule and the UI already read it.
+    It was the UTC date, so the 18:00 Los Angeles run of Oct 17 said Oct 18
+    while a backfill of Oct 17 said Oct 17 — two partitions for one day.
+    `ds_utc` keeps the old value; `ts` is the exact UTC instant either way."""
     settings = get_settings()
     timestamp = run.created_at
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
     else:
         timestamp = timestamp.astimezone(timezone.utc)
+    try:
+        local_day = timestamp.astimezone(ZoneInfo(zone or "UTC")).date()
+    except (ZoneInfoNotFoundError, ValueError):
+        local_day = timestamp.date()  # a zone the API would refuse: fall back, never fail the run
+    utc_day = timestamp.date()
     # Task parameters are defaults; what a run was started with — the values
     # typed into "Run with…", or the date a backfill set — overrides them. The
     # other way round, a task that happened to define `ds` made every run of a
@@ -216,7 +228,9 @@ def _context(run: WorkflowRun, task_run: TaskRun, task: Task, project: Project |
         except ValueError:
             pass
     return {
-        "ds": parameters.get("ds", timestamp.date().isoformat()), "ts": timestamp.isoformat(),
+        "ds": parameters.get("ds", local_day.isoformat()),
+        "ds_utc": parameters.get("ds", utc_day.isoformat()),
+        "ts": timestamp.isoformat(),
         "ts_nodash": timestamp.strftime("%Y%m%dT%H%M%S"),
         "parameters": parameters, **parameters,
         # Last, so a parameter cannot shadow them: one named task_run_id made
@@ -297,7 +311,7 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
         # Everything from here is inside the try: a template error in a path
         # used to escape it and leave this attempt's row `running` for good.
         try:
-            context = _context(run, task_run, task, project)
+            context = _context(run, task_run, task, project, workflow.schedule_timezone)
             env = os.environ.copy()
             configured_pythonpath = ""
             if environment and environment.env_vars_json:
