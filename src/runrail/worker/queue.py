@@ -1,10 +1,18 @@
 from collections.abc import Collection
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
-from runrail.models import LockMode, RunStatus, TriggerType, Workflow, WorkflowRun, now
-from runrail.services.locks import service_blocks_run
+from runrail.models import (
+    LockMode,
+    RunStatus,
+    Service,
+    TriggerType,
+    Workflow,
+    WorkflowRun,
+    now,
+)
+from runrail.services.locks import HOLDING, serialise, service_blocks_run
 
 #: The statuses that are unconditionally mid-flight. `queued` belongs to the
 #: same window but only sometimes, so it is not a member here — see
@@ -88,9 +96,14 @@ def _resource_blocked():
                 # hourly jobs means the monthly maintenance never runs. Shared runs
                 # already holding the resource finish untouched: a barrier, never a
                 # preemption — and a shared run that is mid-segment (started_at
-                # stamped) is one of those, not a new arrival.
+                # stamped) is one of those, not a new arrival. The barrier
+                # only helps while the exclusive run is waiting on runs: held
+                # up by a service (an always-on shared model server), it would
+                # freeze every shared run for as long as the service lives.
                 and_(holder.status == RunStatus.queued, holder_is_exclusive,
-                     mode == LockMode.shared, WorkflowRun.started_at.is_(None)),
+                     mode == LockMode.shared, WorkflowRun.started_at.is_(None),
+                     ~exists().where(Service.lock_resource == holder_workflow.lock_resource,
+                                     Service.state.in_(HOLDING))),
             ),
         )
         .correlate(WorkflowRun)
@@ -110,8 +123,8 @@ def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | Non
 
     `skip` excludes runs the caller already found it cannot start this pass.
     """
-    candidate = db.scalar(
-        select(WorkflowRun.id)
+    found = db.execute(
+        select(WorkflowRun.id, Workflow.lock_resource)
         .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
         .where(
             WorkflowRun.status == RunStatus.queued,
@@ -128,9 +141,11 @@ def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | Non
         .order_by(case((WorkflowRun.trigger_type == TriggerType.backfill, 1), else_=0),
                   WorkflowRun.created_at, WorkflowRun.id)
         .limit(1)
-    )
-    if candidate is None:
+    ).first()
+    if found is None:
         return None
+    candidate, resource = found
+    serialise(db, resource)
     workflow_limit = _candidate_workflow(Workflow.max_concurrent_runs)
     # Re-check every condition inside the UPDATE so concurrent workers cannot
     # exceed the per-workflow limit, double-claim the same run, or both acquire

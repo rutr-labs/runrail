@@ -7,10 +7,13 @@ environment. The process gets a process group of its own, so a stop reaches
 whatever the shell started, not just the shell.
 """
 
+import ctypes
+import ctypes.util
 import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,23 +111,40 @@ def start(spec: LaunchSpec, log_path: Path) -> tuple[subprocess.Popen, threading
 
 
 def _pump(stream, path: Path) -> None:
-    """Copy a process's output to its log, rolling the file over by size."""
-    out = path.open("ab")
-    written = out.tell()
+    """Copy a process's output to its log, rolling the file over by size.
+
+    The pipe is drained whatever happens to the file: a full disk or a log
+    directory that has gone must not stop the reads, or the service blocks on
+    its next write once the pipe fills, still showing as running. Output is
+    dropped until the file can be opened again."""
+    out = None
+    written = 0
     try:
         for chunk in iter(lambda: stream.read1(65536), b""):
-            if written + len(chunk) > LOG_MAX_BYTES and written:
-                out.close()
-                _rotate(path)
-                out = path.open("ab")
-                written = 0
-            out.write(chunk)
-            out.flush()
-            written += len(chunk)
+            try:
+                if out is None:
+                    out = path.open("ab")
+                    written = out.tell()
+                if written + len(chunk) > LOG_MAX_BYTES and written:
+                    out.close()
+                    _rotate(path)
+                    out = path.open("ab")
+                    written = 0
+                out.write(chunk)
+                out.flush()
+                written += len(chunk)
+            except OSError:
+                if out is not None:
+                    try:
+                        out.close()
+                    except OSError:
+                        pass
+                out = None
     except (OSError, ValueError):
-        pass
+        pass  # the pipe closed: the process is gone, or the supervisor let go
     finally:
-        out.close()
+        if out is not None:
+            out.close()
 
 
 def _rotate(path: Path) -> None:
@@ -166,25 +186,71 @@ def same_process(pid: int | None, created_at: float | None) -> bool:
         return False
 
 
-def usage(pid: int) -> tuple[float, int] | None:
-    """CPU percent since the previous call and resident memory in bytes, for
-    the process and everything under it. psutil's cpu_percent measures between
-    calls on the same Process object, so one is kept per pid."""
+@dataclass
+class Usage:
+    #: Per-core, as top reports it: 200 is two cores' worth of CPU time.
+    cpu_percent: float
+    rss_bytes: int
+    processes: int
+    threads: int
+
+
+def _memory(member: psutil.Process) -> int:
+    """Resident memory as the platform's own monitor would show it. On macOS
+    that is the physical footprint (Activity Monitor's "Memory"), not RSS: the
+    kernel compresses an idle process's pages within seconds, after which RSS
+    reports a 400 MB cache as 15 MB while the footprint still says 400."""
+    if sys.platform == "darwin" and _libproc is not None:
+        buffer = ctypes.create_string_buffer(160)  # struct rusage_info_v2
+        if _libproc.proc_pid_rusage(ctypes.c_int(member.pid), ctypes.c_int(2), buffer) == 0:
+            return int.from_bytes(buffer.raw[72:80], sys.byteorder)  # ri_phys_footprint
+    return member.memory_info().rss
+
+
+def _load_libproc():
+    if sys.platform != "darwin":
+        return None
     try:
-        root = _tracked.get(pid)
+        return ctypes.CDLL(ctypes.util.find_library("proc"))
+    except OSError:
+        return None
+
+
+_libproc = _load_libproc()
+
+
+def usage(pid: int) -> Usage | None:
+    """What the process and everything under it are using: CPU percent since
+    the previous call, resident memory, and how many processes and threads
+    the tree is. psutil's cpu_percent measures between calls on the SAME
+    Process object, so the whole tree is kept between samples: a worker
+    process looked up afresh each time read 0% forever."""
+    try:
+        tree = _tracked.setdefault(pid, {})
+        root = tree.get(pid)
         if root is None or not root.is_running():
-            root = _tracked[pid] = psutil.Process(pid)
+            tree.clear()
+            root = tree[pid] = psutil.Process(pid)
             root.cpu_percent(None)  # prime; the first reading is always 0
-        members = [root, *root.children(recursive=True)]
+        members = {pid: root}
+        for child in root.children(recursive=True):
+            known = tree.get(child.pid)
+            if known is None or known != child:  # equal means same pid AND start time
+                child.cpu_percent(None)
+                known = child
+            members[child.pid] = known
+        _tracked[pid] = members
         cpu = 0.0
-        rss = 0
-        for member in members:
+        rss = threads = processes = 0
+        for member in members.values():
             try:
                 cpu += member.cpu_percent(None)
-                rss += member.memory_info().rss
+                rss += _memory(member)
+                threads += member.num_threads()
+                processes += 1
             except (psutil.Error, OSError):
                 continue
-        return round(cpu, 1), rss
+        return Usage(round(cpu, 1), rss, processes, threads)
     except (psutil.Error, OSError):
         _tracked.pop(pid, None)
         return None
@@ -194,8 +260,9 @@ def forget_usage(pid: int) -> None:
     _tracked.pop(pid, None)
 
 
-#: Process objects kept between samples, so cpu_percent has an interval to measure.
-_tracked: dict[int, psutil.Process] = {}
+#: Process objects kept between samples, per service pid, so cpu_percent has an
+#: interval to measure — for the children as much as for the process itself.
+_tracked: dict[int, dict[int, psutil.Process]] = {}
 
 
 def descendants(pid: int) -> list[tuple[int, float]]:
@@ -222,8 +289,16 @@ def group_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
-    return True
+        pass  # a group of only zombies answers this way on macOS
+    # Something answered — but a zombie does too, and the group leader is one
+    # until its parent reaps it. Only a member still running counts.
+    for member in psutil.process_iter(["status"]):
+        try:
+            if os.getpgid(member.pid) == pid and member.info["status"] != psutil.STATUS_ZOMBIE:
+                return True
+        except (OSError, psutil.Error):
+            continue
+    return False
 
 
 def ask_to_stop(pid: int) -> None:

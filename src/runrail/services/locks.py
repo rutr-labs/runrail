@@ -18,7 +18,7 @@ never both take an exclusive resource.
 
 from datetime import datetime
 
-from sqlalchemy import and_, exists, or_, select, update
+from sqlalchemy import and_, exists, or_, select, text, update
 from sqlalchemy.orm import Session, aliased
 
 from runrail.models import (
@@ -49,9 +49,13 @@ def service_blocks_run():
             or_(Service.lock_mode == LockMode.exclusive, mode == LockMode.exclusive),
             or_(Service.state.in_(HOLDING),
                 # Waiting services bar NEW runs only; a run re-entering
-                # mid-segment already holds the resource.
+                # mid-segment already holds the resource. And only runs queued
+                # after the service began waiting: a shared service's own
+                # guard yields to an exclusive run queued before it, so one
+                # of the two must go first or neither ever would.
                 and_(Service.state == ServiceState.waiting_lock,
-                     WorkflowRun.started_at.is_(None))),
+                     WorkflowRun.started_at.is_(None),
+                     Service.state_since < WorkflowRun.created_at)),
         )
         .correlate(WorkflowRun)
         .exists()
@@ -71,9 +75,12 @@ def _conflicts(service: Service, waiting_since: datetime | None):
             or_(
                 and_(holds_slot, or_(flow.lock_mode == LockMode.exclusive, exclusive)),
                 # The runs' own starvation guard, applied to a shared service:
-                # an exclusive run waiting its turn is not overtaken.
+                # an exclusive run waiting its turn is not overtaken — when it
+                # was queued before the service began waiting (see
+                # service_blocks_run for the other half of that bargain).
                 and_(run.status == RunStatus.queued, run.started_at.is_(None),
-                     flow.lock_mode == LockMode.exclusive, not exclusive),
+                     flow.lock_mode == LockMode.exclusive, not exclusive,
+                     *([run.created_at < waiting_since] if waiting_since is not None else [])),
             ),
         )
     )
@@ -91,13 +98,27 @@ def _conflicts(service: Service, waiting_since: datetime | None):
     return or_(runs, services)
 
 
-def try_claim(db: Session, service: Service, now: datetime) -> bool:
+def serialise(db: Session, resource: str | None) -> None:
+    """PostgreSQL: take a transaction-scoped advisory lock on the resource
+    name before the conditional UPDATE. READ COMMITTED lets a service's claim
+    and a run's claim each pass their EXISTS check against the other's
+    uncommitted row and both take an exclusive resource; SQLite's single
+    writer rules that out by itself."""
+    if resource and db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:resource))"),
+                   {"resource": resource})
+
+
+def try_claim(db: Session, service: Service, now: datetime, restarting: bool = False) -> bool:
     """Atomically move a service to `starting` if its resource is free (or it
-    has none). Returns whether it was claimed; commits either way."""
+    has none). Returns whether it was claimed; commits either way. A service
+    being restarted claims from `stopping`, never having let the resource go."""
     waiting_since = service.state_since if service.state == ServiceState.waiting_lock else None
+    allowed = (ServiceState.stopping,) if restarting else ()
     conditions = [Service.id == service.id,
-                  Service.state.not_in(HOLDING)]
+                  Service.state.not_in([s for s in HOLDING if s not in allowed])]
     if service.lock_resource:
+        serialise(db, service.lock_resource)
         conditions.append(~_conflicts(service, waiting_since))
     claimed = db.execute(update(Service).where(*conditions).values(
         state=ServiceState.starting, state_since=now, state_detail=None,

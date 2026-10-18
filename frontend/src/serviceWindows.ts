@@ -27,9 +27,80 @@ export const minutesOf = (hhmm: string): number => {
 export const validTime = (value: string): boolean =>
   /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 
+/* The zone maths below falls back to UTC for a name Intl rejects (see cron.ts),
+   which would quietly show UTC times under a wrong label. Callers ask first. */
+const knownZones = new Map<string, boolean>();
+export function isKnownZone(zone: string): boolean {
+  if (!knownZones.has(zone)) {
+    try { new Intl.DateTimeFormat('en-US', { timeZone: zone }); knownZones.set(zone, zone !== ''); }
+    catch { knownZones.set(zone, false); }
+  }
+  return knownZones.get(zone)!;
+}
+
+function formatInZone(date: Date, zone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: zone, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 16).replace('T', ' ');
+  }
+}
+
+export function untilLabel(target: Date, now: number): string {
+  const minutes = Math.max(0, Math.round((target.getTime() - now) / 60_000));
+  if (minutes < 1) return 'in under a minute';
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `in ${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ''}`;
+  const days = Math.floor(hours / 24);
+  return `in ${days}d${hours % 24 ? ` ${hours % 24}h` : ''}`;
+}
+
+/** What the windows do next, in words, for this zone. About the schedule, not
+ *  the process: a service can be stopped inside a window, so this never says
+ *  "running". */
+export function scheduleSummary(windows: ServiceWindow[], zone: string, now = Date.now()): string {
+  if (!windows.length) return 'No windows yet — it will never start on its own.';
+  if (!isKnownZone(zone)) return `Unknown timezone "${zone}" — fix it to see when this runs.`;
+  const at = new Date(now);
+  const change = nextChange(windows, zone, at);
+  const active = isActive(windows, zone, at);
+  if (!change) return active ? 'Covers the whole week — always on.' : 'Never runs.';
+  return active
+    ? `In a window now · closes ${formatInZone(change, zone)} (${untilLabel(change, now)})`
+    : `Next window opens ${formatInZone(change, zone)} (${untilLabel(change, now)})`;
+}
+
 /** End at or before start: the window runs past midnight into the next day. */
 export const crossesMidnight = (w: ServiceWindow): boolean =>
   minutesOf(w.end) <= minutesOf(w.start);
+
+/** A wall time in the zone as an instant (ms). A time inside a spring-forward
+ *  gap does not exist; it becomes the instant the clocks jump, the first one
+ *  that does — as windows.py does. (zonedTimeToUtc alone keeps the offset from
+ *  before the jump and lands an hour into the far side, 02:30 → 03:30.) */
+function wallInstant(y: number, mo: number, d: number, h: number, mi: number, zone: string): number {
+  const instant = zonedTimeToUtc(y, mo, d, h, mi, zone).getTime();
+  const reads = (t: number): boolean => {
+    const w = wallParts(new Date(t), zone);
+    return w.y === y && w.mo === mo && w.d === d && w.h === h && w.mi === mi;
+  };
+  if (reads(instant)) return instant;
+  const offsetAt = (t: number): number => {
+    const w = wallParts(new Date(t), zone);
+    return Date.UTC(w.y, w.mo - 1, w.d, w.h, w.mi) - t;
+  };
+  // The two offsets straddle the transition; find it to the minute.
+  const after = offsetAt(instant + 86_400_000);
+  let low = instant - 86_400_000, high = instant;
+  while (high - low > 60_000) {
+    const middle = low + Math.floor((high - low) / 2 / 60_000) * 60_000;
+    if (offsetAt(middle) === after) high = middle; else low = middle + 60_000;
+  }
+  return high;
+}
 
 /* Monday-first weekday index (0 = Monday) of a civil date. */
 const mondayIndex = (y: number, mo: number, d: number): number =>
@@ -53,8 +124,9 @@ export function intervals(windows: ServiceWindow[], zone: string,
       const [sh, sm] = w.start.split(':').map(Number);
       const [eh, em] = w.end.split(':').map(Number);
       const end = crossesMidnight(w) ? addDays(y, mo, d, 1) : [y, mo, d] as const;
-      spans.push([zonedTimeToUtc(y, mo, d, sh, sm, zone).getTime(),
-                  zonedTimeToUtc(end[0], end[1], end[2], eh, em, zone).getTime()]);
+      const opens = wallInstant(y, mo, d, sh, sm, zone);
+      const closes = wallInstant(end[0], end[1], end[2], eh, em, zone);
+      if (closes > opens) spans.push([opens, closes]); // wholly inside a gap: never happens
     }
   }
   spans.sort((a, b) => a[0] - b[0]);

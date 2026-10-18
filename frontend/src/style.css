@@ -4466,7 +4466,9 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   background: var(--bg-card-r); border: 1px solid var(--border);
   overflow: hidden;
 }
-.week-grid--editable .week-track { cursor: crosshair; height: 22px; }
+/* touch-action: none — a finger dragging across a day must paint a window,
+   not scroll the modal and leave the drag half-finished. */
+.week-grid--editable .week-track { cursor: crosshair; height: 22px; touch-action: none; }
 .week-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); }
 .week-bar {
   position: absolute; top: 2px; bottom: 2px; border-radius: 3px;

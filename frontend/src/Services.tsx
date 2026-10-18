@@ -5,7 +5,7 @@ import {
   Trash2, Undo2, Users, Zap,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { api, del, post, put } from './api';
+import { ApiError, api, del, post, put } from './api';
 import { rrws } from './ws';
 import { useNow, useVisibleInterval } from './hooks';
 import { formatBytes, formatDuration, timeAgo, viewerZone } from './format';
@@ -14,10 +14,12 @@ import { useToast } from './components/toast';
 import { FilePicker } from './components/FilePicker';
 import { zoneOptions } from './components/ScheduleBuilder';
 import { zoneTag } from './cron';
-import { TodayBar, WeekEditor, WeekStrip, scheduleSummary, untilLabel } from './components/WeekEditor';
-import { windowLabel, type ServiceWindow } from './serviceWindows';
+import { TodayBar, WeekEditor, WeekStrip } from './components/WeekEditor';
 import {
-  STATE_WORD, byAttention, handovers, isLive, serviceCounts, toneOf,
+  isActive, isKnownZone, scheduleSummary, untilLabel, windowLabel, type ServiceWindow,
+} from './serviceWindows';
+import {
+  STATE_WORD, byAttention, cpuLabel, handovers, heldBy, isLive, resumeLabel, serviceCounts, stoppingDetail, toneOf, treeLabel,
   type LockMode, type Policy, type Service, type ServiceSession, type StartMode,
 } from './serviceStatus';
 export { serviceCounts };
@@ -61,10 +63,10 @@ function formatAt(iso: string, zone: string): string {
   } catch { return iso; }
 }
 
-/** " · 12% CPU · 1.3 GB" while a service runs and has been sampled. */
+/** " · 20% CPU (2.0 cores) · 1.3 GB" while a service runs and has been sampled. */
 function resourcesLabel(s: Service): string {
   if (s.cpu_percent == null || s.rss_bytes == null) return '';
-  return ` · ${Math.round(s.cpu_percent)}% CPU · ${formatBytes(s.rss_bytes)}`;
+  return ` · ${cpuLabel(s)} · ${formatBytes(s.rss_bytes)}`;
 }
 
 const timeoutLabel = (seconds: number) =>
@@ -89,6 +91,7 @@ export function describe(s: Service, now: number): { text: string; resumable: bo
       return { text: `${up}${pid}${using}`, resumable: false };
     }
     case 'stopping':
+      return { text: stoppingDetail(s, now), resumable: false };
     case 'waiting_lock':
     case 'backoff':
     case 'crash_loop':
@@ -97,9 +100,9 @@ export function describe(s: Service, now: number): { text: string; resumable: bo
   }
   // Stopped.
   if (s.override_running === false && s.override_reason === 'user') {
-    const text = s.start_mode === 'startup' ? 'Stopped by you · stays off until you start it'
-      : `Stopped by you${back}`;
-    return { text, resumable: true };
+    // A stop with no expiry (startup mode, or a schedule with nothing to
+    // return to) holds until a person acts, and should say so.
+    return { text: `Stopped by you${back || ' · stays off until you start it'}`, resumable: true };
   }
   if (s.override_reason === 'exited' && s.state_detail) return { text: s.state_detail, resumable: true };
   if (s.start_mode === 'manual') {
@@ -114,17 +117,31 @@ export function describe(s: Service, now: number): { text: string; resumable: bo
   return { text: s.state_detail || 'Stopped', resumable: false };
 }
 
-export function useServices() {
+/** The list every surface shares. `supervisor` also asks whether anything is
+ *  supervising — only the Services page has somewhere to say so. `pollIdle`
+ *  keeps the 5s poll going with no services; the dashboard turns it off, since
+ *  a page that shows nothing about services should not spend a request on them
+ *  every few seconds (the socket still announces the first one). */
+export function useServices({ supervisor = true, pollIdle = true } = {}) {
   const [items, setItems] = useState<Service[] | null>(null);
   const [supervised, setSupervised] = useState(true);
   const load = () => {
     void api<Service[]>('/services').then(setItems).catch(() => setItems(prev => prev ?? []));
-    void api<{ active: boolean }>('/services/supervisor').then(r => setSupervised(r.active)).catch(() => {});
+    if (supervisor) void api<{ active: boolean }>('/services/supervisor').then(r => setSupervised(r.active)).catch(() => {});
   };
   useEffect(load, []);
-  useEffect(() => rrws.on('service_updated', load), []);
+  // A supervisor pass can announce several services at once; one reload a
+  // beat later is enough for all of them.
+  useEffect(() => {
+    let timer = 0;
+    const off = rrws.on('service_updated', () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(load, 250);
+    });
+    return () => { off(); window.clearTimeout(timer); };
+  }, []);
   // The socket carries every change; the poll covers a dropped connection.
-  useVisibleInterval(true, load, 5000);
+  useVisibleInterval(pollIdle || items === null || items.length > 0, load, 5000);
   return { items, supervised, load };
 }
 
@@ -228,7 +245,7 @@ export function ServicesPage() {
                 {line.resumable && (
                   <Button variant="ghost" size="sm" disabled={!!busy} onClick={() => act(s, 'resume')}
                           title="Drop your Start/Stop and follow the service's own mode again">
-                    <Undo2 size={12} /> Resume schedule
+                    <Undo2 size={12} /> {resumeLabel(s)}
                   </Button>
                 )}
                 <Link className="service-open" to={`/services/${s.id}`}>Logs & history →</Link>
@@ -253,11 +270,23 @@ export function ServiceDetail() {
   const [sessions, setSessions] = useState<ServiceSession[]>([]);
   const [editing, setEditing] = useState(false);
   const load = () => {
-    void api<Service>(`/services/${id}`).then(setS).catch(() => setMissing(true));
+    // Only a 404 means gone. A dropped connection keeps showing what we last
+    // knew rather than telling the person their service was deleted.
+    void api<Service>(`/services/${id}`)
+      .then(next => { setS(next); setMissing(false); })
+      .catch(error => { if (error instanceof ApiError && error.status === 404) setMissing(true); });
     void api<ServiceSession[]>(`/services/${id}/sessions?limit=25`).then(setSessions).catch(() => {});
   };
   useEffect(load, [id]);
-  useEffect(() => rrws.on('service_updated', e => { if (String(e.id) === id) load(); }), [id]);
+  useEffect(() => {
+    let timer = 0;
+    const off = rrws.on('service_updated', e => {
+      if (String(e.id) !== id) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(load, 250);
+    });
+    return () => { off(); window.clearTimeout(timer); };
+  }, [id]);
   useVisibleInterval(true, load, 5000);
   const now = useNow(!!s && isLive(s));
   const { act, busy } = useServiceActions(load);
@@ -268,8 +297,9 @@ export function ServiceDetail() {
   }
   if (!s) return null;
   const line = describe(s, now);
+  const zoneKnown = isKnownZone(zoneOf(s));
   const remove = async () => {
-    if (!confirm(`Delete service "${s.name}"?${isLive(s) ? ' Its process is stopped first, with its stop timeout.' : ''}`)) return;
+    if (!confirm(`Delete service "${s.name}"?`)) return;
     try {
       await del(`/services/${s.id}`);
       toast('Service deleted', 'info');
@@ -293,9 +323,11 @@ export function ServiceDetail() {
           <div className="detail-actions">
             <PrimaryAction s={s} act={act} busy={busy} size="md" />
             {isLive(s) && <Button variant="ghost" disabled={!!busy} onClick={() => act(s, 'restart')}><RotateCcw size={13} /> Restart</Button>}
-            {line.resumable && <Button variant="ghost" disabled={!!busy} onClick={() => act(s, 'resume')}><Undo2 size={13} /> Resume schedule</Button>}
+            {line.resumable && <Button variant="ghost" disabled={!!busy} onClick={() => act(s, 'resume')}><Undo2 size={13} /> {resumeLabel(s)}</Button>}
             <Button variant="ghost" onClick={() => setEditing(true)}><Pencil size={13} /> Edit</Button>
-            <Button variant="danger" onClick={remove} title="Delete service"><Trash2 size={13} /></Button>
+            {/* The API answers 409 while the process is alive: a delete never kills anything. */}
+            <Button variant="danger" onClick={remove} disabled={isLive(s)}
+                    title={isLive(s) ? 'Stop the service before deleting it' : 'Delete service'}><Trash2 size={13} /></Button>
           </div>
         </div>
       </div>
@@ -318,14 +350,16 @@ export function ServiceDetail() {
             )}
             {s.current_session?.pid && <><dt>Process</dt><dd>pid {s.current_session.pid}</dd></>}
             {s.cpu_percent != null && s.rss_bytes != null && (
-              <><dt>Using</dt><dd>{Math.round(s.cpu_percent)}% CPU · {formatBytes(s.rss_bytes)} memory</dd></>
+              <><dt>Using</dt><dd>{cpuLabel(s, true)} · {formatBytes(s.rss_bytes)} memory{treeLabel(s) && ` · ${treeLabel(s)}`}</dd></>
             )}
           </dl>
         </section>
         {s.start_mode === 'schedule' && (
           <section className="panel service-schedule">
             <div className="panel-head">
-              <div><h2><CalendarClock size={14} /> Schedule</h2><p>{zoneOf(s)} · {scheduleSummary(s.windows, zoneOf(s), now)}</p></div>
+              <div><h2><CalendarClock size={14} /> Schedule</h2>
+                <p>{zoneKnown ? `${zoneOf(s)} · ${scheduleSummary(s.windows, zoneOf(s), now)}`
+                  : <span className="window-error">Unknown timezone "{zoneOf(s)}" — edit the service to fix it.</span>}</p></div>
             </div>
             <div className="panel-pad">
               <WeekStrip windows={s.windows} zone={zoneOf(s)} />
@@ -374,16 +408,19 @@ function ServiceLog({ service, sessions }: { service: Service; sessions: Service
   const live = sessions.find(x => x.id === viewing)?.stopped_at === null;
   // Plain text, so fetched directly rather than through the JSON helper.
   const url = `/api/services/${service.id}/log?tail_bytes=200000&session_id=${viewing}`;
+  // Every read is numbered, and only the latest may land: a slow answer for
+  // the previous run, or an older poll, must not overwrite a newer one.
+  const latest = useRef(0);
+  const read = () => {
+    const ticket = ++latest.current;
+    void fetch(url).then(r => (r.ok ? r.text() : '')).then(t => { if (ticket === latest.current) setText(t); }).catch(() => {});
+  };
   useEffect(() => {
-    if (viewing == null) { setText(''); return; }
-    let stale = false;
-    fetch(url).then(r => (r.ok ? r.text() : '')).then(t => { if (!stale) setText(t); }).catch(() => {});
-    return () => { stale = true; };
+    if (viewing == null) { latest.current++; setText(''); return; }
+    read();
   }, [url, viewing]);
   // A live session's log is re-read every two seconds while the tab is visible.
-  useVisibleInterval(live, () => {
-    void fetch(url).then(r => (r.ok ? r.text() : '')).then(setText).catch(() => {});
-  }, 2000);
+  useVisibleInterval(live, read, 2000);
   useEffect(() => {
     if (follow && box.current) box.current.scrollTop = box.current.scrollHeight;
   }, [text, follow]);
@@ -437,11 +474,16 @@ export function ServiceModal({ service, onClose, done }: {
   const [mode, setMode] = useState<StartMode>(service?.start_mode ?? 'startup');
   const [windows, setWindows] = useState<ServiceWindow[]>(
     service?.windows ?? [{ days: ['mon', 'tue', 'wed', 'thu', 'fri'], start: '09:00', end: '17:00' }]);
-  const [zone, setZone] = useState(service?.timezone ?? viewerZone());
+  // A stored null means UTC to the supervisor; only a brand-new service starts
+  // from the viewer's zone.
+  const [zone, setZone] = useState(service ? service.timezone ?? 'UTC' : viewerZone());
   const [policy, setPolicy] = useState<Policy | ''>(service?.restart_policy ?? '');
-  const [timeout, setTimeoutSeconds] = useState(service?.stop_timeout_seconds ?? 30);
+  // Kept as typed, so clearing the field to type "120" does not snap to 1.
+  const [timeoutText, setTimeoutText] = useState(String(service?.stop_timeout_seconds ?? 30));
+  const timeout = Number(timeoutText);
   const [cwd, setCwd] = useState(service?.cwd ?? '');
   const [projectId, setProjectId] = useState<string>(service?.project_id ? String(service.project_id) : '');
+  const [envId, setEnvId] = useState<string>(service?.environment_id ? String(service.environment_id) : '');
   const [lockOn, setLockOn] = useState(Boolean(service?.lock_resource));
   const [resource, setResource] = useState(service?.lock_resource ?? '');
   const [lockMode, setLockMode] = useState<LockMode>(service?.lock_mode ?? 'exclusive');
@@ -468,6 +510,10 @@ export function ServiceModal({ service, onClose, done }: {
       toast('A scheduled service needs at least one window, each with a day', 'error');
       return;
     }
+    if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600) {
+      toast('The stop timeout must be a whole number of seconds, from 1 to 3600', 'error');
+      return;
+    }
     let env_vars_json: Record<string, string> | null;
     try { env_vars_json = parseEnv(String(f.get('env_vars') ?? '')); } catch (error) {
       toast(error instanceof Error ? error.message : 'Bad environment variables', 'error');
@@ -479,7 +525,7 @@ export function ServiceModal({ service, onClose, done }: {
       command: String(f.get('command') ?? '').trim(),
       cwd: cwd.trim() || null,
       project_id: projectId ? Number(projectId) : null,
-      environment_id: f.get('environment_id') ? Number(f.get('environment_id')) : null,
+      environment_id: envId ? Number(envId) : null,
       env_vars_json,
       start_mode: mode,
       windows: mode === 'schedule' ? windows : [],
@@ -526,7 +572,9 @@ export function ServiceModal({ service, onClose, done }: {
             </select>
           </label>
           <label className="field"><span>Environment <em>Optional — its interpreter comes first on PATH</em></span>
-            <select name="environment_id" defaultValue={service?.environment_id ?? ''}>
+            {/* Controlled: the options arrive after the first render, when a
+                defaultValue would already have settled on "None". */}
+            <select value={envId} onChange={e => setEnvId(e.target.value)}>
               <option value="">None</option>
               {envs.map(x => <option key={x.id} value={x.id}>{x.name}{x.status && x.status !== 'ready' ? ` (${x.status})` : ''}</option>)}
             </select>
@@ -570,12 +618,12 @@ export function ServiceModal({ service, onClose, done }: {
             </label>
             <label className="field"><span>Stop timeout</span>
               <div className="timeout-row">
-                <input type="number" min={1} max={3600} value={timeout} aria-label="Stop timeout in seconds"
-                       onChange={e => setTimeoutSeconds(Math.max(1, Math.min(3600, Number(e.target.value) || 1)))} />
+                <input type="number" min={1} max={3600} step={1} value={timeoutText} aria-label="Stop timeout in seconds"
+                       required onChange={e => setTimeoutText(e.target.value)} />
                 <span className="timeout-unit">seconds</span>
                 {TIMEOUT_PRESETS.map(p => (
                   <button key={p} type="button" className={clsx('preset-chip', timeout === p && 'on')}
-                          onClick={() => setTimeoutSeconds(p)}>{timeoutLabel(p)}</button>
+                          onClick={() => setTimeoutText(String(p))}>{timeoutLabel(p)}</button>
                 ))}
               </div>
               <small>Asked to stop politely first; force-stopped if still running after this. Give a model server time to finish the request it is serving.</small>
@@ -721,9 +769,9 @@ export function WallboardServices({ items, now }: { items: Service[]; now: numbe
         {swaps.map(h => (
           <span key={h.resource} className="wb-handover" title={`Who has ${h.resource}`}>
             <Lock size={12} /> <code>{h.resource}</code>
-            {h.holder
-              ? <b className={`wb-handover-holder wb-handover-holder--${toneOf(h.holder)}`}>{h.holder.name}</b>
-              : <span className="wb-handover-free">free</span>}
+            {h.holders.length
+              ? <b className={`wb-handover-holder wb-handover-holder--${toneOf(h.holders[0])}`}>{heldBy(h)}</b>
+              : <span className="wb-handover-free">{heldBy(h)}</span>}
             {h.waiting
               ? <><span className="wb-handover-arrow">→</span><span>{h.waiting.name} waiting</span></>
               : h.upcoming && <><span className="wb-handover-arrow">→</span>
@@ -736,11 +784,15 @@ export function WallboardServices({ items, now }: { items: Service[]; now: numbe
         {ordered.map(s => {
           const tone = toneOf(s);
           const since = s.current_session?.started_at;
+          // Stopped inside its window means a person stopped it, and next_change
+          // is then the window's END — "starts" would promise the wrong thing.
+          const inWindow = s.start_mode === 'schedule' && isKnownZone(zoneOf(s)) && isActive(s.windows, zoneOf(s), new Date(now));
           const detail = s.state === 'running' && since
             ? `up ${formatDuration((now - new Date(since).getTime()) / 1000)}`
             : s.state === 'stopped' && s.start_mode === 'schedule' && s.next_change
-              ? `starts ${clockTime(s.next_change, zoneOf(s))} · ${untilLabel(new Date(s.next_change), now)}`
+              ? `${inWindow ? 'stopped by hand · window ends' : 'starts'} ${clockTime(s.next_change, zoneOf(s))} · ${untilLabel(new Date(s.next_change), now)}`
               : s.state === 'stopped' && s.start_mode === 'manual' ? 'on demand'
+              : s.state === 'stopping' ? stoppingDetail(s, now)
               : s.state_detail || describe(s, now).text;
           return (
             <Link key={s.id} to={`/services/${s.id}`} className={clsx('wb-service', `wb-service--${tone}`)}>

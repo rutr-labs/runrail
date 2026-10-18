@@ -482,6 +482,72 @@ def apply_operator_state(db, rng: random.Random, specs: list[dict], current: dat
 
 #: What each stand-in service prints: a banner once, then one of its lines
 #: every few seconds. Enough for a live log to look like one.
+#: A service that genuinely works: a few worker processes hashing documents
+#: flat out with a warm cache held in memory, so the CPU and memory figures the
+#: supervisor samples are real numbers rather than an idle interpreter's.
+_EMBEDDING_SCRIPT = '''\
+"""Stand-in for an embedding worker: real CPU and memory use, no model."""
+import argparse
+import hashlib
+import multiprocessing
+import os
+import signal
+import sys
+import time
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--workers", type=int, default=2)
+parser.add_argument("--cache-mb", type=int, default=256)
+args = parser.parse_args()
+
+
+def embed(stop):
+    # Hash as fast as we can and keep the results, so each worker shows both
+    # a busy core and a growing, then steady, resident set.
+    vectors = []
+    data = os.urandom(1 << 16)
+    while not stop.is_set():
+        digest = data
+        for _ in range(200):
+            digest = hashlib.sha256(digest).digest()
+        vectors.append(digest)
+        if len(vectors) > 20000:
+            del vectors[:10000]
+
+
+def main():
+    print(f"embedding-worker: {args.workers} workers, {args.cache_mb} MB cache", flush=True)
+    # A warm cache that stays resident: random bytes, because macOS compresses
+    # untouched zero pages away within a minute and the memory figure with them.
+    cache = bytearray(os.urandom(args.cache_mb << 20))
+    stop = multiprocessing.Event()
+    workers = [multiprocessing.Process(target=embed, args=(stop,), daemon=True)
+               for _ in range(args.workers)]
+    for w in workers:
+        w.start()
+
+    def finish(*_):
+        print("draining and stopping", flush=True)
+        stop.set()
+        for w in workers:
+            w.join(timeout=5)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, finish)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, finish)
+    done = 0
+    while True:
+        time.sleep(15)
+        done += args.workers * 1800 + int.from_bytes(os.urandom(1), "big")
+        print(f"embedded {done} documents · queue depth {int.from_bytes(os.urandom(1), 'big') * 3}"
+              f" · cache {args.cache_mb} MB", flush=True)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
 SERVICE_SCRIPTS = [
     ("llama_server.py",
      "llama-server listening on http://0.0.0.0:8081 · model loaded in 4.2s · 48 layers on GPU",
@@ -519,7 +585,9 @@ for i in itertools.count():
 def seed_services(db, rng: random.Random, project, environment, current: datetime) -> int:
     """A handful of services with a few days of history each: two model servers
     taking turns on one GPU, a folder sync with a lunch break, a log shipper
-    that is simply always on, and an on-demand dashboard somebody stopped.
+    that is simply always on, an on-demand dashboard somebody stopped, and an
+    embedding worker that really computes, so the CPU and memory figures mean
+    something.
 
     The commands are real: each runs a stand-in that prints what the program would, so
     once ``runrail serve`` opens this home the supervisor starts them and the
@@ -545,6 +613,7 @@ def seed_services(db, rng: random.Random, project, environment, current: datetim
     scripts.mkdir(parents=True, exist_ok=True)
     for name, banner, lines, every in SERVICE_SCRIPTS:
         (scripts / name).write_text(_SERVICE_SCRIPT.format(banner=banner, lines=lines, every=every))
+    (scripts / "embedding_worker.py").write_text(_EMBEDDING_SCRIPT)
 
     every_day = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
     weekdays = every_day[:5]
@@ -574,6 +643,9 @@ def seed_services(db, rng: random.Random, project, environment, current: datetim
         dict(name="metrics-dashboard", description="Streamlit board for the ops channel",
              command="python services/dashboard.py --port 8501",
              start_mode=ServiceStartMode.manual, restart_policy=RestartPolicy.never),
+        dict(name="embedding-worker", description="Re-embeds changed documents for search",
+             command="python services/embedding_worker.py --workers 2 --cache-mb 384",
+             start_mode=ServiceStartMode.startup, stop_timeout_seconds=60),
     ]
     rows = []
     for spec in services:

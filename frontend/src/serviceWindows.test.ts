@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
-  daysLabel, isActive, nextChange, weekSegments, weeklyHours, windowLabel,
+  daysLabel, isActive, isKnownZone, nextChange, scheduleSummary, weekSegments, weeklyHours, windowLabel,
   type ServiceWindow,
 } from './serviceWindows';
 
@@ -51,6 +51,16 @@ describe('windows', () => {
     const closed = nextChange(night, 'America/New_York', opened)!;
     expect((closed.getTime() - opened.getTime()) / 3_600_000).toBe(9);
   });
+
+  test('a window starting inside the spring gap opens when the clocks jump', () => {
+    // Los Angeles, 8 March 2026: 02:00 PST becomes 03:00 PDT (10:00Z).
+    const w: ServiceWindow[] = [{ days: ['sun'], start: '02:30', end: '04:00' }];
+    expect(isActive(w, 'America/Los_Angeles', at('2026-03-08T10:00'))).toBe(true);
+    expect(nextChange(w, 'America/Los_Angeles', at('2026-03-08T09:00'))).toEqual(at('2026-03-08T10:00'));
+    const swallowed: ServiceWindow[] = [{ days: ['sun'], start: '02:00', end: '03:00' }];
+    expect(isActive(swallowed, 'America/Los_Angeles', at('2026-03-08T10:00'))).toBe(false);
+    expect(nextChange(swallowed, 'America/Los_Angeles', at('2026-03-08T09:00'))).toEqual(at('2026-03-15T09:00'));
+  });
 });
 
 describe('the week view', () => {
@@ -73,5 +83,31 @@ describe('the week view', () => {
     expect(daysLabel(['mon', 'tue', 'wed'])).toBe('Mon–Wed');
     expect(daysLabel(['mon', 'wed', 'fri'])).toBe('Mon, Wed, Fri');
     expect(windowLabel({ days: ['fri'], start: '22:00', end: '06:00' })).toBe('Fri 22:00 → 06:00 next day');
+  });
+});
+
+describe('zones', () => {
+  test('a zone Intl does not know is flagged rather than quietly read as UTC', () => {
+    expect(isKnownZone('UTC')).toBe(true);
+    expect(isKnownZone('America/New_York')).toBe(true);
+    expect(isKnownZone('Mars/Olympus_Mons')).toBe(false);
+    expect(isKnownZone('')).toBe(false);
+  });
+
+  test('the summary says the zone is unknown instead of showing UTC times', () => {
+    const w: ServiceWindow[] = [{ days: WEEKDAYS, start: '08:00', end: '17:00' }];
+    expect(scheduleSummary(w, 'Mars/Olympus_Mons', at('2026-10-19T12:00').getTime()))
+      .toBe('Unknown timezone "Mars/Olympus_Mons" — fix it to see when this runs.');
+  });
+});
+
+describe('the schedule in words', () => {
+  const w: ServiceWindow[] = [{ days: WEEKDAYS, start: '08:00', end: '17:00' }];
+  test('says what the windows do, not what the process is doing', () => {
+    expect(scheduleSummary(w, 'UTC', at('2026-10-19T12:00').getTime()))
+      .toBe('In a window now · closes Mon 17:00 (in 5h)');
+    expect(scheduleSummary(w, 'UTC', at('2026-10-23T18:00').getTime()))
+      .toBe('Next window opens Mon 08:00 (in 2d 14h)');
+    expect(scheduleSummary([], 'UTC')).toBe('No windows yet — it will never start on its own.');
   });
 });

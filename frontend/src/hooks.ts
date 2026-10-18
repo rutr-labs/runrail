@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 
-/** Ticks every second while `active`, so live durations count up. */
-export function useNow(active: boolean): number {
+/** Ticks every `intervalMs` (a second by default) while `active`, so live
+ *  durations count up and now-markers move. */
+export function useNow(active: boolean, intervalMs = 1000): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!active) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
     return () => window.clearInterval(timer);
-  }, [active]);
+  }, [active, intervalMs]);
   return now;
 }
 
