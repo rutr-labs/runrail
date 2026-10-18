@@ -170,3 +170,32 @@ def test_restoring_a_database_offline_swaps_the_file_and_keeps_the_old_one(clien
     assert any("Restored" in line for line in system.restore_database(archive, fresh))
     with sqlite3.connect(system._sqlite_path(fresh)) as conn:
         assert conn.execute("SELECT name FROM workflows").fetchall() == [("precious",)]
+
+
+def test_a_restore_waits_out_a_file_lock_that_passes(tmp_path, monkeypatch):
+    """On Windows the swap fails while anything holds the database open — a
+    connection not yet let go, an antivirus scan. CI met exactly that once."""
+    source, target = tmp_path / "staging.db", tmp_path / "runrail.db"
+    source.write_bytes(b"restored"); target.write_bytes(b"old")
+    real_replace, refusals = Path.replace, []
+
+    def flaky_replace(self, other):
+        if len(refusals) < 2:
+            refusals.append(1)
+            raise PermissionError(5, "Access is denied")
+        return real_replace(self, other)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    system._replace_patiently(source, target)
+    assert target.read_bytes() == b"restored" and len(refusals) == 2
+
+
+def test_a_restore_explains_a_file_that_stays_locked(tmp_path, monkeypatch):
+    source, target = tmp_path / "staging.db", tmp_path / "runrail.db"
+    source.write_bytes(b"restored"); target.write_bytes(b"old")
+    monkeypatch.setattr(system, "REPLACE_PATIENCE_SECONDS", 0.3)
+    monkeypatch.setattr(Path, "replace", lambda self, other: (_ for _ in ()).throw(
+        PermissionError(5, "Access is denied")))
+    with pytest.raises(system.BackupError, match="open in another process"):
+        system._replace_patiently(source, target)
+    assert target.read_bytes() == b"old", "the old database was touched"
