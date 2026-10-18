@@ -3500,8 +3500,33 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 /* Run detail action row: the report link is a destination, not a command. */
 .detail-actions .snooze-anchor { display: inline-flex; }
 /* Wallboard: a run parked on a person is triage, not idle. */
-.wb-waiting { border-color: var(--warning-border); background: rgba(251,191,36,0.06); }
+.wb-waiting { border-color: var(--warning-border); background: rgba(251,191,36,0.06); box-shadow: 0 0 90px -28px rgba(251,191,36,0.35); }
 .wb-waiting .wallboard-tile-status { color: var(--warning); }
+.wb-waiting:hover { border-color: rgba(251,191,36,0.55); background: rgba(251,191,36,0.09); }
+
+/* The live strip: every card opens its run; one waiting on a person is
+   amber, as it is on the dashboard and the run page. */
+.wallboard-live-card {
+  color: inherit; text-decoration: none; cursor: pointer;
+  transition: transform .2s var(--ease-out), border-color .2s, background .2s, box-shadow .2s;
+}
+.wallboard-live-card:hover { transform: translateY(-3px); border-color: rgba(56,189,248,0.55); background: rgba(56,189,248,0.12); }
+.wallboard-live-card:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-glow); }
+.wallboard-live-arrow { color: #64748b; flex-shrink: 0; transition: color .2s, transform .2s var(--ease-out); }
+.wallboard-live-card:hover .wallboard-live-arrow { color: #cbd5e1; transform: translateX(3px); }
+.wallboard-live-card.waiting_approval {
+  border-color: rgba(251,191,36,0.4); background: rgba(251,191,36,0.07);
+  box-shadow: 0 0 60px -30px rgba(251,191,36,0.6);
+}
+.wallboard-live-card.waiting_approval:hover { border-color: rgba(251,191,36,0.6); background: rgba(251,191,36,0.11); }
+.wallboard-live-card.waiting_approval::before { box-shadow: inset 0 0 0 1px var(--warning); }
+.wallboard-live-card.queued:hover { border-color: rgba(251,191,36,0.5); background: rgba(251,191,36,0.09); }
+.run-pulse.waiting_approval { background: var(--warning); box-shadow: 0 0 0 3px rgba(251,191,36,0.2); animation: badge-pulse 2.6s ease infinite; }
+.wb-eta--review {
+  color: var(--warning); padding: 3px 11px; border-radius: 999px;
+  border: 1px solid rgba(251,191,36,0.4); background: rgba(251,191,36,0.1);
+}
+@media (prefers-reduced-motion: reduce) { .run-pulse.waiting_approval { animation: none; } }
 .wb-bloom-waiting { --bloom: rgba(251,191,36,0.45); --bloom-soft: rgba(251,191,36,0.14); }
 /* Dashboard headline stat for open gates. */
 .dash-stat.stat-approval { color: var(--warning); font-weight: 600; }
@@ -4368,7 +4393,11 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 /* Phone width: the wallboard is a TV view, but it should still fit a phone. */
 @media (max-width: 560px) {
   .wallboard { padding: 20px 16px; }
-  .wallboard-live-card { min-width: 0; flex: 1 1 100%; max-width: 100%; }
+  .wallboard-live-card { min-width: 0; flex: 1 1 100%; max-width: 100%; padding: 14px 16px; gap: 12px; }
+  /* The TV floor of 300px is wider than a phone leaves once the pill and the
+     arrow are in the row; the body gives way, its lines ellipsised. */
+  .wallboard-live-body { min-width: 0; flex: 1; }
+  .wallboard-live-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .wallboard-clock { font-size: 18px; }
   .wallboard-next { max-width: 100%; }
   .toaster { left: 16px; right: 16px; bottom: 16px; }

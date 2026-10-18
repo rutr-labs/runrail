@@ -206,6 +206,13 @@ const timeoutSeconds = (f: FormData): number | null =>
 
 const environmentUsable = (e: Env) => e.status === 'ready' || e.status === 'degraded';
 
+/** "waiting on publish · 3m 12s" for a run parked on a gate. */
+function waitingLine(gate: { task_name: string | null; created_at: string } | undefined, now: number): string {
+  if (!gate) return 'waiting approval';
+  const since = Math.max(0, (now - new Date(gate.created_at).getTime()) / 1000);
+  return `waiting on ${gate.task_name ?? 'approval'} · ${formatDuration(since)}`;
+}
+
 function liveDuration(run: Run, now: number): string {
   if (run.duration_seconds != null) return formatDuration(run.duration_seconds);
   if (run.status === 'running' && run.started_at) {
@@ -3172,6 +3179,10 @@ function Wallboard() {
   const [blooms, setBlooms] = useState<Record<number, string>>({});
   const prevStatuses = useRef(new Map<number, string>());
   const gridRef = useRef<HTMLDivElement>(null);
+  // Open gates by run: which task is waiting, and since when (the run's own
+  // timestamps say when it started, not when it stopped to ask).
+  const approvals = useOpenApprovals();
+  const gates = new Map((approvals ?? []).map(a => [a.run_id, a]));
 
   const load = () => {
     api<Run[]>('/runs?limit=300').then(setRuns).catch(() => {});
@@ -3299,11 +3310,14 @@ function Wallboard() {
               const overRatio = expected ? Math.min(1, Math.max(0, (elapsed / expected - 1) / 0.35)) : 0;
               const flowName = flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`;
               return (
-                <div key={r.id} className={`wallboard-live-card ${r.status}`}>
+                <Link key={r.id} to={`/runs/${r.id}`} className={`wallboard-live-card ${r.status}`}
+                      title={r.status === 'waiting_approval' ? `${flowName} #${r.id} · review the approval` : `${flowName} #${r.id}`}>
                   <span className={`run-pulse ${r.status}`} />
                   <div className="wallboard-live-body">
                     <b title={flowName}>{flowName}</b>
-                    <small>#{r.id} · {r.status.replace(/_/g, ' ')} · {liveDuration(r, now)}</small>
+                    <small>#{r.id} · {r.status === 'waiting_approval'
+                      ? waitingLine(gates.get(r.id), now)
+                      : `${r.status.replace(/_/g, ' ')} · ${liveDuration(r, now)}`}</small>
                     {pct != null && (
                       <div className="wb-progress" style={{ '--over-ratio': overRatio.toFixed(3) } as CSSProperties}>
                         <div className="wb-progress-fill" style={{ width: `${pct}%` }}>
@@ -3317,7 +3331,9 @@ function Wallboard() {
                       {over ? 'running long' : `~${formatEta(Math.max(0, (expected - elapsed) * 1000))} left`}
                     </span>
                   )}
-                </div>
+                  {r.status === 'waiting_approval' && <span className="wb-eta wb-eta--review">Review</span>}
+                  <ChevronRight className="wallboard-live-arrow" size={18} />
+                </Link>
               );
             })}
           </div>
