@@ -2,7 +2,12 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.1] — 2026-10-18
+
+A repair release from the third audit pass: the worker, the scheduler and its
+watchdogs, and the remaining loose ends from 0.8.0. Two small migrations run
+on first start (new columns and tables only); on SQLite a restore point is
+taken first.
 
 ### Changed
 - **`ds` is the date on the workflow's own calendar.** It was the UTC date,
@@ -12,6 +17,52 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
   runs fire when the local and UTC dates differ are affected; UTC workflows,
   the default, see no change. The old value is available as `{{ ds_utc }}`.
   `ts` and `ts_nodash` are unchanged (UTC).
+- **Shutdown lets runs finish before services stop.** Services stayed up
+  only until shutdown began, so a run calling the model server it was
+  written against failed in its last minutes. They now stop once the runs
+  have drained, and nothing new starts meanwhile.
+- A new cron expression that restricts both day-of-month and day-of-week is
+  refused: cron runs on either day, RunRail ran only when both matched, so
+  `0 9 1 * 1` fired once or twice a year. Schedules already saved keep
+  running exactly as before.
+- Settings shows what the last retention cleanup did, even after a restart.
+
+### Fixed
+- Starting a second worker (`serve` beside `runrail worker`) failed the
+  first one's running runs and let the next run of the same workflow in
+  beside them. Each worker now marks the runs it claims and says it is
+  alive; only runs whose worker has stopped are recovered — at startup and
+  every half minute, by any worker.
+- A gate approved or rejected while another branch of the run was still
+  executing left the run waiting forever, holding its slot and lock.
+- Resuming a run right after cancelling it could run the same task twice at
+  once. Resume now waits until the cancel has landed, and a cancel cuts the
+  retry delay short instead of sleeping through it.
+- One database error (a locked SQLite file, a PostgreSQL restart) stopped the
+  worker for good while the UI kept working. It now logs the error and
+  carries on; dropped connections are replaced before use.
+- A cancel no longer starts the tasks still waiting for a free slot.
+- Approving a gate no longer re-runs tasks that had already failed in that
+  run.
+- A template error in a script or notebook path fails that task instead of
+  leaving it "running".
+- A run cancelled mid-claim, or whose worker died after the cancel, gets a
+  finish time (retention could never delete it, and it could not be resumed).
+- Runs waiting on an environment build no longer hide other workflows' runs
+  from the worker.
+- Run parameters can no longer override `run_id`, `task_run_id` or
+  `artifacts_dir`.
+- A backlog that had just finished no longer raised a "missed schedule"
+  alert.
+- Deadline alerts are checked for every run in progress, not only a
+  workflow's oldest.
+- The schedule history no longer shows phantom misses on clock-change days.
+- An auto-paused workflow's paused stretch in the schedule history starts at
+  the pause.
+- Services: when the system clock is set back, restarts and forced stops no
+  longer wait for it to catch up.
+- PostgreSQL: two workers could briefly both start a run of the same
+  workflow past its concurrency limit.
 
 ## [0.8.0] — 2026-10-18
 
