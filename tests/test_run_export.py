@@ -62,14 +62,15 @@ def test_export_is_a_single_self_contained_file(client):
 
 
 def test_the_footer_links_to_the_run_only_when_it_has_a_public_address(client, monkeypatch):
+    from runrail import runtime_settings
     from runrail.config import get_settings
     _, run_id = run_workflow(client, "sales")
     monkeypatch.setenv("RUNRAIL_PUBLIC_URL", "https://runrail.example.net")
-    get_settings.cache_clear()
+    get_settings.cache_clear(); runtime_settings.invalidate()
     try:
         body = client.get(f"/api/runs/{run_id}/export").text
     finally:
-        get_settings.cache_clear()
+        get_settings.cache_clear(); runtime_settings.invalidate()
     assert body.count('href="http') == 1
     assert f'href="https://runrail.example.net/runs/{run_id}"' in body
     assert "@font-face" not in body and "fonts.googleapis" not in body
