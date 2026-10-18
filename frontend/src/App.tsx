@@ -8,7 +8,7 @@ import {
   Clock, Calendar, Zap, GitMerge, Activity,
   AlertTriangle, CheckCircle2, RefreshCw, Trash2, Pencil,
   ArrowLeft, Terminal, Download, Settings, ChevronsRight,
-  Database, FileText, Info, Ban, Menu, X, SlidersHorizontal,
+  Ban, Menu, X, SlidersHorizontal,
   ShieldAlert, ShieldCheck, CircleSlash, Share2, BookOpen, Lock,
 } from 'lucide-react';
 import { api, del, post, put } from './api';
@@ -31,6 +31,7 @@ import { ScheduleGapsPanel, useScheduleGaps, heatmapGapFeed } from './components
 import { ApprovalField, approvalValues } from './components/ApprovalField';
 import { RunRailMark } from './components/Brand';
 import { useNow, useVisibleInterval } from './hooks';
+import { SettingsPage } from './SettingsPage';
 import {
   ServiceDetail, ServicesPage, ServicesPanel, WallboardServices, serviceCounts, useServices,
 } from './Services';
@@ -3139,82 +3140,6 @@ function Artifacts() {
           text="Executed notebooks and task outputs will appear here when workflows produce them."
         />
       )}
-    </>
-  );
-}
-
-/* ─── Settings Page ──────────────────────────────────── */
-function SettingsPage() {
-  const [theme, setTheme] = useState<string>(
-    () => document.documentElement.dataset.theme ?? 'dark'
-  );
-
-  const switchTheme = (t: string) => {
-    document.documentElement.dataset.theme = t;
-    localStorage.setItem('runrail-theme', t);
-    setTheme(t);
-  };
-
-  return (
-    <>
-      <PageHeader eyebrow="SYSTEM" title="Settings" subtitle="Configure RunRail and view system information." />
-
-      <div className="settings-grid">
-        <div className="about-card">
-          <div className="about-logo"><RunRailMark size={52} title="" /></div>
-          <div className="about-text">
-            <h2>RunRail</h2>
-            <p>A self-hosted workflow control plane for Python scripts, Jupyter notebooks, SQL tasks, shell commands, schedules, backfills, logs, artifacts, and workflow runs.</p>
-            <div className="about-links">
-              <a className="btn btn-ghost btn-sm" href="https://github.com/rutr-labs/runrail" target="_blank" rel="noreferrer">
-                <Info size={13} /> GitHub
-              </a>
-            </div>
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <h3><Settings size={14} /> Appearance</h3>
-          <div className="settings-row">
-            <span className="settings-label">Theme</span>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {(['dark', 'light'] as const).map(t => (
-                <button
-                  key={t}
-                  className={`btn btn-sm ${theme === t ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => switchTheme(t)}
-                >
-                  {t === 'dark' ? '☾ Dark' : '☀ Light'}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <h3><Database size={14} /> System</h3>
-          <div className="settings-row">
-            <span className="settings-label">API endpoint</span>
-            <span className="settings-value">{window.location.origin}/api</span>
-          </div>
-          <div className="settings-row">
-            <span className="settings-label">Mode</span>
-            <span className="settings-value">Self-hosted</span>
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <h3><FileText size={14} /> Navigation</h3>
-          {NAV.filter(n => n.href !== '/settings').map(({ href, icon: Icon, label }) => (
-            <div className="settings-row" key={href}>
-              <span className="settings-label" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                <Icon size={13} />{label}
-              </span>
-              <Link className="btn btn-ghost btn-sm" to={href}>Open →</Link>
-            </div>
-          ))}
-        </div>
-      </div>
     </>
   );
 }
