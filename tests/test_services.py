@@ -750,3 +750,30 @@ def test_shutting_down_lets_runs_finish_before_services_stop(client, tmp_path):
         release.touch()
         worker.supervisor.stop()
         thread.join(timeout=30)
+
+
+def test_a_clock_set_back_delays_neither_a_restart_nor_a_forced_kill(client, supervisor, clock):
+    """Deadlines were wall-clock only: with the clock set back an hour (NTP,
+    a laptop waking), a crashed service waited an hour to restart and a
+    service ignoring its stop was killed an hour late."""
+    sup = supervisor()
+    crashing = create(client, name="crashing", command=python("raise SystemExit(3)"), start_mode="startup")
+    settle(sup, client, crashing["id"], "backoff")
+    first = len(sessions(client, crashing["id"]))
+    clock.advance(hours=-1)
+    deadline = time.monotonic() + 10
+    while len(sessions(client, crashing["id"])) == first:
+        assert time.monotonic() < deadline, "the restart waited for the wall clock"
+        sup.tick()
+        time.sleep(0.1)
+    client.post(f"/api/services/{crashing['id']}/stop")
+
+    stubborn = create(client, name="stubborn", command=STUBBORN, start_mode="startup", stop_timeout_seconds=1)
+    settle(sup, client, stubborn["id"], "running")
+    pid = stubborn_pid(client, stubborn["id"])
+    client.post(f"/api/services/{stubborn['id']}/stop")
+    sup.tick()
+    clock.advance(hours=-1)
+    settle(sup, client, stubborn["id"], "stopped", seconds=10)
+    assert not process_alive(pid)
+    assert sessions(client, stubborn["id"])[0]["stop_reason"] == "killed_after_timeout"

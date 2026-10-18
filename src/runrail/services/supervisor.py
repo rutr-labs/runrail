@@ -89,6 +89,9 @@ class _Live:
     pump: threading.Thread | None = None
     stop_reason: ServiceStopReason | None = None
     kill_at: datetime | None = None
+    #: The same deadline on the monotonic clock: a wall clock set back an hour
+    #: (NTP, a laptop waking, a person) must not hold off a forced kill.
+    kill_after: float | None = None
     killed: bool = False
     extra: dict = field(default_factory=dict)
 
@@ -143,7 +146,11 @@ class ServiceSupervisor:
         self.owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         self.live: dict[int, _Live] = {}
         self.holding = False
-        self._renewed: datetime | None = None
+        self._renewed: float | None = None  # monotonic: when the lease was last renewed
+        #: Backoff deadlines on the monotonic clock, beside next_attempt_at
+        #: (which is wall time, for the UI): a clock set back must not delay
+        #: a restart by however far it went.
+        self._retry_after: dict[int, float] = {}
         self._stop = threading.Event()
         #: Set while RunRail drains its runs before stopping: services that
         #: are up stay up, nothing new starts. The reason is shown as the detail.
@@ -287,7 +294,8 @@ class ServiceSupervisor:
                             next_attempt_at=None)
             return
         retry_at = _aware(service.next_attempt_at)
-        if retry_at is not None and at < retry_at:
+        due = self._retry_after.get(service.id)
+        if retry_at is not None and at < retry_at and not (due is not None and time.monotonic() >= due):
             self._set_state(db, service, ServiceState.backoff, service.state_detail,
                             next_attempt_at=retry_at)
             return
@@ -366,15 +374,19 @@ class ServiceSupervisor:
                                       at, service.stop_timeout_seconds, process, pump)
         self._snapshot(self.live[service.id])
         db.commit()
+        self._retry_after.pop(service.id, None)
         self._set_state(db, service, ServiceState.running, None, next_attempt_at=None)
 
     def _begin_stop(self, live: _Live, reason: ServiceStopReason, at: datetime) -> None:
         live.stop_reason = reason
         live.kill_at = at + timedelta(seconds=live.stop_timeout)
+        live.kill_after = time.monotonic() + live.stop_timeout
         proc.ask_to_stop(live.pid)
 
     def _progress_stop(self, live: _Live, at: datetime) -> None:
-        if live.stop_reason is not None and not live.killed and live.kill_at and at >= live.kill_at:
+        due = (live.kill_at is not None and at >= live.kill_at) or (
+            live.kill_after is not None and time.monotonic() >= live.kill_after)
+        if live.stop_reason is not None and not live.killed and due:
             proc.kill(live.pid, live.extra.get("descendants", ()))
             live.killed = True
 
@@ -483,6 +495,7 @@ class ServiceSupervisor:
         delay = min(MAX_BACKOFF_SECONDS, 2 ** max(0, consecutive - 1))
         self._set_state(db, service, ServiceState.backoff, f"{what} · restarting in {delay}s",
                         next_attempt_at=at + timedelta(seconds=delay))
+        self._retry_after[service.id] = time.monotonic() + delay
 
     def _sample(self, db: Session, service: Service, live: _Live, at: datetime) -> None:
         """Record what the process tree is using, every few seconds."""
@@ -529,7 +542,11 @@ class ServiceSupervisor:
             notify._post(url, text, event="service_crash_loop", service=service.name)
 
     def _lease(self, db: Session, at: datetime) -> bool:
-        if self.holding and self._renewed and at - self._renewed < LEASE_RENEW_EVERY:
+        # Renewal is paced on the monotonic clock: on the wall clock, one set
+        # back made `at - renewed` negative and the lease went unrenewed until
+        # the clock caught up again.
+        if self.holding and self._renewed is not None \
+                and time.monotonic() - self._renewed < LEASE_RENEW_EVERY.total_seconds():
             return True
         renewed = db.execute(update(SupervisorLease).where(
             SupervisorLease.name == LEASE_NAME,
@@ -538,7 +555,7 @@ class ServiceSupervisor:
         ).values(owner=self.owner, heartbeat_at=at)).rowcount
         if renewed:
             db.commit()
-            self._renewed = at
+            self._renewed = time.monotonic()
             return True
         if db.get(SupervisorLease, LEASE_NAME) is not None:
             db.rollback()
@@ -549,7 +566,7 @@ class ServiceSupervisor:
         except IntegrityError:
             db.rollback()
             return False
-        self._renewed = at
+        self._renewed = time.monotonic()
         return True
 
     def _take_over(self, db: Session, at: datetime) -> None:
