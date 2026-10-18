@@ -2348,13 +2348,15 @@ function Workflows() {
                   {/* Renders nothing for the unlocked majority, so the row is
                       unchanged for them. */}
                   <LockBadge resource={w.lock_resource} mode={w.lock_mode} />
-                  {/* Renders nothing unless muted; stops its own click so the
-                      card's navigation never fires from the un-snooze. */}
-                  <SnoozeBadge workflow={w}
-                               onChange={u => setItems(list => list.map(x => x.id === u.id ? u : x))} />
                   <StatusBadge value={w.enabled ? 'enabled' : 'disabled'} />
                 </div>
               </div>
+              {/* A row of its own: squeezed in beside the icon and the other
+                  chips, the mute notice stacked them into a ragged column.
+                  Renders nothing unless muted, and stops its own click so
+                  the card's navigation never fires from the un-snooze. */}
+              <SnoozeBadge workflow={w} className="workflow-mute"
+                           onChange={u => setItems(list => list.map(x => x.id === u.id ? u : x))} />
               <h3 style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties} title={w.name}>{w.name}</h3>
               <p>{w.description || 'No description yet'}</p>
               <div className="workflow-meta">

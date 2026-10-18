@@ -3483,7 +3483,9 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 
 /* ═══ Host surfaces this pass touches ═══════════════════ */
 /* Workflow card: the snooze chip sits beside the enabled badge. */
-.workflow-top-tags { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.workflow-top-tags { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+.workflow-top { gap: 12px; }
+.workflow-card .workflow-mute { align-self: flex-start; max-width: 100%; }
 /* Same rhythm as the other dashboard-column panels. */
 .approval-inbox { margin-bottom: 16px; }
 /* A snooze chip in a .summary-strip cell behaves like a .status-badge there. */
