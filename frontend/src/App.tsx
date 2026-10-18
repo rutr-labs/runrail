@@ -1778,11 +1778,14 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
                     : isLive(t) ? `running ${formatDuration(spanMs(t) / 1000)}` : null,
                   t.exit_code != null ? `exit ${t.exit_code}` : null,
                 ].filter(Boolean).join('\n');
+                // A gate stops a few pixels short of where it ended, so the
+                // task that ran after it reads as its own bar, not its tip.
+                const span = `${Math.min(width, 100 - left)}%`;
                 return (
                   <div key={t.id}
                        className={clsx('tl-bar', t.status, gate && 'tl-bar--gate',
                                        isWaiting(t) && 'tl-bar--gate-open')}
-                       style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%`, animationDelay: `${Math.min(laneIndex * 30, 240)}ms` }} title={tip}>
+                       style={{ left: `${left}%`, width: gate ? `calc(${span} - 3px)` : span, animationDelay: `${Math.min(laneIndex * 30, 240)}ms` }} title={tip}>
                     {!gate && (t.status === 'running' ? <CometCanvas kind="fill" />
                       : (t.status === 'success' || t.status === 'failed') && <CometCanvas kind="still" />)}
                     {/* Every attempt is labelled once there is more than one:
@@ -1792,9 +1795,7 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
                 );
               })}
             </div>
-            <span className="tl-dur">
-              {formatDuration(attempts.reduce((sum, t) => sum + spanMs(t) / 1000, 0) || null)}
-            </span>
+            <LaneDuration attempts={attempts} isGate={isGate} isWaiting={isWaiting} spanMs={spanMs} />
           </div>
           );
         })}
@@ -1813,6 +1814,27 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
         </div>
     </div>
     </div>
+  );
+}
+
+/** A lane's figure: the time its task actually ran, and — on its own line,
+ *  in the gate's amber — the time it waited for a person. Summed together,
+ *  a 3-second task read as "2m 38s". */
+function LaneDuration({ attempts, isGate, isWaiting, spanMs }: {
+  attempts: TaskRun[]; isGate: (t: TaskRun) => boolean; isWaiting: (t: TaskRun) => boolean;
+  spanMs: (t: TaskRun) => number;
+}) {
+  const ran = attempts.filter(t => !isGate(t)).reduce((sum, t) => sum + spanMs(t) / 1000, 0);
+  const gates = attempts.filter(isGate);
+  const waited = gates.reduce((sum, t) => sum + spanMs(t) / 1000, 0);
+  const open = gates.some(isWaiting);
+  return (
+    <span className="tl-dur">
+      {ran > 0 ? formatDuration(ran) : open ? null : formatDuration(null)}
+      {gates.length > 0 && (
+        <small className="tl-dur-wait">{open ? 'waiting' : 'waited'} {formatDuration(waited)}</small>
+      )}
+    </span>
   );
 }
 
