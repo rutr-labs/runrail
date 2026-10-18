@@ -60,4 +60,34 @@ def init_db() -> None:
     config = Config()
     config.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
     config.set_main_option("sqlalchemy.url", get_settings().database_url)
+    _restore_point_before_upgrade(config)
     command.upgrade(config, "head")
+
+
+def _restore_point_before_upgrade(config) -> None:
+    """A schema upgrade is the one moment a database can be left in a state
+    the previous RunRail cannot read. Before one runs, SQLite homes get a
+    snapshot under <home>/backups (the newest few are kept)."""
+    import sqlite3
+    from pathlib import Path
+
+    from alembic.script import ScriptDirectory
+
+    from runrail import system
+    settings = get_settings()
+    url = settings.database_url
+    if not url.startswith("sqlite:///"):
+        return
+    file = Path(url.split("sqlite:///", 1)[1])
+    if not file.exists():
+        return
+    try:
+        with sqlite3.connect(f"file:{file}?mode=ro", uri=True) as conn:
+            row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+    except sqlite3.Error:
+        return
+    head = ScriptDirectory.from_config(config).get_current_head()
+    if row and row[0] != head:
+        kept = system.restore_point(settings, f"before-{head[:8]}")
+        if kept:
+            print(f"Restore point before the schema upgrade: {kept}", flush=True)

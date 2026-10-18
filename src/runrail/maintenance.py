@@ -18,12 +18,25 @@ _TERMINAL = (RunStatus.success, RunStatus.failed, RunStatus.cancelled)
 class CleanupStats:
     runs_deleted: int = 0
     files_deleted: int = 0
+    #: Measured on a dry run only, for the preview on the Settings page.
+    bytes_freed: int = 0
     errors: list[str] = field(default_factory=list)
 
 
 #: Runs deleted per transaction. Small enough that a pass over a large history
 #: never holds SQLite's write lock for long, or loads it all into memory.
 _BATCH = 200
+
+
+def _tree_size(path: Path) -> int:
+    total = 0
+    try:
+        for file in path.rglob("*"):
+            if file.is_file():
+                total += file.stat().st_size
+    except OSError:
+        pass
+    return total
 
 
 def _count_files(path: Path) -> int:
@@ -143,6 +156,12 @@ def cleanup_runs(db: Session, older_than_days: int, dry_run: bool = False) -> Cl
             for directories, loose in layout.values():
                 stats.files_deleted += (sum(map(_count_files, directories))
                                         + sum(1 for path in loose if path.is_file()))
+                stats.bytes_freed += sum(map(_tree_size, directories))
+                for path in loose:
+                    try:
+                        stats.bytes_freed += path.stat().st_size
+                    except OSError:
+                        pass
             continue
         # Re-checked in the DELETE: a run resumed since it was selected is live again.
         db.execute(delete(WorkflowRun).where(WorkflowRun.id.in_(run_ids), *expired))

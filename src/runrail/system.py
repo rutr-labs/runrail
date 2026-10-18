@@ -1,0 +1,441 @@
+"""What the Settings page says about this RunRail, and what it can do to it.
+
+Status: version and whether a newer one exists, uptime, where the data is and
+how big, what the worker and the supervisor are doing. Controls: pause,
+backups, a restore point before every schema upgrade, and a preview of what a
+retention setting would delete before it is allowed to.
+
+Anything slow — walking the logs tree, asking PyPI — runs on its own thread
+and the page shows the last answer with its age; a status request never
+blocks on the disk or the network.
+"""
+
+import io
+import json
+import logging
+import platform
+import shutil
+import sqlite3
+import tempfile
+import threading
+import time
+import urllib.request
+import zipfile
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+import yaml
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import Session
+
+from runrail import __version__, runtime_settings
+from runrail.config import Settings, get_settings
+from runrail.models import (
+    RunStatus,
+    Service,
+    ServiceState,
+    SupervisorLease,
+    Workflow,
+    WorkflowRun,
+    _aware,
+    now,
+)
+
+log = logging.getLogger("runrail.system")
+
+STARTED_AT = now()
+#: How often the disk is walked for the storage figures, and PyPI asked.
+STORAGE_MAX_AGE = timedelta(minutes=10)
+UPDATE_MAX_AGE = timedelta(hours=6)
+PYPI_URL = "https://pypi.org/pypi/runrail/json"
+#: Restore points kept under <home>/backups before schema upgrades.
+RESTORE_POINTS_KEPT = 3
+
+
+class _Background:
+    """One slow measurement with a cached answer: `get()` returns at once,
+    kicking off a refresh in the background when the answer is stale."""
+
+    def __init__(self, work, max_age: timedelta):
+        self._work, self._max_age = work, max_age
+        self._lock = threading.Lock()
+        self._value: Any = None
+        self._at: datetime | None = None
+        self._thread: threading.Thread | None = None
+
+    def get(self, refresh: bool = False) -> tuple[Any, datetime | None, bool]:
+        with self._lock:
+            stale = self._at is None or now() - self._at > self._max_age or refresh
+            running = self._thread is not None and self._thread.is_alive()
+            if stale and not running:
+                self._thread = threading.Thread(target=self._refresh, daemon=True,
+                                                name="runrail-measure")
+                self._thread.start()
+                running = True
+            return self._value, self._at, running
+
+    def _refresh(self) -> None:
+        try:
+            value = self._work()
+        except Exception:
+            log.exception("background measurement failed")
+            return
+        with self._lock:
+            self._value, self._at = value, now()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._value, self._at = None, None
+
+
+def _tree_size(path: Path) -> int:
+    total = 0
+    if path.is_dir():
+        for file in path.rglob("*"):
+            try:
+                if file.is_file():
+                    total += file.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _measure_storage() -> dict[str, int]:
+    settings = get_settings()
+    return {"logs_bytes": _tree_size(settings.logs_dir),
+            "artifacts_bytes": _tree_size(settings.artifacts_dir),
+            "environments_bytes": _tree_size(settings.environments_dir),
+            "backups_bytes": _tree_size(backups_dir(settings))}
+
+
+def _ask_pypi() -> dict[str, Any]:
+    """{"version": "0.7.2", "error": None}, or the reason PyPI could not be
+    asked — a machine without CA certificates, say — kept as an answer so
+    the page can say so and the question is not retried every second."""
+    request = urllib.request.Request(PYPI_URL, headers={"User-Agent": f"runrail/{__version__}"})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return {"version": json.load(response)["info"]["version"], "error": None}
+    except Exception as exc:  # network, TLS, a surprising body: all "could not check"
+        log.info("update check: %s", exc)
+        return {"version": None, "error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
+# Looked up at call time (not bound at import), so a test can stand in for either.
+storage = _Background(lambda: _measure_storage(), STORAGE_MAX_AGE)
+latest_release = _Background(lambda: _ask_pypi(), UPDATE_MAX_AGE)
+
+
+def _version_key(version: str) -> tuple:
+    parts = []
+    for piece in version.split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def newer(latest: str | None, current: str) -> bool | None:
+    if not latest:
+        return None
+    try:
+        return _version_key(latest) > _version_key(current)
+    except ValueError:
+        return None
+
+
+def backups_dir(settings: Settings | None = None) -> Path:
+    return (settings or get_settings()).home / "backups"
+
+
+def _database(settings: Settings) -> dict[str, Any]:
+    url = settings.database_url
+    if url.startswith("sqlite"):
+        file = Path(url.split("sqlite:///", 1)[1])
+        size = 0
+        for candidate in (file, file.with_name(file.name + "-wal"), file.with_name(file.name + "-shm")):
+            try:
+                size += candidate.stat().st_size
+            except OSError:
+                pass
+        return {"backend": "sqlite", "location": str(file), "size_bytes": size}
+    parts = urlsplit(url)
+    location = f"{parts.hostname or ''}{':' + str(parts.port) if parts.port else ''}{parts.path}"
+    return {"backend": parts.scheme.split("+")[0], "location": location, "size_bytes": None}
+
+
+def status(db: Session, refresh: bool = False) -> dict[str, Any]:
+    settings = get_settings()
+    home = settings.home.resolve()
+    database = _database(settings)
+    if database["backend"] != "sqlite":
+        try:
+            database["size_bytes"] = db.scalar(text("SELECT pg_database_size(current_database())"))
+        except Exception:
+            db.rollback()
+    try:
+        usage = shutil.disk_usage(home)
+        disk = {"total_bytes": usage.total, "free_bytes": usage.free}
+    except OSError:
+        disk = {"total_bytes": None, "free_bytes": None}
+    sizes, measured_at, measuring = storage.get(refresh)
+    counts = {status: count for status, count in db.execute(
+        select(WorkflowRun.status, func.count()).where(WorkflowRun.status.in_(
+            (RunStatus.running, RunStatus.queued, RunStatus.waiting_approval)))
+        .group_by(WorkflowRun.status))}
+    lease = db.get(SupervisorLease, "services")
+    beat = _aware(lease.heartbeat_at) if lease else None
+    from runrail.services.supervisor import LEASE_STALE_AFTER
+    supervised = beat is not None and now() - beat < LEASE_STALE_AFTER + timedelta(seconds=5)
+    service_states = {state: count for state, count in db.execute(
+        select(Service.state, func.count()).group_by(Service.state))}
+    asked, checked_at, _ = (latest_release.get(refresh) if runtime_settings.current("update_check")
+                            else (None, None, False))
+    latest = (asked or {}).get("version")
+    at = now()
+    return {
+        "version": __version__,
+        "update": {"latest": latest, "available": newer(latest, __version__),
+                   "checked_at": checked_at, "error": (asked or {}).get("error"),
+                   "enabled": bool(runtime_settings.current("update_check"))},
+        "started_at": STARTED_AT,
+        "python": platform.python_version(),
+        "platform": f"{platform.system()} {platform.release()} ({platform.machine()})",
+        "home": str(home),
+        "database": database,
+        "disk": disk,
+        "storage": {**(sizes or {"logs_bytes": None, "artifacts_bytes": None,
+                                 "environments_bytes": None, "backups_bytes": None}),
+                    "measured_at": measured_at, "measuring": measuring},
+        "worker": {"concurrency": runtime_settings.current("worker_concurrency"),
+                   "task_parallelism": runtime_settings.current("task_parallelism"),
+                   "running": counts.get(RunStatus.running, 0),
+                   "queued": counts.get(RunStatus.queued, 0),
+                   "waiting_approval": counts.get(RunStatus.waiting_approval, 0),
+                   "paused": bool(runtime_settings.current("paused"))},
+        "services": {"supervised": supervised, "total": sum(service_states.values()),
+                     "running": service_states.get(ServiceState.running, 0)},
+        "scheduler": {"next_fire_at": _next_fire(db, at)},
+        "retention": {"days": runtime_settings.current("retention_days")},
+        "now": at,
+    }
+
+
+def _next_fire(db: Session, at: datetime) -> datetime | None:
+    from runrail.scheduler.service import _expected_fire
+    soonest = None
+    for workflow in db.scalars(select(Workflow).where(Workflow.enabled.is_(True),
+                                                      Workflow.schedule_cron.is_not(None))):
+        fire = _expected_fire(workflow, at)
+        if fire is not None and (soonest is None or fire < soonest):
+            soonest = fire
+    return soonest
+
+
+# ── retention preview ──────────────────────────────────────────────────────
+def retention_preview(db: Session, days: int) -> dict[str, Any]:
+    """What `days` would delete right now, without deleting it."""
+    from runrail.maintenance import cleanup_runs
+    stats = cleanup_runs(db, days, dry_run=True)
+    cutoff = now() - timedelta(days=days)
+    total = db.scalar(select(func.count()).select_from(WorkflowRun)) or 0
+    return {"days": days, "cutoff": cutoff, "runs": stats.runs_deleted,
+            "files": stats.files_deleted, "bytes": stats.bytes_freed,
+            "runs_total": total, "runs_kept": total - stats.runs_deleted}
+
+
+# ── backups ────────────────────────────────────────────────────────────────
+def _sqlite_path(settings: Settings) -> Path | None:
+    url = settings.database_url
+    return Path(url.split("sqlite:///", 1)[1]) if url.startswith("sqlite:///") else None
+
+
+def _snapshot_sqlite(source: Path, dest: Path) -> None:
+    """A consistent copy through SQLite's own backup API: a plain file copy of
+    a database in WAL mode misses what is still in the WAL."""
+    with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as src, sqlite3.connect(dest) as out:
+        src.backup(out)
+
+
+def _revision(db: Session) -> str | None:
+    try:
+        return db.scalar(text("SELECT version_num FROM alembic_version"))
+    except Exception:
+        db.rollback()
+        return None
+
+
+def write_backup(db: Session, out: Path) -> dict[str, Any]:
+    """A zip holding the configuration as YAML, the SQLite database (a
+    consistent snapshot; PostgreSQL is dumped with pg_dump, not here) and a
+    manifest. Logs and artifacts are not in it: they are the bulk of a home
+    and sit in plain folders anyone can copy."""
+    from runrail.workflow_io import export_workflows
+    settings = get_settings()
+    exported = export_workflows(db)
+    manifest = {
+        "created_at": now().isoformat(),
+        "runrail_version": __version__,
+        "revision": _revision(db),
+        "database": _database(settings)["backend"],
+        "home": str(settings.home.resolve()),
+        "counts": {"workflows": len(exported.get("workflows", [])),
+                   "services": len(exported.get("services", [])),
+                   "projects": len(exported.get("projects", [])),
+                   "environments": len(exported.get("environments", [])),
+                   "runs": db.scalar(select(func.count()).select_from(WorkflowRun)) or 0},
+    }
+    sqlite_file = _sqlite_path(settings)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+        archive.writestr("workflows.yaml", yaml.safe_dump(exported, sort_keys=False,
+                                                          allow_unicode=True))
+        if sqlite_file is not None and sqlite_file.exists():
+            with tempfile.TemporaryDirectory() as scratch:
+                snapshot = Path(scratch) / "runrail.db"
+                _snapshot_sqlite(sqlite_file, snapshot)
+                archive.write(snapshot, "runrail.db")
+            manifest["includes_database"] = True
+        else:
+            manifest["includes_database"] = False
+    return manifest
+
+
+class BackupError(ValueError):
+    pass
+
+
+def inspect_backup(data: bytes) -> dict[str, Any]:
+    """The manifest and what the YAML holds, or BackupError saying what is wrong."""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+        names = set(archive.namelist())
+        if "manifest.json" not in names or "workflows.yaml" not in names:
+            raise BackupError("Not a RunRail backup: manifest.json or workflows.yaml is missing")
+        manifest = json.loads(archive.read("manifest.json"))
+        config = yaml.safe_load(archive.read("workflows.yaml")) or {}
+    except zipfile.BadZipFile:
+        raise BackupError("Not a zip file") from None
+    except (json.JSONDecodeError, yaml.YAMLError) as exc:
+        raise BackupError(f"The backup is damaged: {exc}") from None
+    if not isinstance(config, dict):
+        raise BackupError("workflows.yaml does not hold a configuration")
+    return {"manifest": manifest, "includes_database": "runrail.db" in names,
+            "configuration": {section: len(config.get(section) or [])
+                              for section in ("projects", "environments", "workflows",
+                                              "services")}}
+
+
+def restore_configuration(db: Session, data: bytes) -> dict[str, list[str]]:
+    """Apply the backup's YAML — workflows, services, projects, environments —
+    the way the Import page does: upsert by key, nothing deleted. History,
+    which lives in the database file, is restored offline (`runrail restore`)."""
+    from runrail.workflow_io import apply_workflows
+    inspect_backup(data)
+    config = yaml.safe_load(zipfile.ZipFile(io.BytesIO(data)).read("workflows.yaml")) or {}
+    return apply_workflows(db, config)
+
+
+def restore_point(settings: Settings, label: str) -> Path | None:
+    """A snapshot of the SQLite database under <home>/backups, pruned to the
+    newest few. Taken before every schema upgrade, so a bad migration — or a
+    downgrade back to the previous RunRail — has something to return to."""
+    source = _sqlite_path(settings)
+    if source is None or not source.exists():
+        return None
+    folder = backups_dir(settings)
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = folder / f"runrail-{label}-{stamp}.db"
+    try:
+        _snapshot_sqlite(source, dest)
+    except sqlite3.Error as exc:
+        log.warning("could not take a restore point: %s", exc)
+        return None
+    points = sorted(folder.glob("runrail-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in points[RESTORE_POINTS_KEPT:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    storage.reset()
+    return dest
+
+
+def list_restore_points(settings: Settings | None = None) -> list[dict[str, Any]]:
+    folder = backups_dir(settings)
+    if not folder.is_dir():
+        return []
+    points = sorted(folder.glob("runrail-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [{"name": p.name, "size_bytes": p.stat().st_size,
+             "created_at": datetime.fromtimestamp(p.stat().st_mtime).astimezone()}
+            for p in points]
+
+
+def server_alive(settings: Settings, within: timedelta = timedelta(seconds=30)) -> bool:
+    """Whether a `runrail serve` (or worker) wrote the services lease lately —
+    the only heartbeat a stopped-server operation can check without the API."""
+    source = _sqlite_path(settings)
+    if source is None or not source.exists():
+        return False
+    try:
+        with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as conn:
+            row = conn.execute("SELECT heartbeat_at FROM supervisor_leases WHERE name='services'"
+                               ).fetchone()
+    except sqlite3.Error:
+        return False
+    if not row or not row[0]:
+        return False
+    try:
+        beat = datetime.fromisoformat(str(row[0]))
+    except ValueError:
+        return False
+    if beat.tzinfo is None:
+        from datetime import UTC
+        beat = beat.replace(tzinfo=UTC)
+    return now() - beat < within
+
+
+def restore_database(archive_path: Path, settings: Settings) -> list[str]:
+    """Offline: replace the SQLite database with the one in a backup. Refuses
+    while a server is alive, checks the copy's integrity and that its schema
+    revision is one this RunRail knows, keeps the current database as a
+    restore point, and leaves the normal startup migration to bring the
+    restored one up to date."""
+    from runrail.importer import known_revisions
+    target = _sqlite_path(settings)
+    if target is None:
+        raise BackupError("Database restore is for SQLite; for PostgreSQL use pg_restore")
+    if server_alive(settings):
+        raise BackupError("RunRail is running against this home; stop it first")
+    with zipfile.ZipFile(archive_path) as archive:
+        if "runrail.db" not in archive.namelist():
+            raise BackupError("This backup holds configuration only, no database "
+                              "(it was made against PostgreSQL)")
+        staging = target.with_name(f".restore-{int(time.time())}.db")
+        with archive.open("runrail.db") as src, staging.open("wb") as dst:
+            shutil.copyfileobj(src, dst)
+    lines = []
+    try:
+        with sqlite3.connect(staging) as conn:
+            verdict = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            if verdict != "ok":
+                raise BackupError(f"The backup's database fails its integrity check: {verdict}")
+            row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+        revision = row[0] if row else None
+        if revision not in known_revisions():
+            raise BackupError(f"The backup was made by a newer RunRail (schema {revision}); "
+                              "upgrade first")
+        kept = restore_point(settings, "before-restore") if target.exists() else None
+        if kept:
+            lines.append(f"Kept the current database as {kept}")
+        for sidecar in (target.with_name(target.name + "-wal"), target.with_name(target.name + "-shm")):
+            sidecar.unlink(missing_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging.replace(target)
+        lines.append(f"Restored {target} (schema {revision}); migrations run on the next start")
+    finally:
+        staging.unlink(missing_ok=True)
+    return lines
+

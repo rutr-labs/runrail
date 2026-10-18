@@ -34,7 +34,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from runrail import notify
+from runrail import notify, runtime_settings
 from runrail.api.ws import manager as _ws_manager
 from runrail.config import get_settings
 from runrail.db import SessionLocal
@@ -284,6 +284,9 @@ class ServiceSupervisor:
             self._set_state(db, service, ServiceState.backoff, service.state_detail,
                             next_attempt_at=retry_at)
             return
+        if runtime_settings.current("paused"):
+            self._set_state(db, service, ServiceState.stopped, "RunRail is paused (Settings)")
+            return
         waiting_for = self._environment_wait(db, service)
         if waiting_for:
             # Not a start attempt: a build in progress is not the service's
@@ -509,9 +512,9 @@ class ServiceSupervisor:
         return None  # stopped by hand
 
     def _notify(self, service: Service, text: str) -> None:
-        url = service.notify_webhook_url or get_settings().notify_webhook_url
+        url = service.notify_webhook_url or runtime_settings.current("notify_webhook_url")
         if url:
-            threading.Thread(target=notify._post, args=(url, text), daemon=True).start()
+            notify._post(url, text, event="service_crash_loop", service=service.name)
 
     def _lease(self, db: Session, at: datetime) -> bool:
         if self.holding and self._renewed and at - self._renewed < LEASE_RENEW_EVERY:

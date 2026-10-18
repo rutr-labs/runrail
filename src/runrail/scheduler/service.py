@@ -6,9 +6,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from runrail import notify
+from runrail import notify, runtime_settings
 from runrail.api.ws import manager as _ws_manager
-from runrail.config import get_settings
 from runrail.crontab import cron_trigger
 from runrail.db import SessionLocal
 from runrail.maintenance import cleanup_runs
@@ -295,7 +294,7 @@ class SchedulerService:
 
     @staticmethod
     def _cleanup() -> None:
-        retention_days = get_settings().retention_days
+        retention_days = runtime_settings.current("retention_days")
         if not retention_days:
             return
         with SessionLocal() as db:
@@ -317,10 +316,10 @@ class SchedulerService:
         self.scheduler.add_job(self._watchdog, "interval", seconds=60, id="watchdog",
                                replace_existing=True, coalesce=True, max_instances=1,
                                misfire_grace_time=55)
-        if get_settings().retention_days:
-            self.scheduler.add_job(self._cleanup, "interval", hours=6, id="cleanup",
-                                   replace_existing=True, coalesce=True, max_instances=1,
-                                   misfire_grace_time=3600)
+        # Always scheduled: retention can be switched on from Settings at any time.
+        self.scheduler.add_job(self._cleanup, "interval", hours=6, id="cleanup",
+                               replace_existing=True, coalesce=True, max_instances=1,
+                               misfire_grace_time=3600)
 
     def shutdown(self) -> None:
         if self.scheduler.running: self.scheduler.shutdown(wait=False)
