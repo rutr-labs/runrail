@@ -20,6 +20,8 @@ class CleanupStats:
     files_deleted: int = 0
     #: Measured on a dry run only, for the preview on the Settings page.
     bytes_freed: int = 0
+    #: A dry run that hit its time budget: the figures are a lower bound.
+    partial: bool = False
     errors: list[str] = field(default_factory=list)
 
 
@@ -28,15 +30,17 @@ class CleanupStats:
 _BATCH = 200
 
 
-def _tree_size(path: Path) -> int:
-    total = 0
+def _tree_stats(path: Path) -> tuple[int, int]:
+    """(files, bytes) under a directory, in one walk."""
+    files = total = 0
     try:
         for file in path.rglob("*"):
             if file.is_file():
+                files += 1
                 total += file.stat().st_size
     except OSError:
         pass
-    return total
+    return files, total
 
 
 def _count_files(path: Path) -> int:
@@ -113,7 +117,8 @@ def _sweep_orphans(db: Session, logs_root: Path, artifacts_root: Path,
                     _remove_dir(path, stats)
 
 
-def cleanup_runs(db: Session, older_than_days: int, dry_run: bool = False) -> CleanupStats:
+def cleanup_runs(db: Session, older_than_days: int, dry_run: bool = False,
+                 budget_seconds: float | None = None) -> CleanupStats:
     """Delete finished runs older than the cutoff along with their files on disk.
 
     Only terminal runs (success/failed/cancelled) that FINISHED before the
@@ -130,7 +135,13 @@ def cleanup_runs(db: Session, older_than_days: int, dry_run: bool = False) -> Cl
     was held for the whole pass, locking the worker and the API out. A file
     that will not delete is reported and its directory swept on a later pass.
     The database cascades a run's task runs, artifacts and notes.
+
+    A dry run with `budget_seconds` stops counting when the budget is spent
+    and says so (`partial`): the Settings preview answers in a bounded time
+    on a home with a hundred thousand runs.
     """
+    import time
+    deadline = time.monotonic() + budget_seconds if budget_seconds else None
     settings = get_settings()
     # Aware UTC cutoff: SQLite drops the offset on bind (values are stored as
     # naive UTC), and PostgreSQL compares it correctly against timestamptz.
@@ -154,14 +165,19 @@ def cleanup_runs(db: Session, older_than_days: int, dry_run: bool = False) -> Cl
         if dry_run:
             stats.runs_deleted += len(run_ids)
             for directories, loose in layout.values():
-                stats.files_deleted += (sum(map(_count_files, directories))
-                                        + sum(1 for path in loose if path.is_file()))
-                stats.bytes_freed += sum(map(_tree_size, directories))
+                for directory in directories:
+                    files, size = _tree_stats(directory)
+                    stats.files_deleted += files
+                    stats.bytes_freed += size
                 for path in loose:
                     try:
                         stats.bytes_freed += path.stat().st_size
+                        stats.files_deleted += 1
                     except OSError:
                         pass
+            if deadline is not None and time.monotonic() > deadline:
+                stats.partial = True
+                break
             continue
         # Re-checked in the DELETE: a run resumed since it was selected is live again.
         db.execute(delete(WorkflowRun).where(WorkflowRun.id.in_(run_ids), *expired))

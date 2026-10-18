@@ -126,7 +126,7 @@ def restore(archive: str = typer.Argument(..., help="A zip from 'runrail backup'
     if not path.is_file():
         raise typer.BadParameter(f"{path} is not a file")
     try:
-        found = system.inspect_backup(path.read_bytes())
+        found = system.inspect_backup(path)
     except system.BackupError as exc:
         raise typer.BadParameter(str(exc)) from None
     manifest = found["manifest"]

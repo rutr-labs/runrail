@@ -21,7 +21,8 @@ def _default_home() -> Path:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="RUNRAIL_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="RUNRAIL_", env_file=".env", extra="ignore",
+                                      env_ignore_empty=True)
 
     home: Path = Field(default_factory=_default_home)
     db_url: str | None = None

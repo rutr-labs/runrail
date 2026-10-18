@@ -819,7 +819,7 @@ class WorkerService:
         self._supervisor_thread = threading.Thread(target=self.supervisor.run,
                                                    name="runrail-services", daemon=True)
         self._supervisor_thread.start()
-        pool_size = self._fixed_concurrency or _POOL_CAP
+        pool_size = self._fixed_concurrency or max(_POOL_CAP, self.concurrency)
         with ThreadPoolExecutor(max_workers=pool_size,
                                 thread_name_prefix="runrail-worker") as pool:
             while self.running:

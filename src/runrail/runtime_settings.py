@@ -19,13 +19,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from runrail.config import get_settings
-from runrail.models import AppSetting, now
+from runrail.models import AppSetting, _aware, now
 
 #: Every kind of message RunRail can post to a webhook, in the order the
 #: Settings page lists them. Alert sources tag their posts with one of these.
@@ -49,6 +50,8 @@ class Definition:
     check: Callable[[Any], Any]
     title: str
     help: str
+    #: How an environment value is read when it differs from a saved one.
+    from_env: Callable[[Any], Any] | None = None
 
     @property
     def env_var(self) -> str | None:
@@ -58,16 +61,23 @@ class Definition:
 def _optional_url(value: Any) -> str | None:
     if value in (None, ""):
         return None
-    if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+    if not isinstance(value, str):
         raise ValueError("must be an http(s) URL")
-    return value.strip().rstrip("/") if value.count("/") <= 3 else value.strip()
+    value = value.strip()
+    parts = urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("must be an http(s) URL with a host")
+    return value.rstrip("/")
 
 
 def _optional_days(value: Any) -> int | None:
+    """A positive number of days, or None for never. Zero is refused: the
+    cleanup reads a falsy value as "off", so 0 would preview a wipe and do
+    nothing."""
     if value in (None, ""):
         return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError("must be a whole number of days, or empty for never")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("must be a whole number of days (at least 1), or empty for never")
     return value
 
 
@@ -106,9 +116,11 @@ def _quiet_hours(value: Any) -> dict | None:
     if start == end:
         raise ValueError("quiet hours must not start and end at the same time")
     zone = value.get("timezone") or "UTC"
+    if not isinstance(zone, str):
+        raise ValueError("timezone must be a name like Europe/London")
     try:
         ZoneInfo(zone)
-    except (ZoneInfoNotFoundError, ValueError):
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
         raise ValueError(f"unknown timezone {zone!r}") from None
     return {"start": start.strftime("%H:%M"), "end": end.strftime("%H:%M"), "timezone": zone}
 
@@ -128,7 +140,8 @@ DEFINITIONS: tuple[Definition, ...] = (
                "overnight is in Activity in the morning."),
     Definition("retention_days", "retention_days", None, _optional_days, "Keep runs for",
                "Finished runs older than this are deleted with their logs and artifacts, "
-               "every six hours. The newest successful run of each workflow is always kept."),
+               "every six hours. The newest successful run of each workflow is always kept.",
+               from_env=lambda days: days or None),  # RUNRAIL_RETENTION_DAYS=0 has always meant off
     Definition("worker_concurrency", "worker_concurrency", 4, _count(1, 64), "Concurrent runs",
                "How many runs execute at once across all workflows. Applies from the next "
                "claim; running work is never interrupted."),
@@ -137,7 +150,8 @@ DEFINITIONS: tuple[Definition, ...] = (
                "after the change."),
     Definition("paused", None, False, _flag, "Paused",
                "While paused nothing new starts: queued runs wait, services are not "
-               "started. What is executing finishes."),
+               "started, and alerts about missed schedules and deadlines are held. "
+               "What is executing finishes."),
     Definition("update_check", None, True, _flag, "Check for updates",
                "Ask PyPI, a few times a day, whether a newer RunRail exists, and say so on "
                "this page. Nothing else is sent."),
@@ -153,12 +167,15 @@ def definition(key: str) -> Definition:
 
 
 def pinned(definition: Definition) -> tuple[bool, Any]:
-    """Whether the environment sets this one, and to what."""
+    """Whether the environment (or a .env) sets this one, and to what — run
+    through the same check as a saved value, so RUNRAIL_RETENTION_DAYS=0 means
+    "never" here as it does in the cleanup."""
     if definition.env is None:
         return False, None
     settings = get_settings()
     if definition.env in settings.model_fields_set:
-        return True, getattr(settings, definition.env)
+        value = getattr(settings, definition.env)
+        return True, definition.from_env(value) if definition.from_env else value
     return False, None
 
 
@@ -180,7 +197,7 @@ def describe(db: Session) -> list[dict]:
         out.append({"key": item.key, "title": item.title, "help": item.help, "value": value,
                     "default": item.default, "source": source, "locked": locked,
                     "env_var": item.env_var,
-                    "updated_at": row.updated_at if row is not None else None})
+                    "updated_at": _aware(row.updated_at) if row is not None else None})
     return out
 
 
@@ -200,7 +217,7 @@ def save(db: Session, values: dict[str, Any]) -> list[dict]:
             raise SettingLocked(f"{item.title} is set by {item.env_var} in the environment")
         try:
             checked[key] = item.check(value)
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             raise ValueError(f"{item.title}: {exc}") from None
     stamp = now()
     for key, value in checked.items():
@@ -221,12 +238,21 @@ _cached_at = 0.0
 
 
 def current(key: str) -> Any:
-    """The effective value, from a cache at most a couple of seconds old."""
+    """The effective value, from a cache at most a couple of seconds old. The
+    database is read outside the lock — the supervisor's tick and every alert
+    pass through here, and must not queue behind a slow query — and a read
+    that fails keeps the last good values rather than falling back to defaults
+    (which would un-pause the worker for two seconds)."""
     global _cached, _cached_at
     with _lock:
-        if time.monotonic() - _cached_at > _CACHE_SECONDS:
-            _cached, _cached_at = _load(), time.monotonic()
-        return _cached[key]
+        stale = time.monotonic() - _cached_at > _CACHE_SECONDS
+    if stale:
+        fresh = _load(previous=dict(_cached))
+        with _lock:
+            _cached, _cached_at = fresh, time.monotonic()
+    with _lock:
+        return _cached[key] if key in _cached else definition(key).default
+
 
 
 def invalidate() -> None:
@@ -235,7 +261,7 @@ def invalidate() -> None:
         _cached_at = 0.0
 
 
-def _load() -> dict[str, Any]:
+def _load(previous: dict[str, Any]) -> dict[str, Any]:
     from runrail.db import SessionLocal
     values = {item.key: item.default for item in DEFINITIONS}
     try:
@@ -244,7 +270,8 @@ def _load() -> dict[str, Any]:
                 if row.key in _BY_KEY:
                     values[row.key] = row.value
     except Exception:  # the table is not there yet (first migration), or the DB is away
-        pass
+        if previous:
+            values = previous
     for item in DEFINITIONS:
         locked, env_value = pinned(item)
         if locked:

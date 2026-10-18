@@ -285,7 +285,10 @@ class ServiceSupervisor:
                             next_attempt_at=retry_at)
             return
         if runtime_settings.current("paused"):
-            self._set_state(db, service, ServiceState.stopped, "RunRail is paused (Settings)")
+            # A service already waiting for its lock keeps that state (and so
+            # its place in the queue, which is ordered by state_since).
+            kept = service.state if service.state == ServiceState.waiting_lock else ServiceState.stopped
+            self._set_state(db, service, kept, "RunRail is paused (Settings)")
             return
         waiting_for = self._environment_wait(db, service)
         if waiting_for:

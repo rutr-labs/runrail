@@ -10,6 +10,7 @@ and the page shows the last answer with its age; a status request never
 blocks on the disk or the network.
 """
 
+import contextlib
 import io
 import json
 import logging
@@ -52,6 +53,13 @@ UPDATE_MAX_AGE = timedelta(hours=6)
 PYPI_URL = "https://pypi.org/pypi/runrail/json"
 #: Restore points kept under <home>/backups before schema upgrades.
 RESTORE_POINTS_KEPT = 3
+#: A backup's text members are read into memory; a deflate stream inflates a
+#: thousandfold, so the declared size is checked before anything is read.
+MAX_MANIFEST_BYTES = 1 << 20
+MAX_YAML_BYTES = 64 << 20
+#: How long the retention preview may spend counting before it answers with a
+#: lower bound.
+PREVIEW_BUDGET_SECONDS = 5.0
 
 
 class _Background:
@@ -235,13 +243,14 @@ def _next_fire(db: Session, at: datetime) -> datetime | None:
 
 # ── retention preview ──────────────────────────────────────────────────────
 def retention_preview(db: Session, days: int) -> dict[str, Any]:
-    """What `days` would delete right now, without deleting it."""
+    """What `days` would delete right now, without deleting it. `partial`
+    means the count stopped at its time budget and the figures are at least."""
     from runrail.maintenance import cleanup_runs
-    stats = cleanup_runs(db, days, dry_run=True)
+    stats = cleanup_runs(db, days, dry_run=True, budget_seconds=PREVIEW_BUDGET_SECONDS)
     cutoff = now() - timedelta(days=days)
     total = db.scalar(select(func.count()).select_from(WorkflowRun)) or 0
     return {"days": days, "cutoff": cutoff, "runs": stats.runs_deleted,
-            "files": stats.files_deleted, "bytes": stats.bytes_freed,
+            "files": stats.files_deleted, "bytes": stats.bytes_freed, "partial": stats.partial,
             "runs_total": total, "runs_kept": total - stats.runs_deleted}
 
 
@@ -254,7 +263,10 @@ def _sqlite_path(settings: Settings) -> Path | None:
 def _snapshot_sqlite(source: Path, dest: Path) -> None:
     """A consistent copy through SQLite's own backup API: a plain file copy of
     a database in WAL mode misses what is still in the WAL."""
-    with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as src, sqlite3.connect(dest) as out:
+    # closing(): sqlite3's context manager commits but does not close, and an
+    # open handle on the file is what makes a later rename fail on Windows.
+    with contextlib.closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as src, \
+            contextlib.closing(sqlite3.connect(dest)) as out:
         src.backup(out)
 
 
@@ -306,34 +318,47 @@ class BackupError(ValueError):
     pass
 
 
-def inspect_backup(data: bytes) -> dict[str, Any]:
-    """The manifest and what the YAML holds, or BackupError saying what is wrong."""
+def _member(archive: zipfile.ZipFile, name: str, limit: int) -> bytes:
+    info = archive.getinfo(name)
+    if info.file_size > limit:
+        raise BackupError(f"{name} in this backup is {info.file_size:,} bytes; "
+                          f"the most RunRail will read is {limit:,}")
+    return archive.read(name)
+
+
+def _open_backup(source: bytes | Path) -> tuple[zipfile.ZipFile, dict, dict]:
+    """The archive, its manifest and its configuration, or BackupError."""
     try:
-        archive = zipfile.ZipFile(io.BytesIO(data))
+        archive = zipfile.ZipFile(io.BytesIO(source) if isinstance(source, bytes) else source)
         names = set(archive.namelist())
         if "manifest.json" not in names or "workflows.yaml" not in names:
             raise BackupError("Not a RunRail backup: manifest.json or workflows.yaml is missing")
-        manifest = json.loads(archive.read("manifest.json"))
-        config = yaml.safe_load(archive.read("workflows.yaml")) or {}
-    except zipfile.BadZipFile:
+        manifest = json.loads(_member(archive, "manifest.json", MAX_MANIFEST_BYTES))
+        config = yaml.safe_load(_member(archive, "workflows.yaml", MAX_YAML_BYTES)) or {}
+    except (zipfile.BadZipFile, OSError):
         raise BackupError("Not a zip file") from None
     except (json.JSONDecodeError, yaml.YAMLError) as exc:
         raise BackupError(f"The backup is damaged: {exc}") from None
-    if not isinstance(config, dict):
-        raise BackupError("workflows.yaml does not hold a configuration")
-    return {"manifest": manifest, "includes_database": "runrail.db" in names,
+    if not isinstance(manifest, dict) or not isinstance(config, dict):
+        raise BackupError("The backup's manifest or workflows.yaml does not hold what it should")
+    return archive, manifest, config
+
+
+def inspect_backup(source: bytes | Path) -> dict[str, Any]:
+    """The manifest and what the YAML holds, or BackupError saying what is wrong."""
+    archive, manifest, config = _open_backup(source)
+    return {"manifest": manifest, "includes_database": "runrail.db" in archive.namelist(),
             "configuration": {section: len(config.get(section) or [])
                               for section in ("projects", "environments", "workflows",
                                               "services")}}
 
 
-def restore_configuration(db: Session, data: bytes) -> dict[str, list[str]]:
+def restore_configuration(db: Session, source: bytes | Path) -> dict[str, list[str]]:
     """Apply the backup's YAML — workflows, services, projects, environments —
     the way the Import page does: upsert by key, nothing deleted. History,
     which lives in the database file, is restored offline (`runrail restore`)."""
     from runrail.workflow_io import apply_workflows
-    inspect_backup(data)
-    config = yaml.safe_load(zipfile.ZipFile(io.BytesIO(data)).read("workflows.yaml")) or {}
+    _, _, config = _open_backup(source)
     return apply_workflows(db, config)
 
 
@@ -352,6 +377,7 @@ def restore_point(settings: Settings, label: str) -> Path | None:
         _snapshot_sqlite(source, dest)
     except sqlite3.Error as exc:
         log.warning("could not take a restore point: %s", exc)
+        dest.unlink(missing_ok=True)  # a half-written file is not a restore point
         return None
     points = sorted(folder.glob("runrail-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in points[RESTORE_POINTS_KEPT:]:
@@ -374,13 +400,15 @@ def list_restore_points(settings: Settings | None = None) -> list[dict[str, Any]
 
 
 def server_alive(settings: Settings, within: timedelta = timedelta(seconds=30)) -> bool:
-    """Whether a `runrail serve` (or worker) wrote the services lease lately —
-    the only heartbeat a stopped-server operation can check without the API."""
+    """Whether a `runrail serve` (or `runrail worker`) wrote the services lease
+    lately — the one heartbeat a stopped-server operation can check without
+    the API. Honest limitation: `runrail api` or `runrail scheduler` on their
+    own write no heartbeat, so the command also says "stop RunRail first"."""
     source = _sqlite_path(settings)
     if source is None or not source.exists():
         return False
     try:
-        with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as conn:
+        with contextlib.closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as conn:
             row = conn.execute("SELECT heartbeat_at FROM supervisor_leases WHERE name='services'"
                                ).fetchone()
     except sqlite3.Error:
@@ -409,6 +437,7 @@ def restore_database(archive_path: Path, settings: Settings) -> list[str]:
         raise BackupError("Database restore is for SQLite; for PostgreSQL use pg_restore")
     if server_alive(settings):
         raise BackupError("RunRail is running against this home; stop it first")
+    target.parent.mkdir(parents=True, exist_ok=True)  # a fresh home on a new machine
     with zipfile.ZipFile(archive_path) as archive:
         if "runrail.db" not in archive.namelist():
             raise BackupError("This backup holds configuration only, no database "
@@ -418,7 +447,9 @@ def restore_database(archive_path: Path, settings: Settings) -> list[str]:
             shutil.copyfileobj(src, dst)
     lines = []
     try:
-        with sqlite3.connect(staging) as conn:
+        # The connection is closed before the rename: Windows will not rename
+        # a file something still has open.
+        with contextlib.closing(sqlite3.connect(staging)) as conn:
             verdict = conn.execute("PRAGMA integrity_check").fetchone()[0]
             if verdict != "ok":
                 raise BackupError(f"The backup's database fails its integrity check: {verdict}")
@@ -430,9 +461,11 @@ def restore_database(archive_path: Path, settings: Settings) -> list[str]:
         kept = restore_point(settings, "before-restore") if target.exists() else None
         if kept:
             lines.append(f"Kept the current database as {kept}")
+        # The WAL and SHM belong to the old database; the restore point above
+        # already holds everything they contained, so losing them between here
+        # and the rename costs nothing.
         for sidecar in (target.with_name(target.name + "-wal"), target.with_name(target.name + "-shm")):
             sidecar.unlink(missing_ok=True)
-        target.parent.mkdir(parents=True, exist_ok=True)
         staging.replace(target)
         lines.append(f"Restored {target} (schema {revision}); migrations run on the next start")
     finally:

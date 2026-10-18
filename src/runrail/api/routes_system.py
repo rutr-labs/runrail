@@ -109,11 +109,22 @@ def restore_points():
 
 
 async def _upload(request: Request) -> bytes:
+    """The zip from the request body: declared as one, and read with a running
+    cap rather than trusting Content-Length (a chunked upload has none)."""
+    if not request.headers.get("content-type", "").startswith("application/zip"):
+        raise HTTPException(415, "Send the backup as application/zip")
     length = request.headers.get("content-length")
     if length and int(length) > MAX_RESTORE_BYTES:
         raise HTTPException(413, "That backup is too large to restore through the browser; "
                                  "use `runrail restore` on the machine")
-    data = await request.body()
+    parts, total = [], 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_RESTORE_BYTES:
+            raise HTTPException(413, "That backup is too large to restore through the browser; "
+                                     "use `runrail restore` on the machine")
+        parts.append(chunk)
+    data = b"".join(parts)
     if not data:
         raise HTTPException(400, "Send the backup zip as the request body")
     return data

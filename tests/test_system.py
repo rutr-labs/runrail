@@ -14,7 +14,7 @@ from conftest import TEST_DB_URL
 from test_interactions import make_shell_task, make_workflow
 
 from runrail import system
-from runrail.config import get_settings
+from runrail.config import Settings, get_settings
 from runrail.db import SessionLocal
 from runrail.models import RunStatus, TriggerType, WorkflowRun
 
@@ -81,15 +81,29 @@ def test_a_backup_round_trips_the_configuration(client):
         assert "runrail.db" in names
         with sqlite3.connect(":memory:") as probe:
             probe.deserialize(archive.read("runrail.db")) if hasattr(probe, "deserialize") else None
-    preview = client.post("/api/system/restore/preview", content=data).json()
+    assert client.post("/api/system/restore/preview", content=data).status_code == 415
+    zipped = {"Content-Type": "application/zip"}
+    preview = client.post("/api/system/restore/preview", content=data, headers=zipped).json()
     assert preview["configuration"]["workflows"] == 1 and preview["configuration"]["services"] == 1
     assert preview["manifest"]["counts"]["workflows"] == 1
 
     assert client.delete(f"/api/workflows/{workflow['id']}").status_code == 204
-    restored = client.post("/api/system/restore", content=data).json()["summary"]
+    restored = client.post("/api/system/restore", content=data, headers=zipped).json()["summary"]
     assert "etl" in restored["created"]
     assert [w["name"] for w in client.get("/api/workflows").json()] == ["etl"]
-    assert client.post("/api/system/restore", content=b"not a zip").status_code == 422
+    assert client.post("/api/system/restore", content=b"not a zip", headers=zipped).status_code == 422
+
+
+def test_a_backup_whose_members_claim_to_be_huge_is_not_read(client):
+    """A deflate stream inflates a thousandfold; the declared size is checked
+    before a member is read into memory."""
+    bomb = io.BytesIO()
+    with zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("workflows.yaml", b"\0" * (system.MAX_YAML_BYTES + 1))
+    response = client.post("/api/system/restore/preview", content=bomb.getvalue(),
+                           headers={"Content-Type": "application/zip"})
+    assert response.status_code == 422 and "the most RunRail will read" in response.json()["detail"]
 
 
 @pytest.mark.skipif(bool(TEST_DB_URL), reason="restore points are for SQLite homes")
@@ -118,6 +132,12 @@ def test_a_restore_point_is_taken_before_a_schema_upgrade(tmp_path, monkeypatch,
     for n in range(5):  # the newest few are kept
         system.restore_point(get_settings(), f"p{n}")
     assert len(system.list_restore_points(get_settings())) == system.RESTORE_POINTS_KEPT
+    # A snapshot that fails part-way is not left behind as if it were one.
+    monkeypatch.setattr(system, "_snapshot_sqlite",
+                        lambda source, dest: (dest.write_bytes(b"half"), (_ for _ in ()).throw(
+                            sqlite3.OperationalError("disk full"))))
+    assert system.restore_point(get_settings(), "broken") is None
+    assert not any("broken" in p["name"] for p in system.list_restore_points(get_settings()))
     get_settings.cache_clear()
 
 
@@ -149,3 +169,9 @@ def test_restoring_a_database_offline_swaps_the_file_and_keeps_the_old_one(clien
                      "VALUES ('services', 'x', ?)", (datetime.now(UTC).replace(tzinfo=None),))
     with pytest.raises(system.BackupError, match="running"):
         system.restore_database(archive, settings)
+
+    # Onto a machine that has never run RunRail: the home does not exist yet.
+    fresh = Settings(home=tmp_path / "new-machine" / "home", db_url=None)
+    assert any("Restored" in line for line in system.restore_database(archive, fresh))
+    with sqlite3.connect(system._sqlite_path(fresh)) as conn:
+        assert conn.execute("SELECT name FROM workflows").fetchall() == [("precious",)]

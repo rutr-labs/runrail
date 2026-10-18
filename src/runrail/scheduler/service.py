@@ -239,6 +239,8 @@ def check_watchdogs(db: Session) -> None:
     a run that overran its deadline. Calling it from an external timer is the
     answer to a fully dead process.
     """
+    if runtime_settings.current("paused"):
+        return  # a pause for maintenance is not a missed schedule or a late run
     check_missed_runs(db)
     check_sla_breaches(db)
 

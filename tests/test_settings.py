@@ -51,6 +51,8 @@ def test_an_environment_variable_pins_a_setting(client, monkeypatch):
     ({"worker_concurrency": 0}, "Concurrent runs"),
     ({"worker_concurrency": "4"}, "Concurrent runs"),
     ({"retention_days": -1}, "Keep runs for"),
+    ({"retention_days": 0}, "Keep runs for"),
+    ({"quiet_hours": {"start": "22:00", "end": "07:00", "timezone": 5}}, "Quiet hours"),
     ({"public_url": "rail.example"}, "Public URL"),
     ({"notify_events": ["run_failed", "nope"]}, "Events to send"),
     ({"quiet_hours": {"start": "22:00", "end": "22:00", "timezone": "UTC"}}, "Quiet hours"),
@@ -67,12 +69,15 @@ def test_invalid_values_are_refused_and_nothing_is_written(client, body, wrong):
 
 def test_alert_kinds_can_be_switched_off_and_quiet_hours_mute_the_rest(client, monkeypatch):
     sent = []
-    monkeypatch.setattr(notify, "_send_and_record", lambda url, text, wid, f: sent.append(f["event"]))
+    # Delivery runs on a thread; for the assertion it runs inline.
+    monkeypatch.setattr(notify.threading, "Thread",
+                        lambda target, args, **kw: type("T", (), {"start": lambda self: target(*args)})())
+    monkeypatch.setattr(notify, "_send_and_record", lambda url, text, wid, f: sent.append(f.get("event")))
     client.put("/api/settings", json={"notify_events": ["run_failed", "run_recovered"]})
     notify._post("https://hooks.example/x", "x", event="run_failed")
     notify._post("https://hooks.example/x", "x", event="approval_requested")
     notify._post("https://hooks.example/x", "x")  # a test message has no kind
-    assert sent == ["run_failed", None] or sent == ["run_failed"], sent
+    assert sent == ["run_failed", None]
     sent.clear()
     client.put("/api/settings", json={"quiet_hours": {"start": "22:00", "end": "07:00",
                                                       "timezone": "Europe/London"}})
@@ -111,12 +116,17 @@ def test_retention_reads_the_saved_setting_without_a_restart(client):
     assert len(client.get("/api/runs?limit=10").json()) == 1
 
 
-def test_pausing_stops_new_claims_and_resuming_releases_them(client):
+def test_pausing_stops_new_claims_and_resuming_releases_them(client, monkeypatch):
     """The worker loop itself: with Settings paused, a queued run is not
     claimed; the moment it is resumed, it is."""
     import threading
 
+    from runrail.worker import service as worker_module
     from runrail.worker.service import WorkerService
+    polls = []
+    real_claim = worker_module.claim_runnable_run
+    monkeypatch.setattr(worker_module, "claim_runnable_run",
+                        lambda db: polls.append(1) or real_claim(db))
     workflow = make_workflow(client, "p")
     make_shell_task(client, workflow["id"], "t", emit("hi"))
     client.put("/api/settings", json={"paused": True, "worker_concurrency": 1})
@@ -127,7 +137,8 @@ def test_pausing_stops_new_claims_and_resuming_releases_them(client):
     thread.start()
     try:
         time.sleep(1.5)
-        assert client.get(f"/api/runs/{run_id}").json()["status"] == "queued", "claimed while paused"
+        assert thread.is_alive() and not polls, "the loop claimed while paused"
+        assert client.get(f"/api/runs/{run_id}").json()["status"] == "queued"
         assert client.get("/api/system/status").json()["worker"]["paused"] is True
         client.post("/api/system/pause", json={"paused": False})
         deadline = time.monotonic() + 15
@@ -139,3 +150,64 @@ def test_pausing_stops_new_claims_and_resuming_releases_them(client):
         thread.join(timeout=20)
     with SessionLocal() as db:
         assert claim_next_run(db) is None
+
+
+def test_the_watchdogs_hold_their_tongue_while_paused(client, monkeypatch):
+    """A pause for maintenance is not a missed schedule: the watchdog that
+    would page about every quiet workflow waits for the resume."""
+    from runrail.scheduler import service as scheduler
+    calls = []
+    monkeypatch.setattr(scheduler, "check_missed_runs", lambda db: calls.append("missed"))
+    monkeypatch.setattr(scheduler, "check_sla_breaches", lambda db: calls.append("sla"))
+    client.post("/api/system/pause", json={"paused": True})
+    with SessionLocal() as db:
+        scheduler.check_watchdogs(db)
+    assert calls == []
+    client.post("/api/system/pause", json={"paused": False})
+    with SessionLocal() as db:
+        scheduler.check_watchdogs(db)
+    assert calls == ["missed", "sla"]
+
+
+def test_an_environment_figure_above_the_settings_range_still_gets_its_pool(client, monkeypatch):
+    from runrail.worker.service import _POOL_CAP, WorkerService
+    monkeypatch.setenv("RUNRAIL_WORKER_CONCURRENCY", "100")
+    get_settings.cache_clear(); runtime_settings.invalidate()
+    worker = WorkerService()
+    assert worker.concurrency == 100 and _POOL_CAP < 100
+    # The pool is sized to the figure the loop will claim up to.
+    assert max(_POOL_CAP, worker.concurrency) == 100
+
+
+def test_a_zero_in_the_environment_means_never_like_the_cleanup_says(client, monkeypatch):
+    monkeypatch.setenv("RUNRAIL_RETENTION_DAYS", "0")
+    get_settings.cache_clear(); runtime_settings.invalidate()
+    shown = setting(client, "retention_days")
+    assert shown["locked"] and shown["value"] is None
+
+
+def test_an_empty_environment_value_is_not_a_pin(client, monkeypatch):
+    monkeypatch.setenv("RUNRAIL_PUBLIC_URL", "")
+    get_settings.cache_clear(); runtime_settings.invalidate()
+    assert setting(client, "public_url")["locked"] is False
+
+
+def test_state_changing_requests_from_another_site_are_refused(client):
+    """No accounts, so the browser is the perimeter: a page on another site
+    must not be able to POST to this RunRail. Same-origin, loopback-to-loopback
+    (the dev proxy) and header-less (curl) requests go through."""
+    body = {"paused": True}
+    assert client.post("/api/system/pause", json=body,
+                       headers={"Origin": "https://evil.example", "Host": "127.0.0.1:8080"}
+                       ).status_code == 403
+    assert client.post("/api/system/pause", json=body,
+                       headers={"Origin": "null", "Host": "127.0.0.1:8080"}).status_code == 403
+    assert client.post("/api/system/pause", json={"paused": False},
+                       headers={"Origin": "http://127.0.0.1:8080", "Host": "127.0.0.1:8080"}
+                       ).status_code == 200
+    assert client.post("/api/system/pause", json={"paused": False},
+                       headers={"Origin": "http://localhost:5173", "Host": "127.0.0.1:8080"}
+                       ).status_code == 200
+    assert client.get("/api/system/status", headers={"Origin": "https://evil.example"}
+                      ).status_code == 200, "reads are protected by the browser itself (no CORS)"
+    assert client.post("/api/system/pause", json={"paused": False}).status_code == 200

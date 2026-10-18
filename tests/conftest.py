@@ -70,8 +70,11 @@ def client(tmp_path: Path, monkeypatch, _migrated_sqlite):
     get_settings.cache_clear()
     # Settings saved from the page are cached per process; a test must not
     # inherit what the previous one saved.
-    from runrail import runtime_settings
+    from runrail import runtime_settings, system
     runtime_settings.invalidate()
+    # The update check asks PyPI on a thread; no test should reach the network.
+    monkeypatch.setattr(system, "_ask_pypi", lambda: {"version": None, "error": "offline (test)"})
+    system.latest_release.reset()
     import runrail.environments as environments
     monkeypatch.setattr(environments, "_RUNTIME_PACKAGES", ())
     import runrail.db as database
