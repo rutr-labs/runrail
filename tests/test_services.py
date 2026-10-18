@@ -662,3 +662,24 @@ def test_applying_a_changed_schedule_from_yaml_drops_the_override(client, superv
             {"days": ["mon"], "start": "01:00", "end": "02:00"}])
         apply_workflows(db, exported)
     assert service(client, svc["id"])["override_running"] is None
+
+
+def test_usage_counts_the_work_of_child_processes(supervisor):
+    """The workers a service forks are where its CPU goes; sampled through
+    fresh psutil objects each time, they read 0% however hard they ran."""
+    import subprocess
+    parent = subprocess.Popen([sys.executable, "-c", (
+        "import subprocess, sys, time; "
+        "subprocess.Popen([sys.executable, '-c', 'while True: pass']); time.sleep(600)")])
+    try:
+        time.sleep(1.0)  # the child has started
+        proc.usage(parent.pid)
+        time.sleep(1.0)
+        cpu, rss = proc.usage(parent.pid)
+        assert cpu > 50, cpu
+        assert rss > 0
+    finally:
+        for child in psutil.Process(parent.pid).children(recursive=True):
+            child.kill()
+        parent.kill(); parent.wait()
+        proc.forget_usage(parent.pid)

@@ -186,16 +186,26 @@ def same_process(pid: int | None, created_at: float | None) -> bool:
 def usage(pid: int) -> tuple[float, int] | None:
     """CPU percent since the previous call and resident memory in bytes, for
     the process and everything under it. psutil's cpu_percent measures between
-    calls on the same Process object, so one is kept per pid."""
+    calls on the SAME Process object, so the whole tree is kept between
+    samples: a worker process looked up afresh each time read 0% forever."""
     try:
-        root = _tracked.get(pid)
+        tree = _tracked.setdefault(pid, {})
+        root = tree.get(pid)
         if root is None or not root.is_running():
-            root = _tracked[pid] = psutil.Process(pid)
+            tree.clear()
+            root = tree[pid] = psutil.Process(pid)
             root.cpu_percent(None)  # prime; the first reading is always 0
-        members = [root, *root.children(recursive=True)]
+        members = {pid: root}
+        for child in root.children(recursive=True):
+            known = tree.get(child.pid)
+            if known is None or known != child:  # equal means same pid AND start time
+                child.cpu_percent(None)
+                known = child
+            members[child.pid] = known
+        _tracked[pid] = members
         cpu = 0.0
         rss = 0
-        for member in members:
+        for member in members.values():
             try:
                 cpu += member.cpu_percent(None)
                 rss += member.memory_info().rss
@@ -211,8 +221,9 @@ def forget_usage(pid: int) -> None:
     _tracked.pop(pid, None)
 
 
-#: Process objects kept between samples, so cpu_percent has an interval to measure.
-_tracked: dict[int, psutil.Process] = {}
+#: Process objects kept between samples, per service pid, so cpu_percent has an
+#: interval to measure — for the children as much as for the process itself.
+_tracked: dict[int, dict[int, psutil.Process]] = {}
 
 
 def descendants(pid: int) -> list[tuple[int, float]]:
