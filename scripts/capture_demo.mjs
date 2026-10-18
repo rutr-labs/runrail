@@ -70,6 +70,22 @@ if (mode === 'shots') {
   const services = await (await page.request.get(base + '/api/services')).json();
   const running = services.find(s => s.state === 'running' && s.start_mode === 'schedule') ?? services[0];
   await shot(`/services/${running.id}`, '07-service.png');
+  // A finished run with its timeline: the first quick run, once it has landed.
+  const runs = await (await page.request.get(base + '/api/runs?limit=50')).json();
+  const finished = runs.find(r => r.status === 'success' && quick.some(w => w.id === r.workflow_id))
+    ?? runs.find(r => r.status === 'success');
+  if (finished) await shot(`/runs/${finished.id}`, '02-run-detail.png');
+  // A run waiting at an approval gate. The seeded home parks some; starting a
+  // new one would only queue behind them (one run of a workflow at a time).
+  const gates = await (await page.request.get(base + '/api/approvals')).json();
+  if (gates.length) await shot(`/runs/${gates[0].run_id}`, '05-approval.png');
+  // Settings once the home folder has been measured (a background walk).
+  for (let i = 0; i < 60; i++) {
+    const status = await (await page.request.get(base + '/api/system/status')).json();
+    if (status.storage.measured_at) break;
+    await page.waitForTimeout(500);
+  }
+  await shot('/settings', '08-settings.png');
   // Fresh runs in flight for the board, started just before the shot.
   for (const w of quick.slice(0, 3)) await startRun(w.id);
   await page.waitForTimeout(4000);

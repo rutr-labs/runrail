@@ -2,6 +2,17 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **`ds` is the date on the workflow's own calendar.** It was the UTC date,
+  so a workflow scheduled for 18:00 in Los Angeles rendered the next day's
+  date for every run, while a backfill of the same day used the day itself —
+  two partitions for one day. Only workflows with a non-UTC timezone whose
+  runs fire when the local and UTC dates differ are affected; UTC workflows,
+  the default, see no change. The old value is available as `{{ ds_utc }}`.
+  `ts` and `ts_nodash` are unchanged (UTC).
+
 ## [0.8.0] — 2026-10-18
 
 Settings you can change without a restart, an operator panel to go with

@@ -26,12 +26,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import yaml
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from runrail import __version__, runtime_settings
 from runrail.config import Settings, get_settings
 from runrail.models import (
+    CleanupPass,
     RunStatus,
     Service,
     ServiceState,
@@ -53,6 +54,8 @@ RESTORE_POINTS_KEPT = 3
 #: thousandfold, so the declared size is checked before anything is read.
 MAX_MANIFEST_BYTES = 1 << 20
 MAX_YAML_BYTES = 64 << 20
+#: Cleanup passes kept on record.
+CLEANUP_PASSES_KEPT = 20
 #: How long the retention preview may spend counting before it answers with a
 #: lower bound.
 PREVIEW_BUDGET_SECONDS = 5.0
@@ -179,7 +182,7 @@ def status(db: Session, refresh: bool = False) -> dict[str, Any]:
                      "running": service_states.get(ServiceState.running, 0)},
         "scheduler": {"next_fire_at": _next_fire(db, at)},
         "retention": {"days": runtime_settings.current("retention_days"),
-                      "cleanup": cleanup.snapshot()},
+                      "cleanup": cleanup.snapshot(), "last": last_cleanup(db)},
         "now": at,
     }
 
@@ -253,8 +256,34 @@ class _Cleanup:
         finally:
             with self._lock:
                 self.state.update(running=False, finished_at=now())
+                record = dict(self.state)
             storage.reset()  # the home folder just got smaller
+            _record_pass(record)
         return stats
+
+
+def _record_pass(state: dict[str, Any]) -> None:
+    """Keep what the pass did, past a restart; prune to the newest few."""
+    from runrail.db import SessionLocal
+    try:
+        with SessionLocal() as db:
+            db.add(CleanupPass(days=state["days"], started_at=state["started_at"],
+                               finished_at=state["finished_at"], runs_deleted=state["runs_deleted"],
+                               files_deleted=state["files_deleted"], errors=state["errors"]))
+            db.commit()
+            keep = select(CleanupPass.id).order_by(CleanupPass.id.desc()).limit(CLEANUP_PASSES_KEPT)
+            db.execute(delete(CleanupPass).where(CleanupPass.id.not_in(keep)))
+            db.commit()
+    except Exception:
+        log.exception("could not record the cleanup pass")
+
+
+def last_cleanup(db: Session) -> dict[str, Any] | None:
+    row = db.scalar(select(CleanupPass).order_by(CleanupPass.id.desc()).limit(1))
+    if row is None:
+        return None
+    return {"days": row.days, "started_at": _aware(row.started_at), "finished_at": _aware(row.finished_at),
+            "runs_deleted": row.runs_deleted, "files_deleted": row.files_deleted, "errors": row.errors}
 
 
 cleanup = _Cleanup()

@@ -57,7 +57,7 @@ export interface SystemStatus {
   };
   services: { supervised: boolean; total: number; running: number };
   scheduler: { next_fire_at: string | null };
-  retention: { days: number | null; cleanup: CleanupState };
+  retention: { days: number | null; cleanup: CleanupState; last: LastCleanup | null };
   now: string;
 }
 
@@ -65,6 +65,12 @@ export interface SystemStatus {
 export interface CleanupState {
   running: boolean; days: number | null;
   started_at: string | null; finished_at: string | null;
+  runs_deleted: number; files_deleted: number; errors: number;
+}
+
+/** The newest cleanup on record: survives a restart, unlike CleanupState. */
+export interface LastCleanup {
+  days: number; started_at: string; finished_at: string;
   runs_deleted: number; files_deleted: number; errors: number;
 }
 
@@ -341,4 +347,13 @@ export function settledSentence(preview: RetentionPreview): string {
   const aged = preview.runs === 1 ? '1 run has' : `${preview.runs.toLocaleString('en-US')} runs have`;
   return `Up to date; ${kept}. ${aged} aged past ${preview.days} days since the last pass, `
     + `and the next one, within six hours, removes ${preview.runs === 1 ? 'it' : 'them'}`;
+}
+
+/** The quiet line under Retention: what the newest cleanup on record did. */
+export function lastCleanupLine(last: LastCleanup | null | undefined, now = Date.now()): string | null {
+  if (!last) return null;
+  const when = timeAgo(last.finished_at, now);
+  if (last.runs_deleted === 0) return `Last cleanup ${when}: nothing was older than ${last.days} days`;
+  const runs = `${last.runs_deleted.toLocaleString('en-US')} run${last.runs_deleted === 1 ? '' : 's'}`;
+  return `Last cleanup ${when}: deleted ${runs} older than ${last.days} days`;
 }

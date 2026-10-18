@@ -702,3 +702,78 @@ def test_usage_reports_memory_a_process_holds_even_while_it_idles():
             child.kill()
         parent.kill(); parent.wait()
         proc.forget_usage(parent.pid)
+
+
+def test_shutting_down_lets_runs_finish_before_services_stop(client, tmp_path):
+    """Services used to stop the moment shutdown began, in parallel with the
+    runs draining — and a run calling the model server it was written
+    against failed in its last minutes. Now: runs drain first, services
+    stay up (and nothing new starts), then services stop."""
+    import threading
+
+    from portable import wait_for
+
+    from runrail.worker.service import WorkerService
+    release = tmp_path / "release"
+    svc = create(client, name="model", start_mode="startup")
+    late = create(client, name="late")  # manual: Started below, mid-shutdown
+    workflow = make_workflow(client, "uses-model")
+    make_shell_task(client, workflow["id"], "t", wait_for(release, seconds=60))
+    worker = WorkerService(concurrency=1)
+    thread = threading.Thread(target=worker.run, kwargs={"install_signals": False}, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 20
+        while service(client, svc["id"])["state"] != "running":
+            assert time.monotonic() < deadline, "the service never started"
+            time.sleep(0.1)
+        pid = service(client, svc["id"])["current_session"]["pid"]
+        run_id = start_run(client, workflow["id"])
+        while client.get(f"/api/runs/{run_id}").json()["status"] != "running":
+            assert time.monotonic() < deadline, "the run never started"
+            time.sleep(0.1)
+
+        worker.stop()  # first Ctrl+C
+        client.post(f"/api/services/{late['id']}/start")
+        time.sleep(2.5)  # a couple of supervisor ticks
+        assert process_alive(pid), "the service was stopped while a run still needed it"
+        assert service(client, svc["id"])["state"] == "running"
+        held = service(client, late["id"])
+        assert held["state"] == "stopped" and held["state_detail"] == "RunRail is stopping"
+
+        release.touch()  # the run finishes
+        thread.join(timeout=30)
+        assert not thread.is_alive(), "shutdown never finished"
+        assert client.get(f"/api/runs/{run_id}").json()["status"] == "success"
+        assert not process_alive(pid), "the service outlived shutdown"
+    finally:
+        release.touch()
+        worker.supervisor.stop()
+        thread.join(timeout=30)
+
+
+def test_a_clock_set_back_delays_neither_a_restart_nor_a_forced_kill(client, supervisor, clock):
+    """Deadlines were wall-clock only: with the clock set back an hour (NTP,
+    a laptop waking), a crashed service waited an hour to restart and a
+    service ignoring its stop was killed an hour late."""
+    sup = supervisor()
+    crashing = create(client, name="crashing", command=python("raise SystemExit(3)"), start_mode="startup")
+    settle(sup, client, crashing["id"], "backoff")
+    first = len(sessions(client, crashing["id"]))
+    clock.advance(hours=-1)
+    deadline = time.monotonic() + 10
+    while len(sessions(client, crashing["id"])) == first:
+        assert time.monotonic() < deadline, "the restart waited for the wall clock"
+        sup.tick()
+        time.sleep(0.1)
+    client.post(f"/api/services/{crashing['id']}/stop")
+
+    stubborn = create(client, name="stubborn", command=STUBBORN, start_mode="startup", stop_timeout_seconds=1)
+    settle(sup, client, stubborn["id"], "running")
+    pid = stubborn_pid(client, stubborn["id"])
+    client.post(f"/api/services/{stubborn['id']}/stop")
+    sup.tick()
+    clock.advance(hours=-1)
+    settle(sup, client, stubborn["id"], "stopped", seconds=10)
+    assert not process_alive(pid)
+    assert sessions(client, stubborn["id"])[0]["stop_reason"] == "killed_after_timeout"

@@ -1,13 +1,17 @@
+import logging
 import os
 import shutil
 import signal
+import socket
 import threading
 import time
+import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session, selectinload
 
@@ -36,6 +40,7 @@ from runrail.models import (
     TaskRunStatus,
     TaskType,
     TriggerType,
+    WorkerBeat,
     Workflow,
     WorkflowRun,
     now,
@@ -53,6 +58,13 @@ from runrail.worker.runners import (
     python_module_name,
 )
 from runrail.worker.templating import render
+
+log = logging.getLogger("runrail.worker")
+#: After an error in the claim loop (a locked database, a dropped PostgreSQL
+#: connection), how long the loop waits before trying again.
+CLAIM_ERROR_BACKOFF_SECONDS = 2.0
+#: How often a worker looks for runs abandoned by a worker that died.
+RECOVER_EVERY_SECONDS = 30.0
 
 
 def topological_tasks(tasks: list[Task]) -> list[Task]:
@@ -185,13 +197,24 @@ def _python_command(environment: Environment) -> list[str]:
     return [str(Path(environment.executable).expanduser().resolve())]
 
 
-def _context(run: WorkflowRun, task_run: TaskRun, task: Task, project: Project | None) -> dict:
+def _context(run: WorkflowRun, task_run: TaskRun, task: Task, project: Project | None,
+             zone: str | None = None) -> dict:
+    """The template variables. `zone` is the workflow's schedule timezone: `ds`
+    is the run's date on that clock, as the schedule and the UI already read it.
+    It was the UTC date, so the 18:00 Los Angeles run of Oct 17 said Oct 18
+    while a backfill of Oct 17 said Oct 17 — two partitions for one day.
+    `ds_utc` keeps the old value; `ts` is the exact UTC instant either way."""
     settings = get_settings()
     timestamp = run.created_at
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
     else:
         timestamp = timestamp.astimezone(timezone.utc)
+    try:
+        local_day = timestamp.astimezone(ZoneInfo(zone or "UTC")).date()
+    except (ZoneInfoNotFoundError, ValueError):
+        local_day = timestamp.date()  # a zone the API would refuse: fall back, never fail the run
+    utc_day = timestamp.date()
     # Task parameters are defaults; what a run was started with — the values
     # typed into "Run with…", or the date a backfill set — overrides them. The
     # other way round, a task that happened to define `ds` made every run of a
@@ -205,12 +228,16 @@ def _context(run: WorkflowRun, task_run: TaskRun, task: Task, project: Project |
         except ValueError:
             pass
     return {
-        "ds": parameters.get("ds", timestamp.date().isoformat()), "ts": timestamp.isoformat(),
+        "ds": parameters.get("ds", local_day.isoformat()),
+        "ds_utc": parameters.get("ds", utc_day.isoformat()),
+        "ts": timestamp.isoformat(),
         "ts_nodash": timestamp.strftime("%Y%m%dT%H%M%S"),
+        "parameters": parameters, **parameters,
+        # Last, so a parameter cannot shadow them: one named task_run_id made
+        # every notebook retry write to the same output file.
         "run_id": run.id, "workflow_run_id": run.id, "task_run_id": task_run.id,
         "project_root": project.root_path if project else str(Path.cwd()),
         "artifacts_dir": str(settings.artifacts_dir.resolve() / str(run.id)),
-        "parameters": parameters, **parameters,
     }
 
 
@@ -261,9 +288,18 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
     log_dir = settings.logs_dir.resolve() / f"run_{run.id}"
     log_dir.mkdir(parents=True, exist_ok=True)
     attempts = task.retries + 1
+    segment = run.resume_count
     for attempt in range(1, attempts + 1):
-        if attempt > 1 and _run_cancelled(db, run.id):
-            return False  # don't start retry attempts for a cancelled run
+        # Before every attempt, the first included: the pool queues every ready
+        # task at once, and one waiting for a thread used to start after the
+        # cancel — long enough for a deploy or a POST to complete in full.
+        if _run_stopped(db, run.id, segment):
+            if attempt == 1:
+                db.add(TaskRun(workflow_run_id=run.id, task_id=task.id, attempt=1,
+                               status=TaskRunStatus.cancelled, error_message="Run was cancelled",
+                               resume_index=segment))
+                db.commit()
+            return False
         task_run = TaskRun(workflow_run_id=run.id, task_id=task.id, status=TaskRunStatus.running,
                            attempt=attempt, started_at=now(), resume_index=run.resume_count)
         db.add(task_run); db.commit(); db.refresh(task_run)
@@ -272,40 +308,42 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
         task_run.stdout_log_path, task_run.stderr_log_path = str(stdout), str(stderr)
         db.commit()  # persist log paths so the WS streaming endpoint can find them
         _ws_manager.notify({"type": "task_run_updated", "id": task_run.id, "run_id": run.id})
-        context = _context(run, task_run, task, project)
-        env = os.environ.copy()
-        configured_pythonpath = ""
-        if environment and environment.env_vars_json:
-            env.update({k: str(v) for k, v in environment.env_vars_json.items()})
-            configured_pythonpath = str(environment.env_vars_json.get("PYTHONPATH", ""))
-        if environment and environment.managed:
-            environment_root = managed_environment_path(environment)
-            env["PYTHONNOUSERSITE"] = "1"
-            env.pop("PYTHONHOME", None)
-            jupyter_path = str(environment_root / "share" / "jupyter")
-            env["JUPYTER_PATH"] = jupyter_path + (
-                os.pathsep + env["JUPYTER_PATH"] if env.get("JUPYTER_PATH") else ""
-            )
-        runtime_executable = (
-            environment_python(managed_environment_path(environment))
-            if environment and environment.managed else
-            Path(environment.executable).expanduser().resolve()
-            if environment and environment.executable else None
-        )
-        if runtime_executable:
-            executable_dir = str(runtime_executable.parent)
-            env["PATH"] = executable_dir + os.pathsep + env.get("PATH", "")
-            if (environment.env_type == EnvironmentType.python
-                    and Path(executable_dir).name in {"bin", "Scripts"}):
-                env["VIRTUAL_ENV"] = str(Path(executable_dir).parent)
-        # Match repository/notebook execution without recursively adding every directory,
-        # which would make module resolution order-dependent and unsafe.
-        import_paths = _python_import_paths(task, context, project, detected_root, cwd)
-        path_parts = [*(str(path) for path in import_paths)]
-        if configured_pythonpath:
-            path_parts.append(configured_pythonpath)
-        env["PYTHONPATH"] = os.pathsep.join(path_parts)
+        # Everything from here is inside the try: a template error in a path
+        # used to escape it and leave this attempt's row `running` for good.
         try:
+            context = _context(run, task_run, task, project, workflow.schedule_timezone)
+            env = os.environ.copy()
+            configured_pythonpath = ""
+            if environment and environment.env_vars_json:
+                env.update({k: str(v) for k, v in environment.env_vars_json.items()})
+                configured_pythonpath = str(environment.env_vars_json.get("PYTHONPATH", ""))
+            if environment and environment.managed:
+                environment_root = managed_environment_path(environment)
+                env["PYTHONNOUSERSITE"] = "1"
+                env.pop("PYTHONHOME", None)
+                jupyter_path = str(environment_root / "share" / "jupyter")
+                env["JUPYTER_PATH"] = jupyter_path + (
+                    os.pathsep + env["JUPYTER_PATH"] if env.get("JUPYTER_PATH") else ""
+                )
+            runtime_executable = (
+                environment_python(managed_environment_path(environment))
+                if environment and environment.managed else
+                Path(environment.executable).expanduser().resolve()
+                if environment and environment.executable else None
+            )
+            if runtime_executable:
+                executable_dir = str(runtime_executable.parent)
+                env["PATH"] = executable_dir + os.pathsep + env.get("PATH", "")
+                if (environment.env_type == EnvironmentType.python
+                        and Path(executable_dir).name in {"bin", "Scripts"}):
+                    env["VIRTUAL_ENV"] = str(Path(executable_dir).parent)
+            # Match repository/notebook execution without recursively adding every directory,
+            # which would make module resolution order-dependent and unsafe.
+            import_paths = _python_import_paths(task, context, project, detected_root, cwd)
+            path_parts = [*(str(path) for path in import_paths)]
+            if configured_pythonpath:
+                path_parts.append(configured_pythonpath)
+            env["PYTHONPATH"] = os.pathsep.join(path_parts)
             if (environment and task.task_type != TaskType.sql
                     and not environment_usable_now(environment)):
                 raise RuntimeError(
@@ -315,7 +353,7 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
             if task.task_type.value == "sql":
                 task_run.rendered_command = f"sqlite3 < {render(task.sql_path, context)}"
                 result = execute_sql(task, context, cwd, stdout, stderr, task.timeout_seconds,
-                                     should_stop=lambda: _cancel_requested(run.id))
+                                     should_stop=lambda: _cancel_requested(run.id, segment))
                 artifact = None
             else:
                 if task.task_type in (TaskType.python, TaskType.notebook):
@@ -344,7 +382,7 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
                     spec = CommandSpec([*command, *shell, str(spec.command)], False, spec.artifact)
                 task_run.rendered_command = display_command(spec)
                 result = execute_command(spec, cwd, env, stdout, stderr, task.timeout_seconds,
-                                         should_stop=lambda: _cancel_requested(run.id))
+                                         should_stop=lambda: _cancel_requested(run.id, segment))
                 artifact = spec.artifact
         except Exception as exc:
             stdout.touch(); stderr.write_text(f"{type(exc).__name__}: {exc}\n")
@@ -365,11 +403,23 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
         # A cancelled attempt is not a failure to retry: stop here rather than
         # sleeping through the retry delay and only then noticing.
         if stopped: return False
-        if attempt < attempts: time.sleep(task.retry_delay_seconds)
+        if attempt < attempts:
+            _sleep_unless_stopped(run.id, segment, task.retry_delay_seconds)
     return False
 
 
-def _cancel_requested(run_id: int) -> bool:
+def _sleep_unless_stopped(run_id: int, segment: int, seconds: float) -> None:
+    """The retry delay, cut short by a cancel: slept whole (60s by default),
+    a cancelled run's executor woke to find a resumed segment running and
+    started the old segment's next attempt beside it."""
+    deadline = time.monotonic() + max(0.0, seconds)
+    while time.monotonic() < deadline:
+        if _cancel_requested(run_id, segment):
+            return
+        time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+
+
+def _cancel_requested(run_id: int, segment: int | None = None) -> bool:
     """Polled once a second while a task's subprocess runs.
 
     On its own short-lived session, never the task's: that session holds an
@@ -378,18 +428,29 @@ def _cancel_requested(run_id: int) -> bool:
     writer until the command finished.
     """
     with SessionLocal() as poll:
-        return _run_cancelled(poll, run_id)
+        return _run_stopped(poll, run_id, segment)
 
 
-def _run_cancelled(db: Session, run_id: int) -> bool:
-    """Fresh read of the run status so API-side cancellations are honoured mid-run.
+#: A run in one of these is over, whoever ended it: cancelled from the API, or
+#: failed by another worker's recovery after this one stopped beating.
+_ENDED = (RunStatus.cancelled, RunStatus.failed, RunStatus.success)
 
-    A run with no row left counts as cancelled: deleting its workflow cascades
+
+def _run_stopped(db: Session, run_id: int, segment: int | None = None) -> bool:
+    """Fresh read: should work on this run stop? Yes once it has ended, and —
+    given the segment this executor serves — once a resume has opened a newer
+    one, which belongs to another executor.
+
+    A run with no row left counts as stopped: deleting its workflow cascades
     the run away, and its task otherwise kept running to the end — unowned, and
     outside the resource lock the deleted row had held.
     """
-    status = db.scalar(select(WorkflowRun.status).where(WorkflowRun.id == run_id))
-    return status is None or status == RunStatus.cancelled
+    row = db.execute(select(WorkflowRun.status, WorkflowRun.resume_count)
+                     .where(WorkflowRun.id == run_id)).first()
+    if row is None:
+        return True
+    status, resume_count = row
+    return status in _ENDED or (segment is not None and resume_count != segment)
 
 
 def _definition(task: Task) -> dict:
@@ -431,6 +492,10 @@ def _execute_task_graph(db: Session, run: WorkflowRun, workflow: Workflow,
     never re-run. A task waiting on an approval gate is returned in `pending`
     rather than submitted, so the caller can release the run."""
     outcomes: dict[str, bool] = satisfied_outcomes(db, run, tasks)
+    # Re-entry after an approval: what this segment already decided stands. The
+    # resume reuse set alone re-runs failures, so a failed task ran again on
+    # every approval, doubling its retry budget per gate.
+    outcomes.update(_decided_this_segment(db, run, tasks))
     remaining = {task.name: task for task in tasks if task.name not in outcomes}
     task_ids = {task.name: task.id for task in tasks}
     running: dict[Future, str] = {}
@@ -444,7 +509,7 @@ def _execute_task_graph(db: Session, run: WorkflowRun, workflow: Workflow,
                 # Fresh session: task jobs commit on their own sessions, so polling
                 # through this one could read a stale WAL snapshot forever.
                 with SessionLocal() as poll_db:
-                    cancelled = _run_cancelled(poll_db, run.id)
+                    cancelled = _run_stopped(poll_db, run.id, run.resume_count)
             ready = [task for task in list(remaining.values())
                      if all(dep in outcomes for dep in (task.depends_on_json or []))]
             for task in ready:
@@ -493,6 +558,25 @@ def _execute_task_graph(db: Session, run: WorkflowRun, workflow: Workflow,
     return outcomes, pending
 
 
+def _decided_this_segment(db: Session, run: WorkflowRun, tasks: list[Task]) -> dict[str, bool]:
+    """Each task's settled outcome in the run's current segment: True for a
+    success, False for a failure, skip or cancel. Gate rows and the markers a
+    forced re-run leaves at resume (attempt 0, cancelled) are not outcomes."""
+    names = {task.id: task.name for task in tasks}
+    decided: dict[str, bool] = {}
+    for row in db.scalars(select(TaskRun).where(
+            TaskRun.workflow_run_id == run.id, TaskRun.resume_index == run.resume_count,
+            TaskRun.status.not_in(_GATE_STATUSES))
+            .order_by(TaskRun.attempt, TaskRun.id)):
+        if row.task_id not in names or (row.attempt == 0 and row.status == TaskRunStatus.cancelled):
+            continue
+        if row.status == TaskRunStatus.success:
+            decided[names[row.task_id]] = True
+        elif row.status in (TaskRunStatus.failed, TaskRunStatus.skipped, TaskRunStatus.cancelled):
+            decided[names[row.task_id]] = False
+    return decided
+
+
 def _final_status(db: Session, run: WorkflowRun, outcomes: dict[str, bool]) -> RunStatus:
     """An empty workflow must not report success: all() of an empty dict is True."""
     if outcomes and all(outcomes.values()):
@@ -512,6 +596,9 @@ def execute_workflow_run(db: Session, run: WorkflowRun) -> None:
     if workflow is None:
         run.status = RunStatus.failed; run.finished_at = now(); db.commit(); return
     db.commit()  # release the read snapshot; task jobs write on their own sessions
+    # The segment this executor serves. A resume opens a newer one while this
+    # may still be finishing; every write below is fenced to it.
+    segment = run.resume_count
     final = RunStatus.failed
     pending: set[str] = set()
     try:
@@ -536,19 +623,35 @@ def execute_workflow_run(db: Session, run: WorkflowRun) -> None:
         # guard, and that run falls through to be finalized normally.
         parked = db.execute(update(WorkflowRun)
                             .where(WorkflowRun.id == run.id,
-                                   WorkflowRun.status == RunStatus.running)
+                                   WorkflowRun.status == RunStatus.running,
+                                   WorkflowRun.resume_count == segment)
                             .values(status=RunStatus.waiting_approval)).rowcount
+        if parked and not db.scalar(select(func.count()).select_from(TaskRun).where(
+                TaskRun.workflow_run_id == run.id, TaskRun.resume_index == segment,
+                TaskRun.status == TaskRunStatus.awaiting_approval)):
+            # Every gate was decided while another branch was still running: the
+            # decision found the run `running` and could not requeue it, so it
+            # is requeued here, in the same transaction as the park — parked on
+            # gates nobody can decide again, it held its slot and lock for good.
+            db.execute(update(WorkflowRun)
+                       .where(WorkflowRun.id == run.id,
+                              WorkflowRun.status == RunStatus.waiting_approval)
+                       .values(status=RunStatus.queued))
         db.commit()
         if parked:
             _ws_manager.notify({"type": "run_updated", "id": run.id})
             return
+    if db.scalar(select(WorkflowRun.resume_count).where(WorkflowRun.id == run.id)) != segment:
+        return  # resumed while this was finishing: the newer segment finalizes the run
     # Guarded update: never overwrite a cancellation that raced in from the API.
     finished = now(); duration = _duration(run.started_at or run.created_at)
     db.execute(update(WorkflowRun)
-               .where(WorkflowRun.id == run.id, WorkflowRun.status == RunStatus.running)
+               .where(WorkflowRun.id == run.id, WorkflowRun.status == RunStatus.running,
+                      WorkflowRun.resume_count == segment)
                .values(status=final, finished_at=finished, duration_seconds=duration))
     db.execute(update(WorkflowRun)
-               .where(WorkflowRun.id == run.id, WorkflowRun.finished_at.is_(None))
+               .where(WorkflowRun.id == run.id, WorkflowRun.finished_at.is_(None),
+                      WorkflowRun.resume_count == segment)
                .values(finished_at=finished, duration_seconds=duration))
     # The run is terminal on every path that reaches here, so a gate still open
     # on it is not a decision anyone can make. The one that gets here is a cancel
@@ -611,7 +714,7 @@ def _over_gate_budget(db: Session, run: WorkflowRun) -> bool:
 _CLAIM_SKIP_LIMIT = 50
 
 
-def claim_runnable_run(db: Session) -> WorkflowRun | None:
+def claim_runnable_run(db: Session, owner: str | None = None) -> WorkflowRun | None:
     """Claim the next run the worker can actually start, requeueing any it
     cannot — a needed environment is mid-build, or a sibling holds the gate —
     and moving on to the next. Stopping at the first one held up every other
@@ -619,8 +722,12 @@ def claim_runnable_run(db: Session) -> WorkflowRun | None:
     stays the oldest in the queue, so it was claimed and requeued every poll.
     """
     skipped: list[int] = []
-    while len(skipped) < _CLAIM_SKIP_LIMIT:
-        run = claim_next_run(db, skip=skipped)
+    # A workflow that cannot start one run cannot start the next either (its
+    # environment is building, its budget is spent): skipped whole, so fifty
+    # of its backfill runs no longer hide every other workflow behind them.
+    held: set[int] = set()
+    while len(skipped) + len(held) < _CLAIM_SKIP_LIMIT:
+        run = claim_next_run(db, skip=skipped, owner=owner, skip_workflows=held)
         if run is not None and _schedule_paused_since_queued(db, run):
             _drop(db, run)
             skipped.append(run.id)
@@ -628,7 +735,7 @@ def claim_runnable_run(db: Session) -> WorkflowRun | None:
         if run is None or not (_building_environment(db, run) or _over_gate_budget(db, run)):
             return run
         _requeue(db, run)
-        skipped.append(run.id)
+        held.add(run.workflow_id)
     return None
 
 
@@ -657,6 +764,7 @@ def _drop(db: Session, run: WorkflowRun) -> None:
     db.execute(update(WorkflowRun)
                .where(WorkflowRun.id == run.id, WorkflowRun.status == RunStatus.running)
                .values(status=RunStatus.cancelled, finished_at=now(), duration_seconds=0))
+    _stamp_if_cancelled(db, run.id)
     db.commit()
     _ws_manager.notify({"type": "run_updated", "id": run.id})
 
@@ -672,7 +780,18 @@ def _requeue(db: Session, run: WorkflowRun) -> None:
     db.execute(update(WorkflowRun)
                .where(WorkflowRun.id == run.id, WorkflowRun.status == RunStatus.running)
                .values(**values))
+    _stamp_if_cancelled(db, run.id)
     db.commit()
+
+
+def _stamp_if_cancelled(db: Session, run_id: int) -> None:
+    """A cancel that landed between a claim and its release left the run with
+    no finish time — nothing else would ever stamp one, and retention selects
+    on it, so the run was kept forever."""
+    db.execute(update(WorkflowRun)
+               .where(WorkflowRun.id == run_id, WorkflowRun.status == RunStatus.cancelled,
+                      WorkflowRun.finished_at.is_(None))
+               .values(finished_at=now()))
 
 
 #: Statuses a run never leaves. A `running` task row under one of these is
@@ -680,8 +799,55 @@ def _requeue(db: Session, run: WorkflowRun) -> None:
 _TERMINAL = (RunStatus.success, RunStatus.failed, RunStatus.cancelled)
 
 
-def recover_interrupted_runs(db: Session) -> int:
+#: A worker that has not beaten for this long is taken for dead, and what it
+#: was executing is recovered by whichever worker notices.
+WORKER_STALE_AFTER = timedelta(seconds=90)
+WORKER_BEAT_SECONDS = 10.0
+
+
+class WorkerHeartbeat:
+    """One worker process saying it is alive. `serve` and a separate `runrail
+    worker` each have one; runs they claim carry its owner name."""
+
+    def __init__(self, owner: str):
+        self.owner = owner
+        self._beaten: float | None = None
+
+    def beat(self, at: datetime | None = None) -> None:
+        with SessionLocal() as db:
+            row = db.get(WorkerBeat, self.owner)
+            if row is None:
+                db.add(WorkerBeat(owner=self.owner, heartbeat_at=at or now()))
+            else:
+                row.heartbeat_at = at or now()
+            # Old owners (restarted processes) are pruned as they go stale-er.
+            db.execute(WorkerBeat.__table__.delete().where(
+                WorkerBeat.heartbeat_at < now() - timedelta(days=1)))
+            db.commit()
+        self._beaten = time.monotonic()
+
+    def due(self) -> bool:
+        return self._beaten is None or time.monotonic() - self._beaten >= WORKER_BEAT_SECONDS
+
+
+def _abandoned(owner: str | None):
+    """Runs no live worker is executing: unclaimed by any recorded worker, or
+    claimed by one that has stopped beating. Never `owner`'s own."""
+    alive = select(WorkerBeat.owner).where(WorkerBeat.heartbeat_at >= now() - WORKER_STALE_AFTER)
+    gone = or_(WorkflowRun.claimed_by.is_(None), WorkflowRun.claimed_by.not_in(alive))
+    if owner is None:
+        return gone
+    return and_(gone, or_(WorkflowRun.claimed_by.is_(None), WorkflowRun.claimed_by != owner))
+
+
+def recover_interrupted_runs(db: Session, owner: str | None = None) -> int:
     """Mark runs left 'running' by a killed worker as failed.
+
+    Only runs whose worker has stopped beating: recovery used to fail every
+    `running` run, so starting a second worker (`serve` beside `runrail
+    worker`, which the README describes) failed the first one's live runs,
+    freed their slots, and let the next run of the same workflow in beside
+    them. Run at startup and every half minute after, by every worker.
 
     Without this, a force-quit leaves phantom running runs that permanently
     occupy their workflow's max_concurrent_runs slot — the workflow silently
@@ -691,7 +857,9 @@ def recover_interrupted_runs(db: Session) -> int:
     what releases a resource lock stranded by the kill. Narrowing the query
     would strand every workflow sharing that resource, not just the crashed one.
     """
-    stale = db.scalars(select(WorkflowRun).where(WorkflowRun.status == RunStatus.running)).all()
+    abandoned = _abandoned(owner)
+    stale = db.scalars(select(WorkflowRun).where(WorkflowRun.status == RunStatus.running,
+                                                 abandoned)).all()
     # A run cancelled while a task was executing keeps that task row `running`:
     # cancel settles only the queued and awaiting_approval rows, because the
     # worker is expected to finish the live one. If the worker is killed before
@@ -702,8 +870,17 @@ def recover_interrupted_runs(db: Session) -> int:
         select(TaskRun.workflow_run_id)
         .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
         .where(TaskRun.status == TaskRunStatus.running,
-               WorkflowRun.status.in_(_TERMINAL))).all()
+               WorkflowRun.status.in_(_TERMINAL), abandoned)).all()
+    # A cancel on a running run leaves the finish time to its worker; one
+    # that died before it could left the run unresumable and kept forever.
+    unstamped = db.execute(update(WorkflowRun)
+                           .where(WorkflowRun.status == RunStatus.cancelled,
+                                  WorkflowRun.finished_at.is_(None), abandoned)
+                           .values(finished_at=now())
+                           .execution_options(synchronize_session=False)).rowcount
     if not stale and not orphaned:
+        if unstamped:
+            db.commit()
         return 0
     finished = now()
     for run in stale:
@@ -760,6 +937,9 @@ class WorkerService:
         # to the most Settings allows, and the claim loop keeps to the figure.
         self._fixed_concurrency = max(1, concurrency) if concurrency else None
         self.running = True
+        # This process's name on the runs it claims and on its heartbeat.
+        self.owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"[:64]
+        self.heartbeat = WorkerHeartbeat(self.owner)
         self._active: dict[Future, int | None] = {}  # future -> run id (None for env builds)
         # Services run beside the run pool, never in it: a process meant to stay
         # up would hold a worker slot for good. Its own thread; it holds a lease,
@@ -775,8 +955,11 @@ class WorkerService:
             kill_running_tasks()
             os._exit(130)
         self.running = False
-        # Services stop now, in parallel with the runs draining below.
-        self.supervisor.stop()
+        # Services keep running until the runs have drained — a run calling
+        # the model server it was written against would otherwise fail in
+        # its last minutes — but nothing new is started meanwhile. run()
+        # stops them once the pool is empty.
+        self.supervisor.hold_starts("RunRail is stopping")
         executing = len(self.executing_run_ids())
         if executing:
             print(f"\nStopping: waiting for {executing} executing run(s) to finish. "
@@ -797,6 +980,29 @@ class WorkerService:
             if run is not None:
                 execute_workflow_run(db, run)
 
+    def _watch_job(self, run_id: int | None):
+        """A job's exception used to sit unread in its future: a run whose
+        final commit failed stayed `running` until the next restart, and nobody
+        was told. It is logged, and the run is failed if it is still ours."""
+        def done(future: Future) -> None:
+            error = future.exception()
+            if error is None:
+                return
+            log.error("job for run %s failed", run_id, exc_info=error)
+            if run_id is None:
+                return
+            try:
+                with SessionLocal() as db:
+                    db.execute(update(WorkflowRun)
+                               .where(WorkflowRun.id == run_id,
+                                      WorkflowRun.status == RunStatus.running,
+                                      WorkflowRun.claimed_by == self.owner)
+                               .values(status=RunStatus.failed, finished_at=now()))
+                    db.commit()
+            except Exception:
+                log.exception("could not fail run %s after its job failed", run_id)
+        return done
+
     @staticmethod
     def _provision_job(environment_id: int) -> None:
         with SessionLocal() as db:
@@ -804,11 +1010,40 @@ class WorkerService:
             if environment is not None:
                 provision_managed(db, environment)
 
+    def _iteration(self, pool: ThreadPoolExecutor) -> bool:
+        """One pass of the claim loop; True when it started something."""
+        if self.heartbeat.due():
+            self.heartbeat.beat()
+        self._active = {future: run_id for future, run_id in self._active.items()
+                        if not future.done()}
+        # Paused from Settings: nothing new starts; what is executing finishes.
+        if len(self._active) >= self.concurrency or runtime_settings.current("paused"):
+            return False
+        # Claim in a short-lived session; the job threads open their own.
+        with SessionLocal() as db:
+            environment = claim_next_environment(db)
+            run = claim_runnable_run(db, owner=self.owner) if environment is None else None
+            environment_id = environment.id if environment else None
+            run_id = run.id if run else None
+        if environment_id is not None:
+            future = pool.submit(self._provision_job, environment_id)
+            future.add_done_callback(self._watch_job(None))
+            self._active[future] = None
+            return True
+        if run_id is not None:
+            _ws_manager.notify({"type": "run_updated", "id": run_id})
+            future = pool.submit(self._execute_run_job, run_id)
+            future.add_done_callback(self._watch_job(run_id))
+            self._active[future] = run_id
+            return True
+        return False
+
     def run(self, install_signals: bool = True) -> None:
         if install_signals:
             signal.signal(signal.SIGTERM, self.stop); signal.signal(signal.SIGINT, self.stop)
+        self.heartbeat.beat()
         with SessionLocal() as db:
-            recovered = recover_interrupted_runs(db)
+            recovered = recover_interrupted_runs(db, owner=self.owner)
             if recovered:
                 print(f"Recovered {recovered} run(s) interrupted by a previous shutdown "
                       "(marked failed).", flush=True)
@@ -822,25 +1057,21 @@ class WorkerService:
         pool_size = self._fixed_concurrency or max(_POOL_CAP, self.concurrency)
         with ThreadPoolExecutor(max_workers=pool_size,
                                 thread_name_prefix="runrail-worker") as pool:
+            recovered_at = time.monotonic()
             while self.running:
-                self._active = {future: run_id for future, run_id in self._active.items()
-                                if not future.done()}
-                claimed = False
-                # Paused from Settings: nothing new starts; what is executing finishes.
-                if len(self._active) < self.concurrency and not runtime_settings.current("paused"):
-                    # Claim in a short-lived session; the job threads open their own.
-                    with SessionLocal() as db:
-                        environment = claim_next_environment(db)
-                        run = claim_runnable_run(db) if environment is None else None
-                        environment_id = environment.id if environment else None
-                        run_id = run.id if run else None
-                    if environment_id is not None:
-                        self._active[pool.submit(self._provision_job, environment_id)] = None
-                        claimed = True
-                    elif run_id is not None:
-                        _ws_manager.notify({"type": "run_updated", "id": run_id})
-                        self._active[pool.submit(self._execute_run_job, run_id)] = run_id
-                        claimed = True
+                # One bad iteration — a locked database, a dropped connection —
+                # used to end the thread, and with it every run from then on,
+                # while `serve` kept answering as if nothing had happened.
+                try:
+                    claimed = self._iteration(pool)
+                    if time.monotonic() - recovered_at >= RECOVER_EVERY_SECONDS:
+                        recovered_at = time.monotonic()
+                        with SessionLocal() as db:
+                            recover_interrupted_runs(db, owner=self.owner)
+                except Exception:
+                    log.exception("worker loop iteration failed; trying again shortly")
+                    time.sleep(CLAIM_ERROR_BACKOFF_SECONDS)
+                    continue
                 if not claimed:
                     time.sleep(get_settings().worker_poll_seconds)
             # Pool context exit waits for executing runs to finish (stage one).

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  lastCleanupLine,
   settledSentence,
   cleanupLine,
   basename, groupEvents, quietSpans, storageSegments, systemHeadline,
@@ -241,5 +242,16 @@ describe('settledSentence', () => {
     expect(settledSentence({ ...base, runs: 1 })).toBe(
       'Up to date; 99 runs kept. 1 run has aged past 90 days since the last pass, and the next one, within six hours, removes it');
     expect(settledSentence({ ...base, runs: 3, runs_kept: 97 })).toContain('3 runs have aged past 90 days');
+  });
+});
+
+describe('lastCleanupLine', () => {
+  const now = Date.parse('2026-10-18T12:00:00Z');
+  const last = { days: 90, started_at: '2026-10-18T09:59:00Z', finished_at: '2026-10-18T10:00:00Z',
+                 runs_deleted: 39624, files_deleted: 0, errors: 0 };
+  test('says what the newest pass on record did, and when', () => {
+    expect(lastCleanupLine(last, now)).toBe('Last cleanup 2h ago: deleted 39,624 runs older than 90 days');
+    expect(lastCleanupLine({ ...last, runs_deleted: 0 }, now)).toBe('Last cleanup 2h ago: nothing was older than 90 days');
+    expect(lastCleanupLine(null, now)).toBeNull();
   });
 });

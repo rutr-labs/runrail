@@ -23,3 +23,7 @@ src/runrail/web/static/
 # Playwright output (frontend/e2e)
 frontend/test-results/
 frontend/playwright-report/
+
+# Private working notes and research reports — kept local, never published.
+research_notes/
+/reports/

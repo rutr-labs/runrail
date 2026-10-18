@@ -287,9 +287,13 @@ def test_the_fires_are_the_watchdogs_own_expectation(client):
         since = datetime(2026, 3, 5, tzinfo=timezone.utc)
         fires, _ = _fires(_trigger(workflow), since,
                           datetime(2026, 3, 9, tzinfo=timezone.utc), 500)
-        assert fires and _expected_fire(workflow, since) == fires[0]
+        # Compared as instants: the gap history works in UTC, and Python calls
+        # a wall time in the spring gap unequal to its own UTC instant (PEP 495).
+        def utc(fire):
+            return fire.astimezone(timezone.utc)
+        assert fires and utc(_expected_fire(workflow, since)) == fires[0]
         for previous, following in zip(fires, fires[1:], strict=False):
-            assert _expected_fire(workflow, previous + timedelta(seconds=1)) == following
+            assert utc(_expected_fire(workflow, previous + timedelta(seconds=1))) == following
 
 
 def test_an_unscheduled_or_unparseable_workflow_answers_honestly(client):

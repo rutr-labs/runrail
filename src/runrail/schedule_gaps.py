@@ -78,7 +78,14 @@ def _walk(trigger: CronTrigger, since: datetime, until: datetime,
     while fire is not None and fire <= until:
         if len(fires) >= cap:
             return fires, True
-        fires.append(fire)
+        # In UTC: arithmetic on zone-aware datetimes is wall-clock arithmetic,
+        # so the matching windows landed an hour off around a clock change and
+        # real runs read as too old. And one per instant: pinned hours across
+        # the spring gap name the same instant twice, and the scheduler fires
+        # it once (its run_key is the UTC minute).
+        instant = fire.astimezone(timezone.utc)
+        if not fires or instant != fires[-1]:
+            fires.append(instant)
         fire = trigger.get_next_fire_time(fire, fire)
     return fires, False
 
@@ -172,7 +179,11 @@ def _paused_spans(workflow: Workflow, since: datetime, until: datetime) -> list[
     edited = _aware(workflow.updated_at) or since
     spans = []
     if not workflow.enabled:
-        spans.append(("disabled", max(edited, since), until))
+        # An auto-pause leaves updated_at alone on purpose, but it is dated: the
+        # span starts there, not at an edit weeks earlier that would relabel the
+        # real misses before the pause as paused.
+        began = _aware(workflow.auto_paused_at) or edited
+        spans.append(("disabled", max(began, since), until))
     snooze_until = _aware(workflow.snooze_until)
     # Not workflow.snoozed: an expired pause is exactly the "muted it for a
     # month" case whose history still has to read as paused rather than dead.

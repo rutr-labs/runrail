@@ -125,8 +125,9 @@ Commands and paths are Jinja templates. Every run gets:
 
 | Variable | Meaning |
 |---|---|
-| `ds` | Logical date (`2026-07-08`), set per-date during backfills |
-| `ts` / `ts_nodash` | Run timestamp, ISO and compact (`20260708T141005`) |
+| `ds` | Logical date (`2026-07-08`) on the workflow's own calendar: an 18:00 Los Angeles run is that day's run. Set per-date during backfills |
+| `ds_utc` | The same date in UTC (what `ds` meant before 0.8.1) |
+| `ts` / `ts_nodash` | Run timestamp in UTC, ISO and compact (`20260708T141005`) |
 | `run_id`, `task_run_id` | Identifiers for this execution |
 | `project_root`, `artifacts_dir` | Resolved paths for the run |
 | *your parameters* | Run and per-task parameters, merged |
@@ -174,6 +175,8 @@ Docker is available (`docker compose up --build` starts RunRail with PostgreSQL 
 ## Configuration
 
 Most of what you would tune lives on the **Settings** page and applies without a restart: the default webhook and which alerts go out, quiet hours, how long runs are kept (with a preview of what that would delete before it does), and how many runs and tasks execute at once. The same page shows the machine — version, uptime, database and disk, what the worker and the supervisor are doing — and has the operator controls: **pause everything new** while what is executing finishes, **download a backup**, and restore one.
+
+![Settings](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/08-settings.png)
 
 An environment variable pins a setting: the page shows it locked and names the variable, so a deployment that configures RunRail in a unit file or `.env` stays exactly what that file says.
 

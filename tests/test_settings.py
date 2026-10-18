@@ -130,7 +130,7 @@ def test_pausing_stops_new_claims_and_resuming_releases_them(client, monkeypatch
     polls = []
     real_claim = worker_module.claim_runnable_run
     monkeypatch.setattr(worker_module, "claim_runnable_run",
-                        lambda db: polls.append(1) or real_claim(db))
+                        lambda db, **kw: polls.append(1) or real_claim(db, **kw))
     workflow = make_workflow(client, "p")
     make_shell_task(client, workflow["id"], "t", emit("hi"))
     client.put("/api/settings", json={"paused": True, "worker_concurrency": 1})
@@ -236,6 +236,12 @@ def test_saving_a_retention_figure_applies_it_now(client):
         time.sleep(0.05)
     done = client.get("/api/system/status").json()["retention"]["cleanup"]
     assert done["runs_deleted"] == 2 and done["days"] == 30 and done["finished_at"]
+    # On record, so a restart (a fresh process, nothing in memory) still says so.
+    remembered = system.cleanup.state
+    system.cleanup.state = {**remembered, "started_at": None, "finished_at": None}
+    last = client.get("/api/system/status").json()["retention"]["last"]
+    assert last["runs_deleted"] == 2 and last["days"] == 30 and last["finished_at"]
+    system.cleanup.state = remembered
     assert client.get("/api/system/retention-preview?days=30").json()["runs"] == 0
     assert len(client.get("/api/runs?limit=10").json()) == 1
     # Saving something else does not start another.
