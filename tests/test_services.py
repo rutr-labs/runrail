@@ -461,3 +461,18 @@ def test_services_travel_with_a_yaml_export(client):
     exported["services"][0]["windows"] = []
     with SessionLocal() as db, pytest.raises(ValueError, match="at least one window"):
         apply_workflows(db, exported)
+
+
+def test_a_running_service_reports_what_it_is_using(client, supervisor):
+    sup = supervisor()
+    svc = create(client, start_mode="startup")
+    settle(sup, client, svc["id"], "running")
+    sup.tick()  # the sample is taken on a running pass
+    current = service(client, svc["id"])
+    # Sampled within milliseconds of the exec, so only its existence is certain.
+    assert current["cpu_percent"] is not None and current["rss_bytes"] > 0
+    assert current["resources_at"]
+    client.post(f"/api/services/{svc['id']}/stop")
+    settle(sup, client, svc["id"], "stopped")
+    stopped = service(client, svc["id"])
+    assert stopped["cpu_percent"] is None and stopped["rss_bytes"] is None

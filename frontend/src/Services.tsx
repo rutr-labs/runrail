@@ -8,7 +8,7 @@ import clsx from 'clsx';
 import { api, del, post, put } from './api';
 import { rrws } from './ws';
 import { useNow, useVisibleInterval } from './hooks';
-import { formatDuration, timeAgo, viewerZone } from './format';
+import { formatBytes, formatDuration, timeAgo, viewerZone } from './format';
 import { Button, CancelButton, EmptyState, Modal, PageHeader, StatusBadge } from './components/ui';
 import { useToast } from './components/toast';
 import { FilePicker } from './components/FilePicker';
@@ -61,6 +61,12 @@ function formatAt(iso: string, zone: string): string {
   } catch { return iso; }
 }
 
+/** " · 12% CPU · 1.3 GB" while a service runs and has been sampled. */
+function resourcesLabel(s: Service): string {
+  if (s.cpu_percent == null || s.rss_bytes == null) return '';
+  return ` · ${Math.round(s.cpu_percent)}% CPU · ${formatBytes(s.rss_bytes)}`;
+}
+
 const timeoutLabel = (seconds: number) =>
   seconds < 60 ? `${seconds}s` : seconds % 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds / 60}m`;
 
@@ -73,13 +79,14 @@ export function describe(s: Service, now: number): { text: string; resumable: bo
       const since = s.current_session?.started_at;
       const up = since ? `Up ${formatDuration((now - new Date(since).getTime()) / 1000)}` : 'Running';
       const pid = s.current_session?.pid ? ` · pid ${s.current_session.pid}` : '';
+      const using = resourcesLabel(s);
       if (s.override_running === true && s.override_reason === 'user') {
-        return { text: `${up}${pid} · started by you${back}`, resumable: s.start_mode === 'schedule' };
+        return { text: `${up}${pid}${using} · started by you${back}`, resumable: s.start_mode === 'schedule' };
       }
       if (s.start_mode === 'schedule' && s.next_change) {
-        return { text: `${up}${pid} · stops ${formatAt(s.next_change, zone)}`, resumable: false };
+        return { text: `${up}${pid}${using} · stops ${formatAt(s.next_change, zone)}`, resumable: false };
       }
-      return { text: `${up}${pid}`, resumable: false };
+      return { text: `${up}${pid}${using}`, resumable: false };
     }
     case 'stopping':
     case 'waiting_lock':
@@ -310,6 +317,9 @@ export function ServiceDetail() {
               <><dt>Lock</dt><dd>{s.lock_mode === 'exclusive' ? 'Runs alone on' : 'Shares'} <code className="code-inline">{s.lock_resource}</code></dd></>
             )}
             {s.current_session?.pid && <><dt>Process</dt><dd>pid {s.current_session.pid}</dd></>}
+            {s.cpu_percent != null && s.rss_bytes != null && (
+              <><dt>Using</dt><dd>{Math.round(s.cpu_percent)}% CPU · {formatBytes(s.rss_bytes)} memory</dd></>
+            )}
           </dl>
         </section>
         {s.start_mode === 'schedule' && (

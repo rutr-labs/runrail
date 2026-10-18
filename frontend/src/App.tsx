@@ -4,7 +4,7 @@ import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useS
 import clsx from 'clsx';
 import {
   LayoutDashboard, GitBranch, History, FolderOpen,
-  Cpu, Package, Play, Plus, Search, ChevronRight, Server,
+  Cpu, Package, Play, Plus, Search, ChevronRight, Server, Bell,
   Clock, Calendar, Zap, GitMerge, Activity,
   AlertTriangle, CheckCircle2, RefreshCw, Trash2, Pencil,
   ArrowLeft, Terminal, Download, Settings, ChevronsRight,
@@ -99,6 +99,8 @@ type Workflow = {
   project_id?: number | null;
   default_environment_id?: number | null;
   notify_webhook_url?: string | null;
+  webhook_error?: string | null;
+  webhook_error_at?: string | null;
   auto_pause_failures?: number | null;
   // v0.5 operator state — written by the snooze endpoints, never by WorkflowIn.
   snooze_until?: string | null;
@@ -949,6 +951,41 @@ function Dashboard() {
         </>
       )}
     </>
+  );
+}
+
+/* ─── Webhook test ─────────────────────────────────────────
+   Sends one message to the SAVED webhook and says what came back. It tests the
+   stored URL on purpose: the field above may hold an unsaved edit, and a test
+   that passed on text never submitted would be worse than none. */
+function WebhookTest({ workflow }: { workflow: Workflow }) {
+  const [state, setState] = useState<{ busy: boolean; result?: { ok: boolean; error: string | null; url_host: string | null } | string }>({ busy: false });
+  const configured = Boolean(workflow.notify_webhook_url);
+  const send = async () => {
+    setState({ busy: true });
+    try {
+      const result = await post<{ ok: boolean; error: string | null; url_host: string | null }>(`/workflows/${workflow.id}/notify-test`, {});
+      setState({ busy: false, result });
+    } catch (error) {
+      setState({ busy: false, result: error instanceof Error ? error.message : 'Could not send' });
+    }
+  };
+  const r = state.result;
+  return (
+    <div className="webhook-test">
+      <button type="button" className="btn btn-ghost btn-sm" disabled={state.busy} onClick={send}
+              title={configured ? 'Send a test message to the saved webhook' : 'Uses the default webhook from RUNRAIL_NOTIFY_WEBHOOK_URL, if any'}>
+        <Bell size={12} /> {state.busy ? 'Sending…' : 'Send a test message'}
+      </button>
+      {r && (typeof r === 'string'
+        ? <small className="webhook-test-result is-bad">{r}</small>
+        : r.ok
+          ? <small className="webhook-test-result is-ok">Delivered to {r.url_host}.</small>
+          : <small className="webhook-test-result is-bad">{r.url_host} answered: {r.error}</small>)}
+      {!r && workflow.webhook_error && (
+        <small className="webhook-test-result is-bad">Last delivery failed: {workflow.webhook_error}</small>
+      )}
+    </div>
   );
 }
 
@@ -2475,6 +2512,7 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
           <label className="field"><span>Failure webhook <em>Optional — Slack/Teams URL</em></span>
             <input name="webhook" defaultValue={w.notify_webhook_url || ''} placeholder="https://hooks.slack.com/…" />
             <small>Notified on first failure and on recovery.</small>
+            <WebhookTest workflow={w} />
           </label>
           <label className="field compact"><span>Auto-pause after <em>Optional</em></span>
             <input name="autopause" type="number" min="1" defaultValue={w.auto_pause_failures ?? ''} placeholder="e.g. 5" />
@@ -2595,6 +2633,14 @@ function WorkflowDetail() {
             <span className="eyebrow">WORKFLOW</span>
             <h1 style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties}>{w.name}</h1>
             <p>{w.description || 'No description yet'}</p>
+            {w.webhook_error && (
+              // A failing webhook used to fail silently forever; this is the
+              // one place the person who set it up will look.
+              <p className="webhook-warn" title={`Last attempt ${w.webhook_error_at ? new Date(w.webhook_error_at).toLocaleString() : ''}`}>
+                <AlertTriangle size={12} /> Alerts are not being delivered: {w.webhook_error}.
+                <button type="button" className="text-link" onClick={() => setEditOpen(true)}>Check the webhook</button>
+              </p>
+            )}
           </div>
           <div className="detail-actions">
             <Button variant="ghost" onClick={() => setEditOpen(true)}><Pencil size={13} /> Edit</Button>

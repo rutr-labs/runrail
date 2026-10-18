@@ -422,6 +422,9 @@ class ServiceOut(ORMModel):
     state_detail: str | None = None
     state_since: UTCDateTime | None = None
     next_attempt_at: UTCDateTime | None = None
+    cpu_percent: float | None = None
+    rss_bytes: int | None = None
+    resources_at: UTCDateTime | None = None
     created_at: UTCDateTime
     updated_at: UTCDateTime
     # Computed per request:

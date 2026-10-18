@@ -1,5 +1,7 @@
 """Workflow-as-code: YAML export/apply round-trips and declarative task upserts."""
 
+from pathlib import Path
+
 import pytest
 from portable import emit
 
@@ -41,7 +43,8 @@ def test_export_apply_round_trip_is_idempotent(client):
     with SessionLocal() as db:
         summary = apply_workflows(db, data)
     assert summary == {"created": [], "updated": ["etl"]}
-    tasks = client.get(f"/api/workflows/{client.get('/api/workflows').json()[0]['id']}/tasks").json()
+    flows = client.get('/api/workflows').json()
+    tasks = client.get(f"/api/workflows/{flows[0]['id']}/tasks").json()
     assert [t["name"] for t in tasks] == ["extract", "load"]  # no duplicates
 
 
@@ -189,3 +192,72 @@ def test_a_rename_in_a_file_cannot_take_another_workflows_name(client):
     exported["workflows"][0]["name"] = "b"
     with SessionLocal() as db, pytest.raises(ValueError, match="already has that name"):
         apply_workflows(db, exported)
+
+
+def test_a_full_export_carries_projects_and_environments_so_a_fresh_home_can_apply_it(client, tmp_path):
+    """The export named projects and environments without defining them, so a
+    file applied to a fresh home failed on the first task that used one — which
+    is every Python and notebook task. A first-run import from YAML therefore
+    only ever worked for shell-only, project-less workflows."""
+    import sys
+
+    from runrail.db import SessionLocal
+    from runrail.models import Environment, Project
+    from runrail.workflow_io import apply_workflows, export_workflows
+
+    root = tmp_path / "proj"; root.mkdir()
+    env = client.post("/api/environments", json={"name": "py", "executable": sys.executable}).json()
+    assert client.post("/api/environments", json={"name": "built", "create_venv": True,
+                                                  "packages": ["requests==2.32.3"]}).status_code == 201
+    project = client.post("/api/projects", json={"name": "p", "root_path": str(root),
+                                                 "default_environment_id": env["id"]}).json()
+    workflow = client.post("/api/workflows", json={"name": "etl", "enabled": True, "max_concurrent_runs": 1,
+                                                   "project_id": project["id"],
+                                                   "default_environment_id": env["id"]}).json()
+    (root / "job.py").write_text("print('ok')")
+    created = client.post(f"/api/workflows/{workflow['id']}/tasks", json={
+        "name": "job", "task_type": "python", "script_path": "job.py", "environment_id": env["id"],
+        "depends_on_json": [], "retries": 0, "retry_delay_seconds": 0})
+    assert created.status_code == 201, created.text
+    with SessionLocal() as db:
+        exported = export_workflows(db)
+    assert [p["name"] for p in exported["projects"]] == ["p"]
+    assert exported["projects"][0]["default_environment"] == "py"
+    by_name = {e["name"]: e for e in exported["environments"]}
+    assert by_name["built"] == {"name": "built", "managed": True, "packages": ["requests==2.32.3"]}
+    assert by_name["py"]["executable"] == str(Path(sys.executable).resolve())  # as validated
+
+    # A fresh home: nothing but the file.
+    with SessionLocal() as db:
+        for model in (Project, Environment):
+            for row in db.query(model):
+                db.delete(row)
+        db.commit()
+    for w in client.get("/api/workflows").json():
+        client.delete(f"/api/workflows/{w['id']}")
+    with SessionLocal() as db:
+        summary = apply_workflows(db, exported)
+        db.commit()
+    assert summary["created"] == ["environment built", "environment py", "project p", "etl"]
+    envs = {e["name"]: e for e in client.get("/api/environments").json()}
+    assert envs["py"]["status"] == "ready" and envs["built"]["status"] == "creating"
+    flows = client.get('/api/workflows').json()
+    tasks = client.get(f"/api/workflows/{flows[0]['id']}/tasks").json()
+    assert tasks[0]["environment_id"] == envs["py"]["id"]
+
+
+def test_an_environment_missing_on_this_machine_is_created_failed_not_refused(client):
+    """The workflows can be applied now and the interpreter fixed afterwards."""
+    from runrail.db import SessionLocal
+    from runrail.workflow_io import apply_workflows
+
+    with SessionLocal() as db:
+        summary = apply_workflows(db, {
+            "environments": [{"name": "laptop-python", "env_type": "python",
+                              "executable": "/nowhere/bin/python3"}],
+            "workflows": [{"name": "w", "default_environment": "laptop-python",
+                           "tasks": [{"name": "t", "task_type": "shell", "command": "echo"}]}]})
+        db.commit()
+    assert summary["created"] == ["environment laptop-python", "w"]
+    env = client.get("/api/environments").json()[0]
+    assert env["status"] == "failed" and "does not exist" in env["last_error"]

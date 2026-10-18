@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
@@ -427,6 +428,13 @@ class Service(TimestampMixin, Base):
     override_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     override_reason: Mapped[str | None] = mapped_column(String(32))
     restart_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # What the process tree is using, sampled by the supervisor every few
+    # seconds while the service runs: the first thing you want to know about a
+    # model server. Cleared when it stops.
+    cpu_percent: Mapped[float | None]
+    rss_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    resources_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Written by the supervisor, read by the API and the run claim (locks).
     state: Mapped[ServiceState] = mapped_column(_str_enum(ServiceState),

@@ -91,11 +91,40 @@ def export_workflows(db: Session, name: str | None = None) -> dict[str, Any]:
         exported.append(item)
     data: dict[str, Any] = {"workflows": exported}
     if not name:
+        # Projects and environments ride along in a full export, so a file
+        # applied to a fresh home can create what its workflows refer to. By
+        # name only, the apply used to fail on the first task that named one.
+        project_rows = [_compact({"name": p.name, "root_path": p.root_path,
+                                  "description": p.description,
+                                  "default_environment": environments.get(p.default_environment_id)})
+                        for p in db.scalars(select(Project).order_by(Project.name))]
+        environment_rows = [_export_environment(e)
+                            for e in db.scalars(select(Environment).order_by(Environment.name))]
+        if project_rows:
+            data["projects"] = project_rows
+        if environment_rows:
+            data["environments"] = environment_rows
         services = [_export_service(service, projects, environments)
                     for service in db.scalars(select(Service).order_by(Service.name))]
         if services:
             data["services"] = services
     return data
+
+
+def _export_environment(environment: Environment) -> dict[str, Any]:
+    """Configuration only: a managed environment is its package list, an
+    external one is where its interpreter lives on the machine it came from."""
+    item: dict[str, Any] = {"name": environment.name}
+    item.update(_compact({"description": environment.description,
+                          "env_vars": environment.env_vars_json}))
+    if environment.managed:
+        item["managed"] = True
+        item["packages"] = list(environment.packages_json or [])
+    else:
+        item["env_type"] = environment.env_type.value
+        item.update(_compact({"executable": environment.executable,
+                              "conda_env": environment.conda_env}))
+    return item
 
 
 def _export_service(service: Service, projects: dict, environments: dict) -> dict[str, Any]:
@@ -154,9 +183,19 @@ def _validate_graph(tasks: list[dict[str, Any]]) -> None:
 def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
     entries = data.get("workflows") or []
     services = data.get("services") or []
-    if not isinstance(entries, list) or not isinstance(services, list) or not (entries or services):
+    projects = data.get("projects") or []
+    environments = data.get("environments") or []
+    if not all(isinstance(section, list) for section in (entries, services, projects, environments)) \
+            or not (entries or services or projects or environments):
         raise ValueError("File must contain a top-level 'workflows' or 'services' list")
     summary: dict[str, list[str]] = {"created": [], "updated": []}
+    # Dependencies first, so the workflows and services below can name them.
+    for entry in environments:
+        created, env_name = _apply_environment(db, entry)
+        summary["created" if created else "updated"].append(f"environment {env_name}")
+    for entry in projects:
+        created, project_name = _apply_project(db, entry)
+        summary["created" if created else "updated"].append(f"project {project_name}")
     for entry in entries:
         wf_name = entry.get("name")
         if not wf_name:
@@ -252,6 +291,75 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
         summary["created" if created else "updated"].append(f"service {name}")
     db.commit()
     return summary
+
+
+def _apply_environment(db: Session, entry: dict[str, Any]) -> tuple[bool, str]:
+    """Create an environment the file describes, or update its configuration.
+
+    An external environment whose interpreter is not on this machine is still
+    created — as `failed`, with the reason — rather than refusing the whole
+    file: the workflows that name it can be applied now and the environment
+    fixed from the Environments page. A managed one is created `creating` and
+    the worker builds it. Nothing here touches an existing environment's build.
+    """
+    from runrail.environments import validate_external, validate_package_specs
+    from runrail.models import EnvironmentStatus, EnvironmentType
+
+    if not isinstance(entry, dict) or not entry.get("name"):
+        raise ValueError("Every environment needs a name")
+    name = entry["name"]
+    environment = db.scalar(select(Environment).where(Environment.name == name))
+    created = environment is None
+    managed = bool(entry.get("managed"))
+    if created:
+        environment = Environment(name=name, managed=managed,
+                                  status=EnvironmentStatus.creating if managed else EnvironmentStatus.ready)
+        db.add(environment)
+    environment.description = entry.get("description")
+    environment.env_vars_json = entry.get("env_vars")
+    if managed:
+        if not created and not environment.managed:
+            raise ValueError(f"Environment '{name}' exists here as an external interpreter; "
+                             "the file describes a managed one")
+        packages = validate_package_specs(list(entry.get("packages") or []))
+        if created or packages != list(environment.packages_json or []):
+            environment.packages_json = packages
+            if not created:
+                environment.status = EnvironmentStatus.creating  # a rebuild, picked up by the worker
+    else:
+        if not created and environment.managed:
+            raise ValueError(f"Environment '{name}' exists here as a managed virtualenv; "
+                             "the file describes an external one")
+        environment.env_type = EnvironmentType(entry.get("env_type") or EnvironmentType.python)
+        environment.executable = entry.get("executable")
+        environment.conda_env = entry.get("conda_env")
+        try:
+            validate_external(environment)
+        except ValueError as exc:
+            environment.status = EnvironmentStatus.failed
+            environment.last_error = str(exc)
+    db.flush()
+    return created, name
+
+
+def _apply_project(db: Session, entry: dict[str, Any]) -> tuple[bool, str]:
+    if not isinstance(entry, dict) or not entry.get("name"):
+        raise ValueError("Every project needs a name")
+    name = entry["name"]
+    root = entry.get("root_path")
+    if not root:
+        raise ValueError(f"Project '{name}' needs a root_path")
+    project = db.scalar(select(Project).where(Project.name == name))
+    created = project is None
+    if created:
+        project = Project(name=name, root_path=str(root))
+        db.add(project)
+    project.root_path = str(root)
+    project.description = entry.get("description")
+    project.default_environment_id = _resolve(
+        db, Environment, entry.get("default_environment"), "environment")
+    db.flush()
+    return created, name
 
 
 def _apply_service(db: Session, entry: dict[str, Any]) -> tuple[bool, str]:

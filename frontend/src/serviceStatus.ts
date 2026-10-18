@@ -44,6 +44,9 @@ export interface Service {
   state_detail: string | null;
   state_since: string | null;
   next_attempt_at: string | null;
+  cpu_percent: number | null;
+  rss_bytes: number | null;
+  resources_at: string | null;
   should_run: boolean;
   next_change: string | null;
   current_session: ServiceSession | null;
