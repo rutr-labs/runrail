@@ -140,4 +140,12 @@ def validate_cron(expr: str) -> str:
         cron_trigger(expr)
     except (ValueError, KeyError) as exc:
         raise ValueError(f"Invalid cron expression{_explain(expr, exc)}") from exc
+    fields = expr.split()
+    if len(fields) == len(_FIELD_NAMES) and fields[2] != "*" and fields[4] != "*":
+        # Standard cron runs `0 9 1 * 1` on the 1st AND every Monday; the
+        # scheduler requires both at once, so it ran once or twice a year. Only
+        # new expressions are refused: a stored one keeps loading and running as
+        # it always has.
+        raise ValueError("Invalid cron expression: restrict day-of-month or day-of-week, "
+                         "not both (use two workflows for both)")
     return expr

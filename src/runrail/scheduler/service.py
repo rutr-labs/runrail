@@ -138,6 +138,15 @@ def check_missed_runs(db: Session) -> None:
         .where(WorkflowRun.workflow_id.in_(ids),
                WorkflowRun.trigger_type == TriggerType.schedule)
         .group_by(WorkflowRun.workflow_id)).all())
+    # When the newest scheduled iteration left the queue. Fires while it waited
+    # were coalesced into it by design (schedule_gaps calls them blocked); the
+    # schedule is observed up to then, not only up to when it was created —
+    # otherwise a backlog that just drained read as a schedule gone quiet.
+    dequeued = dict(db.execute(
+        select(WorkflowRun.workflow_id, func.max(WorkflowRun.started_at))
+        .where(WorkflowRun.workflow_id.in_(ids),
+               WorkflowRun.trigger_type == TriggerType.schedule)
+        .group_by(WorkflowRun.workflow_id)).all())
     current = now()
     for workflow in workflows:
         # A mute must not even record the transition: a marker set while snoozed
@@ -152,7 +161,8 @@ def check_missed_runs(db: Session) -> None:
         # one term, so an unrelated edit delays detection by one interval: the
         # deliberate trade for zero extra columns. Do not "fix" it.
         anchor = max(_aware(workflow.updated_at) or _EPOCH,
-                     _aware(workflow.snooze_until) or _EPOCH, last or _EPOCH)
+                     _aware(workflow.snooze_until) or _EPOCH, last or _EPOCH,
+                     _aware(dequeued.get(workflow.id)) or _EPOCH)
         expected = _expected_fire(workflow, anchor)
         # "No run since the expected fire" needs no query: expected is by
         # construction later than every run this workflow has.
@@ -202,7 +212,9 @@ def check_sla_breaches(db: Session) -> None:
         # behind it — above all the iteration enqueue_scheduled coalesced behind
         # an approval gate — is late BECAUSE of it, and alerting on the follower
         # names the one run that is blameless.
-        if workflow.id in reported:
+        # Runs already going are each on their own clock: with two allowed at
+        # once, the second used to overrun unreported behind the first.
+        if workflow.id in reported and run.started_at is None:
             continue
         reported.add(workflow.id)
         # A run already marked keeps its slot rather than handing the alert down
@@ -234,8 +246,8 @@ def check_watchdogs(db: Session) -> None:
     Honest limitation: this runs inside the scheduler process, so it cannot
     report its own death. What it does catch is a host that slept or rebooted
     (APScheduler's misfire grace skips those fires, so the runs truly never
-    happened), a workflow left disabled, a crontab sync() silently rejected, and
-    a run that overran its deadline. Calling it from an external timer is the
+    happened), a workflow left disabled, and a run that overran its deadline. A
+    crontab sync() rejects is not one of them — the API refuses to save one. Calling it from an external timer is the
     answer to a fully dead process.
     """
     if runtime_settings.current("paused"):
