@@ -140,6 +140,8 @@ runrail backfill daily-refresh --from 2026-06-01 --to 2026-06-30
 runrail export -o workflows.yml                  # workflows as YAML you can commit
 runrail apply workflows.yml                      # declarative upsert (survives renames)
 runrail import ~/old/.runrail                    # bring an existing setup into this home
+runrail backup --out tonight.zip                 # configuration + database snapshot + manifest
+runrail restore tonight.zip                      # put that database back (with the server stopped)
 runrail cleanup --older-than-days 30 --dry-run   # prune old runs, logs and artifacts
 runrail status
 
@@ -151,7 +153,7 @@ runrail worker --concurrency 8
 
 ## Notifications
 
-Set `RUNRAIL_NOTIFY_WEBHOOK_URL`, or a webhook per workflow. RunRail posts on the first failure after a success, and again when it recovers. A schedule that breaks at midnight sends one message, not three hundred. Nine event kinds go out in all, covering failures, recoveries, auto-pause, approvals, missed schedules and deadlines.
+Set a default webhook on the Settings page (or `RUNRAIL_NOTIFY_WEBHOOK_URL`), or a webhook per workflow. RunRail posts on the first failure after a success, and again when it recovers. A schedule that breaks at midnight sends one message, not three hundred. Ten event kinds go out in all, covering failures, recoveries, auto-pause, approvals, missed schedules, deadlines and services in a crash loop; Settings lets you switch kinds off and set quiet hours, during which nothing is posted — what happened overnight is in Activity in the morning.
 
 Slack and custom receivers get JSON whose `text` field renders directly. For Microsoft Teams, make a Workflow from the "when a webhook request is received" template (Teams → channel → Workflows) and paste the URL. RunRail recognises Teams URLs and sends the Adaptive Card envelope that flow expects.
 
@@ -171,6 +173,10 @@ Docker is available (`docker compose up --build` starts RunRail with PostgreSQL 
 
 ## Configuration
 
+Most of what you would tune lives on the **Settings** page and applies without a restart: the default webhook and which alerts go out, quiet hours, how long runs are kept (with a preview of what that would delete before it does), how many runs and tasks execute at once, the public URL, and an update check. The same page shows the machine — version, uptime, database and disk, what the worker and the supervisor are doing — and has the operator controls: **pause everything new** while what is executing finishes, **download a backup**, and restore one.
+
+An environment variable pins a setting: the page shows it locked and names the variable, so a deployment that configures RunRail in a unit file or `.env` stays exactly what that file says.
+
 | Variable | Default |
 |---|---|
 | `RUNRAIL_HOME` | Per-user data directory (see [Install](#install)) |
@@ -186,6 +192,10 @@ Docker is available (`docker compose up --build` starts RunRail with PostgreSQL 
 | `RUNRAIL_SQLITE_DB_PATH` | unset; the database SQL tasks run against, unless the task sets `sqlite_db_path` |
 
 Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:00 on that workflow's clock across DST. The UI shows occurrences in yours.
+
+### Backups
+
+`runrail backup` (or the button on Settings) writes a zip holding the configuration as YAML, a consistent snapshot of the SQLite database and a manifest. Logs and artifacts are not in it — they are the bulk of a home and sit in plain folders under `$RUNRAIL_HOME`; copy that folder for a full copy. Restoring the configuration (workflows, services, projects, environments) works from the page while RunRail runs, as an upsert that deletes nothing. Restoring the database is `runrail restore <zip>` with the server stopped; it refuses while one is alive and keeps the database it replaces. Before every schema upgrade RunRail also takes a restore point of its own under `$RUNRAIL_HOME/backups/` (the newest three are kept), so a downgrade to the previous version has something to return to. On PostgreSQL the backup holds configuration only; use `pg_dump` for the database.
 
 ## Worth knowing
 
