@@ -145,6 +145,9 @@ class ServiceSupervisor:
         self.holding = False
         self._renewed: datetime | None = None
         self._stop = threading.Event()
+        #: Set while RunRail drains its runs before stopping: services that
+        #: are up stay up, nothing new starts. The reason is shown as the detail.
+        self._holding_starts: str | None = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     def run(self) -> None:
@@ -158,6 +161,10 @@ class ServiceSupervisor:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def hold_starts(self, reason: str) -> None:
+        """Keep what is running, start nothing new (shutdown's first stage)."""
+        self._holding_starts = reason
 
     def shutdown(self) -> None:
         """Stop every service this supervisor started, each with its own stop
@@ -284,11 +291,13 @@ class ServiceSupervisor:
             self._set_state(db, service, ServiceState.backoff, service.state_detail,
                             next_attempt_at=retry_at)
             return
-        if runtime_settings.current("paused"):
+        held = self._holding_starts or (
+            "RunRail is paused (Settings)" if runtime_settings.current("paused") else None)
+        if held:
             # A service already waiting for its lock keeps that state (and so
             # its place in the queue, which is ordered by state_since).
             kept = service.state if service.state == ServiceState.waiting_lock else ServiceState.stopped
-            self._set_state(db, service, kept, "RunRail is paused (Settings)")
+            self._set_state(db, service, kept, held)
             return
         waiting_for = self._environment_wait(db, service)
         if waiting_for:

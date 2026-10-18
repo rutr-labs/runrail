@@ -775,8 +775,11 @@ class WorkerService:
             kill_running_tasks()
             os._exit(130)
         self.running = False
-        # Services stop now, in parallel with the runs draining below.
-        self.supervisor.stop()
+        # Services keep running until the runs have drained — a run calling
+        # the model server it was written against would otherwise fail in
+        # its last minutes — but nothing new is started meanwhile. run()
+        # stops them once the pool is empty.
+        self.supervisor.hold_starts("RunRail is stopping")
         executing = len(self.executing_run_ids())
         if executing:
             print(f"\nStopping: waiting for {executing} executing run(s) to finish. "
