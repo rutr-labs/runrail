@@ -130,7 +130,7 @@ def test_pausing_stops_new_claims_and_resuming_releases_them(client, monkeypatch
     polls = []
     real_claim = worker_module.claim_runnable_run
     monkeypatch.setattr(worker_module, "claim_runnable_run",
-                        lambda db: polls.append(1) or real_claim(db))
+                        lambda db, **kw: polls.append(1) or real_claim(db, **kw))
     workflow = make_workflow(client, "p")
     make_shell_task(client, workflow["id"], "t", emit("hi"))
     client.put("/api/settings", json={"paused": True, "worker_concurrency": 1})

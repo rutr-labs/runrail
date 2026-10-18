@@ -261,6 +261,9 @@ class WorkflowRun(Base):
     # gap inside a segment, not a new one, so open_gate stamps the current
     # value onto its TaskRun.resume_index without bumping it.
     resume_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: The worker executing this run (WorkerHeartbeat.owner): recovery only
+    #: touches runs whose worker has stopped beating.
+    claimed_by: Mapped[str | None] = mapped_column(String(64))
     # When the latest resume began. The SLA deadline is measured from here
     # rather than created_at once a run has been resumed: yesterday's run
     # resumed today is not twenty-three hours late the moment it starts.
@@ -453,6 +456,14 @@ class Service(TimestampMixin, Base):
 
     sessions: Mapped[list["ServiceSession"]] = relationship(
         cascade="all, delete-orphan", passive_deletes=True, back_populates="service")
+
+
+class WorkerBeat(Base):
+    """A worker process saying it is alive; see runrail.worker.service."""
+
+    __tablename__ = "worker_heartbeats"
+    owner: Mapped[str] = mapped_column(String(64), primary_key=True)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class CleanupPass(Base):

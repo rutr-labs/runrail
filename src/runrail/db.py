@@ -25,7 +25,9 @@ def _make_engine():
         kwargs = {"connect_args": {"options": "-c timezone=utc"}}
     else:
         kwargs = {}
-    engine = create_engine(url, **kwargs)
+    # pool_pre_ping: a connection the server dropped (a PostgreSQL restart) is
+    # replaced on checkout instead of failing the first query that uses it.
+    engine = create_engine(url, pool_pre_ping=True, **kwargs)
     if url.startswith("sqlite"):
         @event.listens_for(engine, "connect")
         def configure_sqlite(dbapi_connection, _):

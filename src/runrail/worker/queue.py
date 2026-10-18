@@ -111,7 +111,8 @@ def _resource_blocked():
     )
 
 
-def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | None:
+def claim_next_run(db: Session, skip: Collection[int] = (), *, owner: str | None = None,
+                   skip_workflows: Collection[int] = ()) -> WorkflowRun | None:
     """Atomically claim the oldest queued run whose workflow has concurrency budget
     left and can take its named resource.
 
@@ -121,10 +122,12 @@ def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | Non
     that further, across workflows: exclusive runs get the resource alone, shared
     runs overlap each other.
 
-    `skip` excludes runs the caller already found it cannot start this pass.
+    `skip` excludes runs, and `skip_workflows` whole workflows, the caller
+    already found it cannot start this pass. `owner` names the worker that
+    will execute the run, so recovery can tell a live run from an orphan.
     """
     found = db.execute(
-        select(WorkflowRun.id, Workflow.lock_resource)
+        select(WorkflowRun.id, Workflow.lock_resource, WorkflowRun.workflow_id)
         .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
         .where(
             WorkflowRun.status == RunStatus.queued,
@@ -132,6 +135,7 @@ def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | Non
             ~_resource_blocked(),
             ~service_blocks_run(),
             *([WorkflowRun.id.not_in(skip)] if skip else []),
+            *([WorkflowRun.workflow_id.not_in(skip_workflows)] if skip_workflows else []),
         )
         # Backfills last. Ordered by age alone, a month of backfill rows
         # queued ahead of the 09:00 iteration held it for the hours they took
@@ -144,8 +148,12 @@ def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | Non
     ).first()
     if found is None:
         return None
-    candidate, resource = found
+    candidate, resource, workflow_id = found
     serialise(db, resource)
+    # Per workflow too: under READ COMMITTED two workers claiming different runs
+    # of one workflow could both pass the max_concurrent_runs count, leaving
+    # _over_gate_budget to requeue after the fact — sometimes both.
+    serialise(db, f"workflow:{workflow_id}")
     workflow_limit = _candidate_workflow(Workflow.max_concurrent_runs)
     # Re-check every condition inside the UPDATE so concurrent workers cannot
     # exceed the per-workflow limit, double-claim the same run, or both acquire
@@ -161,7 +169,7 @@ def claim_next_run(db: Session, skip: Collection[int] = ()) -> WorkflowRun | Non
     # must not rewrite the run's start time and walk the timeline origin
     # forward. A resume deliberately nulls started_at first to open a fresh
     # segment, so it still gets a new one.
-    ).values(status=RunStatus.running,
+    ).values(status=RunStatus.running, claimed_by=owner,
              started_at=func.coalesce(WorkflowRun.started_at, now())))
     if result.rowcount != 1:
         db.rollback()

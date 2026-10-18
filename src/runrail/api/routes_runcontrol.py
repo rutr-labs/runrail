@@ -1,7 +1,7 @@
 """Run control: resume a failed run, and approve or reject an open gate."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from runrail.api.crud import get_or_404
@@ -59,6 +59,11 @@ def resume_run(object_id: int, data: ResumeIn | None = None, db: Session = Depen
     if run.status not in _RESUMABLE:
         raise HTTPException(409, f"Run is {run.status.value}; only a failed or "
                                  "cancelled run can be resumed")
+    if run.status == RunStatus.cancelled and run.finished_at is None:
+        # Cancelled while a task ran: the worker finishes the cancel (and
+        # stamps finished_at) within a few seconds. Resumed before then, a
+        # worker claimed the new segment while the old executor still ran.
+        raise HTTPException(409, "The run is still stopping; resume it in a moment")
     workflow = get_or_404(db, Workflow, run.workflow_id)
     _ensure_workflow_runnable(db, workflow)
     tasks = _workflow_tasks(db, run)
@@ -68,7 +73,9 @@ def resume_run(object_id: int, data: ResumeIn | None = None, db: Session = Depen
     # fresh segment (queue.py re-stamps it); sla_breached_at is cleared so a
     # second breach can alert again.
     result = db.execute(update(WorkflowRun)
-                        .where(WorkflowRun.id == run.id, WorkflowRun.status.in_(_RESUMABLE))
+                        .where(WorkflowRun.id == run.id, WorkflowRun.status.in_(_RESUMABLE),
+                               or_(WorkflowRun.status != RunStatus.cancelled,
+                                   WorkflowRun.finished_at.is_not(None)))
                         .values(status=RunStatus.queued, resume_count=segment, started_at=None,
                                 finished_at=None, duration_seconds=None, sla_breached_at=None,
                                 resumed_at=now()))
