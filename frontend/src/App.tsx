@@ -784,7 +784,7 @@ function Dashboard() {
   // mode, so the count is a headline stat, not only a panel further down.
   const approvals = useOpenApprovals();
   const waitingRuns = new Set((approvals ?? []).map(row => row.run_id)).size;
-  const services = useServices();
+  const services = useServices({ supervisor: false, pollIdle: false });
   const serviceCount = serviceCounts(services.items);
 
   useEffect(() => { load(); }, []);
@@ -3265,7 +3265,7 @@ function Wallboard() {
   }, []);
   useVisibleInterval(true, load, 5000);
   const now = useNow(runs.some(r => r.status === 'running'));
-  const services = useServices();
+  const services = useServices({ supervisor: false, pollIdle: false });
   const servicesDown = serviceCounts(services.items).down;
 
   const live = runs.filter(r => LIVE(r.status));

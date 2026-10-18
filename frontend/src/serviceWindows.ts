@@ -27,6 +27,52 @@ export const minutesOf = (hhmm: string): number => {
 export const validTime = (value: string): boolean =>
   /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 
+/* The zone maths below falls back to UTC for a name Intl rejects (see cron.ts),
+   which would quietly show UTC times under a wrong label. Callers ask first. */
+const knownZones = new Map<string, boolean>();
+export function isKnownZone(zone: string): boolean {
+  if (!knownZones.has(zone)) {
+    try { new Intl.DateTimeFormat('en-US', { timeZone: zone }); knownZones.set(zone, zone !== ''); }
+    catch { knownZones.set(zone, false); }
+  }
+  return knownZones.get(zone)!;
+}
+
+function formatInZone(date: Date, zone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: zone, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 16).replace('T', ' ');
+  }
+}
+
+export function untilLabel(target: Date, now: number): string {
+  const minutes = Math.max(0, Math.round((target.getTime() - now) / 60_000));
+  if (minutes < 1) return 'in under a minute';
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `in ${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ''}`;
+  const days = Math.floor(hours / 24);
+  return `in ${days}d${hours % 24 ? ` ${hours % 24}h` : ''}`;
+}
+
+/** What the windows do next, in words, for this zone. About the schedule, not
+ *  the process: a service can be stopped inside a window, so this never says
+ *  "running". */
+export function scheduleSummary(windows: ServiceWindow[], zone: string, now = Date.now()): string {
+  if (!windows.length) return 'No windows yet — it will never start on its own.';
+  if (!isKnownZone(zone)) return `Unknown timezone "${zone}" — fix it to see when this runs.`;
+  const at = new Date(now);
+  const change = nextChange(windows, zone, at);
+  const active = isActive(windows, zone, at);
+  if (!change) return active ? 'Covers the whole week — always on.' : 'Never runs.';
+  return active
+    ? `In a window now · closes ${formatInZone(change, zone)} (${untilLabel(change, now)})`
+    : `Next window opens ${formatInZone(change, zone)} (${untilLabel(change, now)})`;
+}
+
 /** End at or before start: the window runs past midnight into the next day. */
 export const crossesMidnight = (w: ServiceWindow): boolean =>
   minutesOf(w.end) <= minutesOf(w.start);

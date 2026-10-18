@@ -79,18 +79,41 @@ export function serviceCounts(items: Service[] | null) {
   };
 }
 
-/** Who has each locked resource now, and who is next for it. Services only:
- *  a resource held by a workflow shows up as a waiting service's reason. */
+/** Who has each locked resource now, and who is next for it. `holders` are
+ *  services only — several when the lock is shared; a resource a workflow
+ *  holds has none, and shows up as a waiting service's reason. */
 export function handovers(items: Service[]) {
   const resources = [...new Set(items.map(s => s.lock_resource).filter((r): r is string => !!r))].sort();
   return resources.map(resource => {
     const users = items.filter(s => s.lock_resource === resource);
-    const holder = users.find(s => ['running', 'starting', 'stopping'].includes(s.state)) ?? null;
+    const holders = users.filter(isLive).sort((a, b) => a.name.localeCompare(b.name));
     const waiting = users.find(s => s.state === 'waiting_lock') ?? null;
     const upcoming = users
-      .filter(s => s !== holder && s.start_mode === 'schedule' && !s.should_run && s.next_change)
+      .filter(s => !holders.includes(s) && s.start_mode === 'schedule' && !s.should_run && s.next_change)
       .sort((a, b) => new Date(a.next_change!).getTime() - new Date(b.next_change!).getTime())[0] ?? null;
-    return { resource, holder, waiting, upcoming };
-  }).filter(h => h.holder || h.waiting || h.upcoming);
+    return { resource, holders, waiting, upcoming };
+  }).filter(h => h.holders.length || h.waiting || h.upcoming);
 }
+
+export type Handover = ReturnType<typeof handovers>[number];
+
+/** "a + b", or "in use" when something we cannot name (a workflow run) has it
+ *  — a service is waiting, so it is certainly not free. */
+export function heldBy(h: Handover): string {
+  if (h.holders.length) return h.holders.map(s => s.name).join(' + ');
+  return h.waiting ? 'in use' : 'free';
+}
+
+/** The line while a service is stopping. The supervisor writes "Asked to stop"
+ *  once and "Force-stopping" once the kill went out; the seconds in between
+ *  are ours to count, from when the stopping state began. */
+export function stoppingDetail(s: Service, now: number): string {
+  if (s.state_detail === 'Force-stopping') return s.state_detail;
+  if (!s.state_since) return s.state_detail || 'Stopping';
+  const left = Math.ceil(s.stop_timeout_seconds - (now - new Date(s.state_since).getTime()) / 1000);
+  return left > 0 ? `Force stop in ${left}s` : 'Force-stopping';
+}
+
+/** Dropping a Start/Stop means going back to the schedule only when there is one. */
+export const resumeLabel = (s: Service) => s.start_mode === 'schedule' ? 'Resume schedule' : 'Resume';
 
