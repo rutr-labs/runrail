@@ -350,7 +350,7 @@ export function ServiceDetail() {
             )}
             {s.current_session?.pid && <><dt>Process</dt><dd>pid {s.current_session.pid}</dd></>}
             {s.cpu_percent != null && s.rss_bytes != null && (
-              <><dt>Using</dt><dd>{cpuLabel(s)} of {s.cpu_count} · {formatBytes(s.rss_bytes)} memory{treeLabel(s) && ` · ${treeLabel(s)}`}</dd></>
+              <><dt>Using</dt><dd>{cpuLabel(s, true)} · {formatBytes(s.rss_bytes)} memory{treeLabel(s) && ` · ${treeLabel(s)}`}</dd></>
             )}
           </dl>
         </section>

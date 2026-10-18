@@ -517,9 +517,9 @@ def embed(stop):
 
 def main():
     print(f"embedding-worker: {args.workers} workers, {args.cache_mb} MB cache", flush=True)
-    cache = bytearray(args.cache_mb << 20)  # a warm cache, touched so it is resident
-    for i in range(0, len(cache), 4096):
-        cache[i] = 1
+    # A warm cache that stays resident: random bytes, because macOS compresses
+    # untouched zero pages away within a minute and the memory figure with them.
+    cache = bytearray(os.urandom(args.cache_mb << 20))
     stop = multiprocessing.Event()
     workers = [multiprocessing.Process(target=embed, args=(stop,), daemon=True)
                for _ in range(args.workers)]

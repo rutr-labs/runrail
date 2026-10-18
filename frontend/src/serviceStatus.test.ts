@@ -108,6 +108,7 @@ describe('resource figures', () => {
     expect(cpuLabel(svc(1, 'a', 'running', { cpu_percent: 100, cpu_count: 4 }))).toBe('25% CPU (1.0 core)');
     expect(cpuLabel(svc(1, 'a', 'running', { cpu_percent: 0.4, cpu_count: 10 }))).toBe('0% CPU (0.0 cores)');
     expect(cpuLabel(svc(1, 'a', 'running'))).toBe('');
+    expect(cpuLabel(svc(1, 'a', 'running', { cpu_percent: 197, cpu_count: 10 }), true)).toBe('20% CPU · 2.0 of 10 cores');
   });
   test('the tree is counted in processes and threads', () => {
     expect(treeLabel(svc(1, 'a', 'running', { process_count: 3, thread_count: 7 }))).toBe('3 processes · 7 threads');

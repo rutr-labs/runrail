@@ -120,11 +120,13 @@ export function stoppingDetail(s: Service, now: number): string {
 /** The CPU figure as people read it: the machine's share, with the cores it
  *  amounts to. The supervisor stores it per core (200 = two cores flat out),
  *  which is what top shows and what confuses everyone. */
-export function cpuLabel(s: Service): string {
+export function cpuLabel(s: Service, long = false): string {
   if (s.cpu_percent == null) return '';
   const cores = s.cpu_percent / 100;
   const share = Math.round(cores / Math.max(1, s.cpu_count) * 100);
-  return `${share}% CPU (${cores < 10 ? cores.toFixed(1) : Math.round(cores)} ${cores === 1 ? 'core' : 'cores'})`;
+  const n = cores < 10 ? cores.toFixed(1) : String(Math.round(cores));
+  if (long) return `${share}% CPU · ${n} of ${s.cpu_count} cores`;
+  return `${share}% CPU (${n} ${cores === 1 ? 'core' : 'cores'})`;
 }
 
 /** The tree's size, for the detail page: a worker pool that did not come up
