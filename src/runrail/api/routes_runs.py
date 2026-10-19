@@ -25,6 +25,7 @@ from runrail.models import (
     now,
 )
 from runrail.paths import confined
+from runrail.run_parameters import ParameterError
 from runrail.schemas import TaskRunOut, WorkflowRunDetail, WorkflowRunOut
 
 router = APIRouter(prefix="/api")
@@ -108,7 +109,11 @@ def retry_run(object_id: int, db: Session = Depends(get_db)):
     # no task rows at all, and that phantom failure counts toward the
     # auto-pause streak — one click silently disabling the schedule.
     _ensure_workflow_runnable(db, workflow)
-    run = create_run(db, workflow, TriggerType.manual, dict(source.parameters_json or {}))
+    try:
+        run = create_run(db, workflow, TriggerType.manual, dict(source.parameters_json or {}))
+    except ParameterError as exc:
+        # The run form changed since: an option removed, a type changed.
+        raise HTTPException(422, f"This run's parameters no longer fit the workflow's run form: {exc}") from None
     ws_manager.notify({"type": "run_created", "id": run.id, "workflow_id": run.workflow_id})
     return run
 

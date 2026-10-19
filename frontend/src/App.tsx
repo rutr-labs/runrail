@@ -36,6 +36,8 @@ import {
   ServiceDetail, ServicesPage, ServicesPanel, WallboardServices, serviceCounts, useServices,
 } from './Services';
 import { attemptLabel, attemptTag, groupAttempts } from './attempts';
+import { RunFormEditor, RunFormFields, runFormValue } from './components/RunForm';
+import { collect, initialValues, needsAsking, type FormValues, type RunParameter } from './runForms';
 import type { AttemptGroup } from './attempts';
 import { LockField, LockBadge, lockValues } from './components/LockField';
 import { LatestReportPanel, ReportPanel } from './components/ReportPanel';
@@ -115,6 +117,8 @@ type Workflow = {
    *  same round-trip rule applies. */
   lock_resource?: string | null;
   lock_mode?: 'shared' | 'exclusive';
+  /** The run form: typed parameters "Run with…" asks for. A WorkflowIn key. */
+  run_parameters_json?: RunParameter[] | null;
 };
 
 type Project = {
@@ -2491,6 +2495,8 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
+    const runForm = runFormValue(f);
+    if ('error' in runForm) { toast(runForm.error, 'error'); return; }
     try {
       await put(`/workflows/${w.id}`, {
         name: f.get('name'), description: f.get('description') || null,
@@ -2506,6 +2512,7 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
         // release a resource lock this workflow depends on.
         ...watchdogValues(f),
         ...lockValues(f),
+        ...runForm,
       });
       toast('Workflow saved');
       done();
@@ -2556,6 +2563,7 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
             only drives an advisory warning, so a stale read is harmless. */}
         <LockField resource={w.lock_resource} mode={w.lock_mode}
                    workflowId={w.id} maxConcurrentRuns={w.max_concurrent_runs} />
+        <RunFormEditor initial={w.run_parameters_json} />
         <label className="field toggle-field">
           <span>Enabled</span>
           <label className="toggle"><input type="checkbox" name="enabled" defaultChecked={w.enabled} /><span /></label>
@@ -2612,6 +2620,8 @@ function WorkflowDetail() {
   };
 
   const runNow = async () => {
+    // A required value with no default: nothing to start until someone says it.
+    if (needsAsking(w?.run_parameters_json).length) { setRunParamsOpen(true); return; }
     try {
       const run = await post<Run>(`/workflows/${id}/run`, { parameters: {} });
       navTo(`/runs/${run.id}`);
@@ -2674,7 +2684,10 @@ function WorkflowDetail() {
             <Button variant="ghost" onClick={() => setEditOpen(true)}><Pencil size={13} /> Edit</Button>
             <Button variant="ghost" onClick={() => setAddOpen(true)}><Plus size={13} /> Add task</Button>
             <Button onClick={runNow}><Play size={13} /> Run now</Button>
-            <Button variant="ghost" onClick={() => setRunParamsOpen(true)} title="Run with one-off parameters"><SlidersHorizontal size={13} /> Run with…</Button>
+            <Button variant="ghost" onClick={() => setRunParamsOpen(true)}
+                    title={w.run_parameters_json?.length ? 'Choose the values for this run' : 'Run with one-off parameters'}>
+              <SlidersHorizontal size={13} /> Run with…
+            </Button>
             <Button variant="ghost" onClick={() => setBackfillOpen(true)}><Calendar size={13} /> Backfill</Button>
             <SnoozeControl workflow={w} onChange={setW} />
             {tasks.some(t => t.task_type === 'notebook') && (
@@ -2808,8 +2821,8 @@ function WorkflowDetail() {
 
       {addOpen && <TaskModal workflowId={id!} tasks={tasks} project={projects.find(p => p.id === w.project_id)} defaultEnvironment={envs.find(e => e.id === (w.default_environment_id || projects.find(p => p.id === w.project_id)?.default_environment_id))} onClose={() => setAddOpen(false)} done={() => { setAddOpen(false); load(); }} />}
       {editOpen && <EditWorkflowModal w={w} onClose={() => setEditOpen(false)} done={() => { setEditOpen(false); load(); }} />}
-      {runParamsOpen && <RunParamsModal workflowId={id!} onClose={() => setRunParamsOpen(false)} />}
-      {backfillOpen && <BackfillModal workflowId={id!} onClose={() => setBackfillOpen(false)} />}
+      {runParamsOpen && w && <RunParamsModal workflow={w} onClose={() => setRunParamsOpen(false)} />}
+      {backfillOpen && w && <BackfillModal workflow={w} onClose={() => setBackfillOpen(false)} />}
       {editingTask && <EditTaskModal task={editingTask} tasks={tasks} project={projects.find(p => p.id === (editingTask.project_id || w.project_id))} onClose={() => setEditingTask(null)} done={() => { setEditingTask(null); load(); }} />}
     </>
   );
@@ -2852,20 +2865,32 @@ function RunMiniHistory({ runs }: { runs: Run[] }) {
   );
 }
 
-function RunParamsModal({ workflowId, onClose }: { workflowId: string; onClose: () => void }) {
+/** Extra values typed as JSON, for parameters no form declares. */
+function parseExtra(raw: string): Record<string, unknown> | string {
+  const text = raw.trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : 'Extra parameters must be a JSON object';
+  } catch { return 'Extra parameters must be valid JSON'; }
+}
+
+function RunParamsModal({ workflow, onClose }: { workflow: Workflow; onClose: () => void }) {
   const { toast } = useToast();
   const navTo = useNavigate();
+  const form = workflow.run_parameters_json ?? [];
+  const [values, setValues] = useState<FormValues>(() => initialValues(form, workflow.schedule_timezone));
+  const [extraOpen, setExtraOpen] = useState(form.length === 0);
   const [busy, setBusy] = useState(false);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const raw = String(new FormData(e.currentTarget).get('parameters') || '').trim();
-    let parameters: Record<string, unknown> = {};
-    if (raw) {
-      try { parameters = JSON.parse(raw); } catch { toast('Parameters must be valid JSON', 'error'); return; }
-    }
+    const extra = parseExtra(String(new FormData(e.currentTarget).get('parameters') || ''));
+    if (typeof extra === 'string') { toast(extra, 'error'); return; }
+    const collected = collect(form, values);
+    if ('error' in collected) { toast(collected.error, 'error'); return; }
     setBusy(true);
     try {
-      const run = await post<Run>(`/workflows/${workflowId}/run`, { parameters });
+      const run = await post<Run>(`/workflows/${workflow.id}/run`, { parameters: { ...extra, ...collected.parameters } });
       navTo(`/runs/${run.id}`);
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Could not start workflow', 'error');
@@ -2873,16 +2898,25 @@ function RunParamsModal({ workflowId, onClose }: { workflowId: string; onClose: 
     }
   }
   return (
-    <Modal title="Run with parameters" subtitle="Start a run with one-off values for this execution." onClose={onClose}>
+    <Modal title={form.length ? `Run ${workflow.name}` : 'Run with parameters'}
+           subtitle={form.length ? 'Choose the values for this run.' : 'Start a run with one-off values for this execution.'} onClose={onClose}>
       <form className="modal-body form-stack" onSubmit={submit}>
-        <label className="field">
-          <span>Parameters <em>JSON</em></span>
-          <textarea className="code-input" name="parameters" placeholder={'{"region": "ca", "ds": "2026-07-01"}'} autoFocus />
-        </label>
-        <div className="callout">
-          Every task template can reference these values, e.g. <code>{'{{ region }}'}</code>.
-          They override the built-ins (<code>ds</code>, <code>ts</code>) and merge under any per-task parameters.
-        </div>
+        {form.length > 0 && <RunFormFields form={form} values={values} onChange={setValues} zone={workflow.schedule_timezone} />}
+        {form.length > 0 && !extraOpen ? (
+          <button type="button" className="text-button runform-more" onClick={() => setExtraOpen(true)}>Add parameters the form does not list…</button>
+        ) : (
+          <label className="field">
+            <span>{form.length ? 'More parameters' : 'Parameters'} <em>JSON</em></span>
+            <textarea className="code-input" name="parameters" placeholder={'{"region": "ca", "ds": "2026-07-01"}'} autoFocus={form.length === 0} />
+          </label>
+        )}
+        {form.length === 0 && (
+          <div className="callout">
+            Every task template can reference these values, e.g. <code>{'{{ region }}'}</code>.
+            They override the built-ins (<code>ds</code>, <code>ts</code>) and merge under any per-task parameters.
+            To get a form here instead, add a <b>run form</b> when editing the workflow.
+          </div>
+        )}
         <div className="modal-actions">
           <CancelButton />
           <Button type="submit" disabled={busy}>{busy ? 'Starting…' : 'Run workflow'}</Button>
@@ -2892,19 +2926,25 @@ function RunParamsModal({ workflowId, onClose }: { workflowId: string; onClose: 
   );
 }
 
-function BackfillModal({ workflowId, onClose }: { workflowId: string; onClose: () => void }) {
+function BackfillModal({ workflow, onClose }: { workflow: Workflow; onClose: () => void }) {
   const { toast } = useToast();
+  const workflowId = workflow.id;
+  // The date comes from the backfill; every other field starts empty, so a
+  // relative default counts from each backfilled day, not from today.
+  const form = (workflow.run_parameters_json ?? []).filter(p => p.name !== 'ds');
+  const [values, setValues] = useState<FormValues>(() =>
+    Object.fromEntries(form.map(p => [p.name, p.type === 'bool' ? p.default === true : ''])));
   const [busy, setBusy] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     const from = String(f.get('from')), to = String(f.get('to'));
-    let parameters: Record<string, unknown> = {};
-    const raw = String(f.get('parameters') || '').trim();
-    if (raw) {
-      try { parameters = JSON.parse(raw); } catch { toast('Parameters must be valid JSON', 'error'); return; }
-    }
+    const extra = parseExtra(String(f.get('parameters') || ''));
+    if (typeof extra === 'string') { toast(extra, 'error'); return; }
+    const collected = collect(form, values);
+    if ('error' in collected) { toast(collected.error, 'error'); return; }
+    const parameters = { ...extra, ...collected.parameters };
     setBusy(true);
     try {
       const runs = await post<Run[]>(`/workflows/${workflowId}/backfill`, { from, to, parameters });
@@ -2921,7 +2961,8 @@ function BackfillModal({ workflowId, onClose }: { workflowId: string; onClose: (
           <label className="field"><span>From</span><input name="from" type="date" defaultValue={today} required autoFocus /></label>
           <label className="field"><span>To</span><input name="to" type="date" defaultValue={today} required /></label>
         </div>
-        <label className="field"><span>Parameters <em>JSON, optional — added to every run</em></span>
+        {form.length > 0 && <RunFormFields form={form} values={values} onChange={setValues} zone={workflow.schedule_timezone} blankDefaults />}
+        <label className="field"><span>{form.length ? 'More parameters' : 'Parameters'} <em>JSON, optional — added to every run</em></span>
           <textarea className="code-input" name="parameters" placeholder={'{"region": "ca"}'} />
         </label>
         <div className="callout">Dates are inclusive. Days that already have a backfill run are skipped automatically.</div>

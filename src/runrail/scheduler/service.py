@@ -11,6 +11,7 @@ from runrail.api.ws import manager as _ws_manager
 from runrail.crontab import cron_trigger
 from runrail.db import SessionLocal
 from runrail.models import RunStatus, TriggerType, Workflow, WorkflowRun, _aware, now
+from runrail.run_parameters import local_today, resolve
 
 
 def enqueue_scheduled(workflow_id: int, cron: str | None = None, zone: str | None = None) -> None:
@@ -49,8 +50,13 @@ def enqueue_scheduled(workflow_id: int, cron: str | None = None, zone: str | Non
         # it. The worker still defaults `ds` to the run's date for `{{ ds }}`
         # rendering (see _context in worker/service.py); only backfills, which are
         # inherently date-driven, set `ds` deliberately.
+        # A run form's defaults, though, are recorded: the run page then says
+        # what a scheduled run ran with, "yesterday" as the date it meant.
+        values = resolve(workflow.run_parameters_json, None,
+                         day=local_today(workflow.schedule_timezone, minute), strict=False)
         run = WorkflowRun(workflow_id=workflow_id, status=RunStatus.queued,
-                          trigger_type=TriggerType.schedule, run_key=key)
+                          trigger_type=TriggerType.schedule, run_key=key,
+                          parameters_json=values or None)
         db.add(run)
         try:
             db.commit()

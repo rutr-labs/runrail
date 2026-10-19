@@ -132,6 +132,21 @@ Commands and paths are Jinja templates. Every run gets:
 | `project_root`, `artifacts_dir` | Resolved paths for the run |
 | *your parameters* | Run and per-task parameters, merged |
 
+Tasks also get the parameters in their environment, for scripts that are not templated: all of them as JSON in `RUNRAIL_PARAMS`, and each as `RUNRAIL_PARAM_<NAME>` (`RUNRAIL_PARAM_REGION=EU`, yes/no as `true`/`false`). Notebooks get them as papermill parameters.
+
+### Run forms
+
+A workflow can say which parameters a run takes. Under **Edit → Run form**, give each one a name, a type (text, number, date, choice, yes/no), an optional default, a label and a line of help. **Run with…** then shows a form instead of a JSON box: a date picker, a dropdown, a switch. Values are checked before anything is queued.
+
+Every way a run starts goes through the same form — the button, the API, `runrail run --param`, a backfill, the schedule — so a run always records exactly what it ran with. Missing values take their default; a date default can be `today` or `yesterday`, counted on the workflow's calendar (in a backfill, from each backfilled day). A required parameter with no default makes **Run now** ask first, and a scheduled workflow must give one a default, since nobody is there to ask. Parameters the form does not list still pass through as before.
+
+```yaml
+run_parameters:
+  - {name: report_date, type: date, default: yesterday, label: Report date}
+  - {name: region, type: choice, choices: [EU, US, APAC], default: EU}
+  - {name: dry_run, type: bool, default: false}
+```
+
 ## CLI
 
 ```bash

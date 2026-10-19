@@ -181,6 +181,9 @@ class Workflow(TimestampMixin, Base):
     # wait on and deadlock is structurally impossible.
     lock_resource: Mapped[str | None] = mapped_column(String(255))
     lock_mode: Mapped[LockMode] = mapped_column(Enum(LockMode), default=LockMode.shared)
+    # Configuration: the run form — the parameters a run takes, with types and
+    # defaults (see runrail.run_parameters). NULL is no form.
+    run_parameters_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     # Alert state, written only by notify.py under a compare-and-set: "ok" or
     # "failing", and the run that put it there. A failure alerts when it moves
     # the state to failing, a success when it moves it back — whichever run

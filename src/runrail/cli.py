@@ -301,7 +301,10 @@ def run_workflow(name: str, param: list[str] | None = typer.Option(None, "--para
     """Queue a workflow run."""
     init_db()
     with SessionLocal() as db:
-        run = create_run(db, _workflow(db, name), TriggerType.cli, _params(param))
+        try:
+            run = create_run(db, _workflow(db, name), TriggerType.cli, _params(param))
+        except ValueError as exc:  # a parameter the run form refuses
+            raise typer.BadParameter(str(exc)) from None
         typer.echo(f"Queued workflow run {run.id}")
 
 

@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from runrail import variables
+from runrail.api.crud import check_schedulable
 from runrail.models import (
     Environment,
     LockMode,
@@ -72,6 +73,8 @@ def export_workflows(db: Session, name: str | None = None) -> dict[str, Any]:
         if workflow.lock_resource:
             item["lock_resource"] = workflow.lock_resource
             item["lock_mode"] = workflow.lock_mode.value
+        if workflow.run_parameters_json:
+            item["run_parameters"] = [dict(p) for p in workflow.run_parameters_json]
         if workflow.project_id:
             item["project"] = projects.get(workflow.project_id)
         if workflow.default_environment_id:
@@ -265,11 +268,17 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
             sla_minutes=entry.get("sla_minutes"),
             lock_resource=entry.get("lock_resource"),
             lock_mode=entry.get("lock_mode") or LockMode.shared,
+            run_parameters_json=entry.get("run_parameters"),
         )
+        try:
+            check_schedulable(checked)
+        except ValueError as exc:
+            raise ValueError(f"Workflow '{wf_name}': {exc}") from None
         was_enabled = workflow.enabled if not created else None
         for field in ("description", "schedule_cron", "schedule_timezone", "enabled",
                       "max_concurrent_runs", "notify_webhook_url", "auto_pause_failures",
-                      "missed_run_grace_minutes", "sla_minutes", "lock_resource", "lock_mode"):
+                      "missed_run_grace_minutes", "sla_minutes", "lock_resource", "lock_mode",
+                      "run_parameters_json"):
             setattr(workflow, field, getattr(checked, field))
         if workflow.enabled and was_enabled is False:
             from runrail.api.routes_workflows import mark_enabled

@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from runrail.models import Environment, EnvironmentStatus, TriggerType, Workflow, WorkflowRun
+from runrail.run_parameters import ParameterError, local_today, needs_value, resolve
 
 
 def save(db: Session, obj):
@@ -54,10 +55,23 @@ def ensure_environment_ready(db: Session, environment_id: int | None) -> None:
 
 
 def create_run(db: Session, workflow: Workflow, trigger: TriggerType, params=None, run_key=None):
+    """Queue a run with its parameters checked against the workflow's run
+    form and its defaults filled in. ParameterError says what is wrong."""
+    values = resolve(workflow.run_parameters_json, params,
+                     day=local_today(workflow.schedule_timezone))
     return save(db, WorkflowRun(
         workflow_id=workflow.id, status="queued", trigger_type=trigger,
-        parameters_json=params or {}, run_key=run_key,
+        parameters_json=values, run_key=run_key,
     ))
+
+
+def check_schedulable(workflow: Workflow) -> None:
+    """A scheduled run has nobody to ask for a value, so every required
+    parameter of a scheduled workflow needs a default."""
+    missing = needs_value(workflow.run_parameters_json) if workflow.schedule_cron else []
+    if missing:
+        raise ParameterError(f"Scheduled runs start without anyone to ask: give {', '.join(missing)} "
+                             "a default, or make it optional")
 
 
 #: The longest range one backfill may cover. Nothing in the queue copes well
@@ -83,8 +97,9 @@ def create_backfill(db: Session, workflow: Workflow, start: date, end: date, par
         day = start + timedelta(days=offset)
         key = f"backfill:{workflow.id}:{day.isoformat()}"
         if key not in existing:
-            values = dict(params or {})
-            values["ds"] = day.isoformat()
+            # Relative date defaults ("yesterday") count from the day backfilled.
+            values = resolve(workflow.run_parameters_json, {**(params or {}), "ds": day.isoformat()},
+                             day=day)
             runs.append(WorkflowRun(workflow_id=workflow.id, trigger_type=TriggerType.backfill,
                                     status="queued", parameters_json=values, run_key=key))
     db.add_all(runs)

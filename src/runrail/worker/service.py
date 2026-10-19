@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+import re
 import shutil
 import signal
 import socket
@@ -242,6 +244,18 @@ def _context(run: WorkflowRun, task_run: TaskRun, task: Task, project: Project |
     }
 
 
+def parameter_environment(parameters: dict) -> dict[str, str]:
+    """A run's parameters for a script that is not templated: all of them as
+    JSON in RUNRAIL_PARAMS (types kept), and each one as RUNRAIL_PARAM_<NAME>.
+    A script run by path received none of them before."""
+    env = {"RUNRAIL_PARAMS": json.dumps(parameters, default=str)}
+    for name, value in parameters.items():
+        key = "RUNRAIL_PARAM_" + re.sub(r"[^A-Za-z0-9_]", "_", str(name)).upper()
+        env[key] = ("true" if value else "false") if isinstance(value, bool) else (
+            json.dumps(value, default=str) if isinstance(value, (dict, list)) else str(value))
+    return env
+
+
 def _python_import_paths(
     task: Task, context: dict, project: Project | None, detected_root: Path | None, cwd: Path
 ) -> list[Path]:
@@ -347,6 +361,7 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
             if configured_pythonpath:
                 path_parts.append(configured_pythonpath)
             env["PYTHONPATH"] = os.pathsep.join(path_parts)
+            env.update(parameter_environment(context["parameters"]))
             if (environment and task.task_type != TaskType.sql
                     and not environment_usable_now(environment)):
                 raise RuntimeError(

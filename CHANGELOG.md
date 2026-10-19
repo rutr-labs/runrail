@@ -19,6 +19,14 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
   Settings); `runrail restore` installs it, and says which secrets will not
   open when it is missing. `runrail secrets-key` prints the current key.
 - Exports and backups carry plain variables in the YAML; secrets never.
+- **Run forms.** A workflow can list the parameters a run takes — text,
+  number, date, choice or yes/no, each with a default and a line of help —
+  and "Run with…" shows them as a form. Every way a run starts checks and
+  fills them the same way, so a scheduled run records the defaults it used;
+  date defaults can be `today` or `yesterday`. Run forms travel in YAML as
+  `run_parameters`.
+- Tasks get their run's parameters in the environment too: `RUNRAIL_PARAMS`
+  (JSON) and `RUNRAIL_PARAM_<NAME>`, so a script run by path can read them.
 
 ### Fixed
 - Restoring a backup on Windows waits out a file lock that passes (an
