@@ -193,12 +193,23 @@ An environment variable pins a setting: the page shows it locked and names the v
 | `RUNRAIL_PUBLIC_URL` | unset; base URL for links inside exported files and reports |
 | `RUNRAIL_BROWSE_ROOT` | user home; limits the UI file picker |
 | `RUNRAIL_SQLITE_DB_PATH` | unset; the database SQL tasks run against, unless the task sets `sqlite_db_path` |
+| `RUNRAIL_SECRETS_KEY` | unset; the key secrets are encrypted with, instead of `$RUNRAIL_HOME/secrets.key` |
 
 Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:00 on that workflow's clock across DST. The UI shows occurrences in yours.
+
+### Variables and secrets
+
+Settings also holds **variables and secrets** that every task and service gets as environment variables: a database host, a folder, an API token. Your scripts read them the usual way — `$NAME` in a shell, `%NAME%` in a Windows command, `os.environ["NAME"]` in Python or a notebook — so nothing in them changes. An environment's or a service's own variables win over these when both set the same name.
+
+A secret is shown only while you type it. It is stored encrypted, and its value is replaced with `••••••` wherever RunRail writes or shows output: task and service logs, the notebooks papermill writes, rendered reports, recorded commands and errors, log search. Logs written before a secret was added are masked when they are read. Masking catches the exact value (and its JSON-escaped form), not a piece or an encoding of it.
+
+The key lives in `$RUNRAIL_HOME/secrets.key`, readable only by your user; on Windows it is also locked to your Windows account. `RUNRAIL_SECRETS_KEY` supplies it instead (`runrail secrets-key` prints the current one). The encryption protects the database file and its backups. It does not protect against code running as your user, which can read the key just as RunRail does.
 
 ### Backups
 
 `runrail backup` (or the button on Settings) writes a zip holding the configuration as YAML, a consistent snapshot of the SQLite database and a manifest. Logs and artifacts are not in it — they are the bulk of a home and sit in plain folders under `$RUNRAIL_HOME`; copy that folder for a full copy. Restoring the configuration (workflows, services, projects, environments) works from the page while RunRail runs, as an upsert that deletes nothing. Restoring the database is `runrail restore <zip>` with the server stopped; it refuses while one is alive and keeps the database it replaces. Before every schema upgrade RunRail also takes a restore point of its own under `$RUNRAIL_HOME/backups/` (the newest three are kept), so a downgrade to the previous version has something to return to. On PostgreSQL the backup holds configuration only; use `pg_dump` for the database.
+
+Secrets travel inside the database, encrypted; the key stays out of a backup unless you tick **Include the secrets key** (or pass `--include-secrets-key`). Without it the secrets open only on the machine that made them, and a restore elsewhere lists them for you to enter again. With it, `runrail restore` puts the key in place — keep that zip like a password.
 
 ## Worth knowing
 
@@ -206,7 +217,7 @@ Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:0
 - Work runs on a single machine. Plenty happens in parallel there, but there are no remote workers.
 - SQL tasks run against SQLite only.
 - Services are managed by `runrail serve` or `runrail worker`. `runrail api` on its own shows them but starts and stops nothing, and the Services page says so.
-- Environment variables, including anything secret, are stored unencrypted in the database.
+- Variables set on an environment or a service are stored as plain text. Put anything secret in Settings → Variables & secrets, where it is encrypted and masked.
 - Log search is a bounded grep rather than an index. Every limit is capped and the response says which cap it hit, so a partial answer never looks like a complete one.
 - Missed-run history is recomputed from the current schedule, so editing a cron expression redraws the past under the new one.
 

@@ -11,9 +11,10 @@ present in the file are created/updated, tasks missing from it are removed.
 import re
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from runrail import variables
 from runrail.models import (
     Environment,
     LockMode,
@@ -23,6 +24,7 @@ from runrail.models import (
     ServiceStartMode,
     ServiceState,
     Task,
+    Variable,
     Workflow,
     now,
 )
@@ -109,6 +111,13 @@ def export_workflows(db: Session, name: str | None = None) -> dict[str, Any]:
                     for service in db.scalars(select(Service).order_by(Service.name))]
         if services:
             data["services"] = services
+        # Plain variables only. A secret's value never goes into a file; the
+        # database (and a backup made with the key) carries those.
+        variable_rows = [_compact({"name": v.name, "value": v.value, "description": v.description})
+                         for v in db.scalars(select(Variable).where(Variable.secret.is_(False))
+                                             .order_by(Variable.name))]
+        if variable_rows:
+            data["variables"] = variable_rows
     return data
 
 
@@ -186,10 +195,14 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
     services = data.get("services") or []
     projects = data.get("projects") or []
     environments = data.get("environments") or []
-    if not all(isinstance(section, list) for section in (entries, services, projects, environments)) \
-            or not (entries or services or projects or environments):
+    variable_entries = data.get("variables") or []
+    sections = (entries, services, projects, environments, variable_entries)
+    if not all(isinstance(section, list) for section in sections) or not any(sections):
         raise ValueError("File must contain a top-level 'workflows' or 'services' list")
     summary: dict[str, list[str]] = {"created": [], "updated": []}
+    for entry in variable_entries:
+        outcome, var_name = _apply_variable(db, entry)
+        summary.setdefault(outcome, []).append(f"variable {var_name}")
     # Dependencies first, so the workflows and services below can name them.
     for entry in environments:
         created, env_name = _apply_environment(db, entry)
@@ -291,7 +304,35 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
         created, name = _apply_service(db, entry)
         summary["created" if created else "updated"].append(f"service {name}")
     db.commit()
+    if variable_entries:
+        variables.invalidate()
     return summary
+
+
+def _apply_variable(db: Session, entry: dict[str, Any]) -> tuple[str, str]:
+    """A plain variable from the file, created or updated by name. One that
+    names an existing secret is skipped: a file cannot show or replace it."""
+    if not isinstance(entry, dict):
+        raise ValueError("Each entry under 'variables' must be a mapping with a name and a value")
+    try:
+        name = variables.check_name(entry.get("name"))
+        value = variables.check_value("" if entry.get("value") is None else str(entry.get("value")),
+                                      secret=False)
+    except variables.VariableError as exc:
+        raise ValueError(f"Variable {entry.get('name')!r}: {exc}") from None
+    row = db.scalar(select(Variable).where(func.upper(Variable.name) == name.upper()))
+    if row is not None and row.secret:
+        return "skipped", f"{name} (a secret has that name)"
+    created = row is None
+    if created:
+        row = Variable(name=name, secret=False, value=value)
+        db.add(row)
+    else:
+        row.value = value
+    if "description" in entry:
+        row.description = (str(entry.get("description") or "")).strip() or None
+    db.flush()
+    return ("created" if created else "updated"), name
 
 
 def _apply_environment(db: Session, entry: dict[str, Any]) -> tuple[bool, str]:

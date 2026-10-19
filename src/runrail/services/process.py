@@ -21,12 +21,14 @@ from pathlib import Path
 import psutil
 from sqlalchemy.orm import Session
 
+from runrail import variables
 from runrail.config import get_settings
 from runrail.environments import (
     environment_python,
     environment_usable_now,
     managed_environment_path,
 )
+from runrail.masking import StreamMasker
 from runrail.models import Environment, EnvironmentType, Project, Service
 
 #: Size at which a service's log rolls over, and how many old files are kept.
@@ -60,7 +62,9 @@ def launch_spec(db: Session, service: Service) -> LaunchSpec:
     settings = get_settings()
     project = db.get(Project, service.project_id) if service.project_id else None
     environment = db.get(Environment, service.environment_id) if service.environment_id else None
-    env = os.environ.copy()
+    # Variables and secrets from Settings, then the environment's, then the
+    # service's own: the most specific wins.
+    env = variables.child_environment()
     # Output reaches the log as it is written, not when a buffer fills.
     env["PYTHONUNBUFFERED"] = "1"
     argv = _shell(service.command)
@@ -116,11 +120,18 @@ def _pump(stream, path: Path) -> None:
     The pipe is drained whatever happens to the file: a full disk or a log
     directory that has gone must not stop the reads, or the service blocks on
     its next write once the pipe fills, still showing as running. Output is
-    dropped until the file can be opened again."""
+    dropped until the file can be opened again.
+
+    Secrets are masked on the way through; one added while the service runs
+    is masked from then on."""
     out = None
     written = 0
+    masker = StreamMasker(variables.masker)
     try:
         for chunk in iter(lambda: stream.read1(65536), b""):
+            chunk = masker.feed(chunk)
+            if not chunk:
+                continue
             try:
                 if out is None:
                     out = path.open("ab")
@@ -143,6 +154,14 @@ def _pump(stream, path: Path) -> None:
     except (OSError, ValueError):
         pass  # the pipe closed: the process is gone, or the supervisor let go
     finally:
+        tail = masker.flush()
+        try:
+            if tail:
+                if out is None:
+                    out = path.open("ab")
+                out.write(tail)
+        except OSError:
+            pass
         if out is not None:
             out.close()
 

@@ -15,7 +15,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session, selectinload
 
-from runrail import runtime_settings
+from runrail import runtime_settings, variables
 from runrail.api.ws import manager as _ws_manager
 from runrail.config import get_settings
 from runrail.db import SessionLocal
@@ -27,6 +27,7 @@ from runrail.environments import (
     provision_managed,
     queue_legacy_rebuilds,
 )
+from runrail.masking import mask_notebook
 from runrail.models import (
     Artifact,
     ArtifactType,
@@ -312,7 +313,9 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
         # used to escape it and leave this attempt's row `running` for good.
         try:
             context = _context(run, task_run, task, project, workflow.schedule_timezone)
-            env = os.environ.copy()
+            # Variables and secrets from Settings first; the environment's own
+            # variables, applied next, win over them.
+            env = variables.child_environment()
             configured_pythonpath = ""
             if environment and environment.env_vars_json:
                 env.update({k: str(v) for k, v in environment.env_vars_json.items()})
@@ -353,7 +356,8 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
             if task.task_type.value == "sql":
                 task_run.rendered_command = f"sqlite3 < {render(task.sql_path, context)}"
                 result = execute_sql(task, context, cwd, stdout, stderr, task.timeout_seconds,
-                                     should_stop=lambda: _cancel_requested(run.id, segment))
+                                     should_stop=lambda: _cancel_requested(run.id, segment),
+                                     masker=variables.masker())
                 artifact = None
             else:
                 if task.task_type in (TaskType.python, TaskType.notebook):
@@ -380,21 +384,26 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
                     shell = ([os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c"]
                              if os.name == "nt" else ["/bin/sh", "-c"])
                     spec = CommandSpec([*command, *shell, str(spec.command)], False, spec.artifact)
-                task_run.rendered_command = display_command(spec)
+                task_run.rendered_command = variables.masker().text(display_command(spec))
                 result = execute_command(spec, cwd, env, stdout, stderr, task.timeout_seconds,
-                                         should_stop=lambda: _cancel_requested(run.id, segment))
+                                         should_stop=lambda: _cancel_requested(run.id, segment),
+                                         mask=variables.masker)
                 artifact = spec.artifact
         except Exception as exc:
-            stdout.touch(); stderr.write_text(f"{type(exc).__name__}: {exc}\n")
-            result, artifact = type("Result", (), {"exit_code": 1, "error": str(exc)})(), None
+            hide = variables.masker().text
+            stdout.touch(); stderr.write_text(hide(f"{type(exc).__name__}: {exc}\n"))
+            result, artifact = type("Result", (), {"exit_code": 1, "error": hide(str(exc))})(), None
         task_run.exit_code = result.exit_code
-        task_run.error_message = result.error
+        task_run.error_message = variables.masker().text(result.error)
         task_run.finished_at = now(); task_run.duration_seconds = _duration(task_run.started_at)
         stopped = getattr(result, "cancelled", False)
         task_run.status = (TaskRunStatus.cancelled if stopped
                            else TaskRunStatus.success if result.exit_code == 0
                            else TaskRunStatus.failed)
         if artifact and artifact.is_file():
+            # papermill saved it cell by cell, outputs as printed: masked
+            # before it is recorded, so no reader ever gets the raw file.
+            mask_notebook(artifact, variables.masker())
             db.add(Artifact(task_run_id=task_run.id, workflow_run_id=run.id, name=artifact.name,
                             artifact_type=ArtifactType.notebook, path=str(artifact), size_bytes=artifact.stat().st_size))
         db.commit()

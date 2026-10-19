@@ -4,9 +4,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from runrail import variables
 from runrail.api.ws import manager
 from runrail.config import get_settings
 from runrail.db import SessionLocal
+from runrail.masking import StreamMasker
 from runrail.models import TaskRun, TaskRunStatus
 from runrail.paths import confined
 
@@ -76,6 +78,10 @@ async def stream_logs(ws: WebSocket, task_run_id: int, stream: str = "stdout") -
     # Incremental decoder: a chunk boundary can split a multibyte UTF-8
     # character, which a plain decode() would mangle into replacement chars.
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    # Logs are masked as they are written; this catches one written before
+    # a secret was added. Fetched once per connection, off the loop.
+    masker = await asyncio.to_thread(variables.masker)
+    hide = StreamMasker(lambda: masker)
     try:
         while True:
             # Off the event loop: the database read and the file read are
@@ -87,12 +93,13 @@ async def stream_logs(ws: WebSocket, task_run_id: int, stream: str = "stdout") -
                 break
             if log_path and confined(log_path, logs_root):
                 chunk, offset = await asyncio.to_thread(_read_from, Path(log_path), offset)
+                chunk = hide.feed(chunk) if chunk else chunk
                 if chunk:
                     text = decoder.decode(chunk)
                     if text:
                         await ws.send_text(text)
             if status in _TERMINAL:
-                tail = decoder.decode(b"", final=True)
+                tail = decoder.decode(hide.flush(), final=True)
                 if tail:
                     await ws.send_text(tail)
                 break

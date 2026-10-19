@@ -2,6 +2,28 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Variables and secrets.** Settings has a list of variables and secrets that
+  every task and service gets as environment variables; an environment's or a
+  service's own variables still win. A secret is stored encrypted (with a key
+  in `$RUNRAIL_HOME/secrets.key`, locked to your account on Windows, or from
+  `RUNRAIL_SECRETS_KEY`) and is never shown again once saved.
+- **Secrets are masked everywhere RunRail writes or shows output**: task and
+  service logs as they are written, the notebooks papermill writes, rendered
+  reports and notebook downloads, the live notebook view, recorded commands and
+  errors, log search and run exports. Logs from before a secret existed are
+  masked when read.
+- Backups can carry the secrets key (`--include-secrets-key`, or a checkbox on
+  Settings); `runrail restore` installs it, and says which secrets will not
+  open when it is missing. `runrail secrets-key` prints the current key.
+- Exports and backups carry plain variables in the YAML; secrets never.
+
+### Fixed
+- Restoring a backup on Windows waits out a file lock that passes (an
+  antivirus scan, the search indexer) and explains one that does not.
+
 ## [0.8.1] — 2026-10-18
 
 A repair release from the third audit pass: the worker, the scheduler and its

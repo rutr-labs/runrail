@@ -29,7 +29,7 @@ import yaml
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
-from runrail import __version__, runtime_settings
+from runrail import __version__, runtime_settings, variables
 from runrail.config import Settings, get_settings
 from runrail.models import (
     CleanupPass,
@@ -37,6 +37,7 @@ from runrail.models import (
     Service,
     ServiceState,
     SupervisorLease,
+    Variable,
     Workflow,
     WorkflowRun,
     _aware,
@@ -326,13 +327,21 @@ def _revision(db: Session) -> str | None:
         return None
 
 
-def write_backup(db: Session, out: Path) -> dict[str, Any]:
+#: The secrets key inside a backup made with it.
+BACKUP_KEY_MEMBER = "secrets.key"
+
+
+def write_backup(db: Session, out: Path, include_key: bool = False) -> dict[str, Any]:
     """A zip holding the configuration as YAML, the SQLite database (a
     consistent snapshot; PostgreSQL is dumped with pg_dump, not here) and a
     manifest. Logs and artifacts are not in it: they are the bulk of a home
-    and sit in plain folders anyone can copy."""
+    and sit in plain folders anyone can copy.
+
+    Secrets travel in the database, encrypted. The key stays out unless
+    `include_key`: then the zip opens them, and must be kept like a password."""
     from runrail.workflow_io import export_workflows
     settings = get_settings()
+    key = variables.load_key(settings) if include_key else None
     exported = export_workflows(db)
     manifest = {
         "created_at": now().isoformat(),
@@ -344,13 +353,20 @@ def write_backup(db: Session, out: Path) -> dict[str, Any]:
                    "services": len(exported.get("services", [])),
                    "projects": len(exported.get("projects", [])),
                    "environments": len(exported.get("environments", [])),
-                   "runs": db.scalar(select(func.count()).select_from(WorkflowRun)) or 0},
+                   "runs": db.scalar(select(func.count()).select_from(WorkflowRun)) or 0,
+                   "secrets": db.scalar(select(func.count()).select_from(Variable)
+                                        .where(Variable.secret.is_(True))) or 0},
+        "includes_secrets_key": key is not None,
     }
     sqlite_file = _sqlite_path(settings)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.json", json.dumps(manifest, indent=2))
         archive.writestr("workflows.yaml", yaml.safe_dump(exported, sort_keys=False,
                                                           allow_unicode=True))
+        if key is not None:
+            # The key itself, not a DPAPI seal: that would open only on the
+            # account that made it, and a backup is for another machine.
+            archive.writestr(BACKUP_KEY_MEMBER, key + b"\n")
         if sqlite_file is not None and sqlite_file.exists():
             with tempfile.TemporaryDirectory() as scratch:
                 snapshot = Path(scratch) / "runrail.db"
@@ -396,6 +412,7 @@ def inspect_backup(source: bytes | Path) -> dict[str, Any]:
     """The manifest and what the YAML holds, or BackupError saying what is wrong."""
     archive, manifest, config = _open_backup(source)
     return {"manifest": manifest, "includes_database": "runrail.db" in archive.namelist(),
+            "includes_secrets_key": BACKUP_KEY_MEMBER in archive.namelist(),
             "configuration": {section: len(config.get(section) or [])
                               for section in ("projects", "environments", "workflows",
                                               "services")}}
@@ -521,6 +538,14 @@ def restore_database(archive_path: Path, settings: Settings) -> list[str]:
         staging = target.with_name(f".restore-{int(time.time())}.db")
         with archive.open("runrail.db") as src, staging.open("wb") as dst:
             shutil.copyfileobj(src, dst)
+        backup_key = None
+        if BACKUP_KEY_MEMBER in archive.namelist():
+            try:
+                backup_key = variables.validate_key(_member(archive, BACKUP_KEY_MEMBER, 1024).strip(),
+                                              "The backup's secrets key")
+            except variables.SecretsKeyError as exc:
+                staging.unlink(missing_ok=True)
+                raise BackupError(str(exc)) from None
     lines = []
     try:
         # The connection is closed before the rename: Windows will not rename
@@ -530,6 +555,11 @@ def restore_database(archive_path: Path, settings: Settings) -> list[str]:
             if verdict != "ok":
                 raise BackupError(f"The backup's database fails its integrity check: {verdict}")
             row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+            try:
+                secret_keys = [key_id for (key_id,) in conn.execute(
+                    "SELECT key_id FROM variables WHERE secret")]
+            except sqlite3.OperationalError:  # from before secrets existed
+                secret_keys = []
         revision = row[0] if row else None
         if revision not in known_revisions():
             raise BackupError(f"The backup was made by a newer RunRail (schema {revision}); "
@@ -544,7 +574,41 @@ def restore_database(archive_path: Path, settings: Settings) -> list[str]:
             _patiently(lambda path=sidecar: path.unlink(missing_ok=True), target)
         _replace_patiently(staging, target)
         lines.append(f"Restored {target} (schema {revision}); migrations run on the next start")
+        lines.extend(_restore_key(settings, backup_key, secret_keys))
     finally:
         staging.unlink(missing_ok=True)
     return lines
+
+
+def _restore_key(settings: Settings, backup_key: bytes | None, secret_keys: list[str | None]) -> list[str]:
+    """Put the backup's secrets key in place, or say which secrets will not
+    open without it. A different key already here is kept beside it."""
+    try:
+        current = variables.load_key(settings)
+    except variables.SecretsKeyError:
+        current = None
+    if backup_key is not None:
+        if current is not None and variables.key_id(current) == variables.key_id(backup_key):
+            return ["The backup's secrets key is the one already here"]
+        if settings.secrets_key:
+            return [f"Not installed the backup's secrets key: {variables.KEY_ENV} is set, and "
+                    "it wins. Set it to the backup's key for its secrets to open"]
+        path = variables.key_path(settings)
+        if path.exists():
+            kept = path.with_name(f"{path.name}.before-restore-{int(time.time())}")
+            _replace_patiently(path, kept)
+            variables.write_key_file(path, backup_key)
+            variables.invalidate()
+            return [f"Installed the backup's secrets key; the previous one is kept as {kept}"]
+        variables.write_key_file(path, backup_key)
+        variables.invalidate()
+        return ["Installed the backup's secrets key"]
+    if not secret_keys:
+        return []
+    have = variables.key_id(current) if current is not None else None
+    locked = sum(1 for key_id in secret_keys if key_id != have)
+    if not locked:
+        return []
+    return [f"{locked} secret(s) were encrypted with a key this home does not have. Enter them "
+            "again in Settings, or restore from a backup made with the key"]
 

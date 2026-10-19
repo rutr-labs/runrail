@@ -30,6 +30,9 @@ from pathlib import Path
 from runrail.config import Settings
 
 DATA_DIRS = ("logs", "artifacts", "environments")
+#: The secrets key (runrail.variables.KEY_FILE), not imported from there:
+#: this module stays free of the app's imports.
+KEY_FILE = "secrets.key"
 DB_SIDECARS = ("runrail.db-wal", "runrail.db-shm")
 
 #: Columns holding absolute paths inside the home, rewritten to the destination
@@ -153,7 +156,7 @@ def import_home(source: Path, dest: Path,
     try:
         lines = _assemble(source, staging, progress)
         # Everything is here; now, and only now, it becomes the home.
-        for name in ("runrail.db", *DATA_DIRS):
+        for name in ("runrail.db", KEY_FILE, *DATA_DIRS):
             if (staging / name).exists():
                 if (dest / name).is_dir():
                     (dest / name).rmdir()  # empty, checked above
@@ -205,6 +208,14 @@ def _assemble(source: Path, staging: Path, progress: Callable[[str], None]) -> l
         copied_environments = copied_environments or (name == "environments" and files > 0)
     if rewritten:
         lines.append(f"paths: {rewritten} record(s) re-pointed at the new home")
+    # The key the copied secrets were encrypted with; without it they do not open.
+    if (source / KEY_FILE).is_file():
+        if (staging.parent / KEY_FILE).exists():
+            lines.append(f"note: kept this home's own {KEY_FILE}; secrets encrypted with the "
+                         "other home's key will need entering again")
+        else:
+            shutil.copy2(source / KEY_FILE, staging / KEY_FILE)
+            lines.append("secrets key: copied")
 
     workflows = _count_workflows(staging / "runrail.db")
     if workflows is not None:

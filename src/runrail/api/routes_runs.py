@@ -2,16 +2,18 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from runrail import variables
 from runrail.api.crud import create_run, get_or_404
 from runrail.api.routes_workflows import _ensure_workflow_runnable
 from runrail.api.ws import manager as ws_manager
 from runrail.config import get_settings
 from runrail.daybuckets import day_bounds, local_date_expr, offset_segments, resolve_zone
 from runrail.db import get_db
+from runrail.masking import masked_chunks, notebook_bytes
 from runrail.models import (
     Artifact,
     RunStatus,
@@ -129,10 +131,21 @@ def log_response(task_run: TaskRun, attr: str, tail_bytes: int | None = None):
             if size > tail_bytes:
                 handle.seek(size - tail_bytes)
             data = handle.read()
-        return PlainTextResponse(data.decode("utf-8", errors="replace"))
+        text = data.decode("utf-8", errors="replace")
+        masker = variables.masker()
+        if masker and size > tail_bytes and "\n" in text:
+            # The cut can fall inside a secret, leaving a piece no pattern
+            # matches; the partial first line goes.
+            text = text.split("\n", 1)[1]
+        return PlainTextResponse(masker.text(text))
     # Streamed from disk, never read whole: a multi-gigabyte log of a finished
     # task used to land in memory three times over on the way to the browser,
     # decoded in the platform's default encoding (cp1252 on Windows) at that.
+    # Masked again on the way out: a log written before a secret was added
+    # still holds its value.
+    masker = variables.masker()
+    if masker:
+        return StreamingResponse(masked_chunks(file, masker), media_type="text/plain; charset=utf-8")
     return FileResponse(file, media_type="text/plain; charset=utf-8")
 
 
@@ -253,4 +266,10 @@ def download_artifact(object_id: int, db: Session = Depends(get_db)):
     path = Path(artifact.path)
     if not confined(path, get_settings().artifacts_dir) or not path.is_file():
         raise HTTPException(404, "Artifact file not found")
+    masker = variables.masker()
+    if masker and path.suffix.lower() in (".ipynb", ".html", ".htm"):
+        body = (notebook_bytes(path, masker) if path.suffix.lower() == ".ipynb"
+                else masker.bytes(path.read_bytes()))
+        return Response(body, media_type="application/octet-stream",
+                        headers={"Content-Disposition": f'attachment; filename="{artifact.name}"'})
     return FileResponse(path, filename=artifact.name)

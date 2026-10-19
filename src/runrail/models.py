@@ -480,6 +480,20 @@ class CleanupPass(Base):
     errors: Mapped[int]
 
 
+class Variable(TimestampMixin, Base):
+    """A variable or secret every task and service gets in its environment;
+    see runrail.variables. A secret's value is stored encrypted, and `key_id`
+    names the key it was encrypted with."""
+
+    __tablename__ = "variables"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    secret: Mapped[bool] = mapped_column(Boolean, default=False)
+    value: Mapped[str] = mapped_column(Text)
+    key_id: Mapped[str | None] = mapped_column(String(32))
+    description: Mapped[str | None] = mapped_column(Text)
+
+
 class AppSetting(Base):
     """One setting saved from the Settings page; see runrail.runtime_settings."""
 

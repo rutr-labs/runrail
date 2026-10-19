@@ -34,7 +34,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from runrail import notify, runtime_settings
+from runrail import notify, runtime_settings, variables
 from runrail.api.ws import manager as _ws_manager
 from runrail.config import get_settings
 from runrail.db import SessionLocal
@@ -621,4 +621,5 @@ def log_tail(path: str | None, max_bytes: int) -> str:
     text = data.decode("utf-8", errors="replace")
     if len(data) >= max_bytes and "\n" in text:
         text = text.split("\n", 1)[1]
-    return text
+    # Masked as written; again here for lines from before a secret existed.
+    return variables.masker().text(text)

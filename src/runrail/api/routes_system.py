@@ -92,13 +92,15 @@ def retention_preview(days: int = Query(..., ge=0), db: Session = Depends(get_db
 
 
 @router.get("/system/backup")
-def download_backup(background: BackgroundTasks, db: Session = Depends(get_db)):
-    """A zip of the configuration (YAML), the SQLite database and a manifest."""
+def download_backup(background: BackgroundTasks, include_key: bool = Query(False),
+                    db: Session = Depends(get_db)):
+    """A zip of the configuration (YAML), the SQLite database and a manifest;
+    with `include_key`, also the key that opens the secrets inside."""
     handle = tempfile.NamedTemporaryFile(prefix="runrail-backup-", suffix=".zip", delete=False)
     handle.close()
     path = Path(handle.name)
     try:
-        system.write_backup(db, path)
+        system.write_backup(db, path, include_key=include_key)
     except Exception:
         path.unlink(missing_ok=True)
         raise

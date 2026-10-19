@@ -20,13 +20,13 @@ from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from jinja2 import Environment
 from markupsafe import escape
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from runrail import __version__
+from runrail import __version__, variables
 from runrail.config import get_settings
 from runrail.models import (
     Artifact,
@@ -260,9 +260,15 @@ def _render_html(notebook: Path) -> str:
             # CSP is what makes keeping them safe.
             sanitize_html=False,
         )
+        # Masked before rendering, where values are still as printed; the
+        # notebook was masked when its task finished, so this is the belt.
+        masker = variables.masker()
+        node = (nbformat.reads(json.dumps(masker.json(json.loads(notebook.read_text(encoding="utf-8")))),
+                               as_version=4)
+                if masker else nbformat.read(str(notebook), as_version=4))
         body, _ = exporter.from_notebook_node(
-            nbformat.read(str(notebook), as_version=4),
-            resources={"metadata": {"path": str(notebook.parent)}})
+            node, resources={"metadata": {"path": str(notebook.parent)}})
+        body = masker.text(body)
     except Exception as exc:
         raise ReportError(422, "render_failed", f"{type(exc).__name__}: {exc}") from exc
     head, marker, tail = body.rpartition("</body>")
@@ -318,7 +324,7 @@ def resolve_report(db: Session, run_id: int, task: str | None = None,
     return render_report(db, source, force=force), task_run
 
 
-def report_response(path: Path) -> FileResponse:
+def report_response(path: Path) -> Response:
     """THE response for every rendered report, whatever resolved it.
 
     The per-run route, /latest and any future entry point all go through here so
@@ -326,6 +332,11 @@ def report_response(path: Path) -> FileResponse:
     is deliberately not mounted as static: the SPA catch-all serves anything
     under web/static with no CSP at all.
     """
+    masker = variables.masker()
+    if masker:
+        # A report cached before a secret was added still holds its value.
+        return Response(masker.text(path.read_text(encoding="utf-8", errors="replace")),
+                        media_type="text/html", headers=REPORT_HEADERS)
     return FileResponse(path, media_type="text/html", headers=REPORT_HEADERS)
 
 
@@ -427,8 +438,9 @@ def _read_log(path: str | None, limit: int, link: str) -> tuple[str, int]:
         return "", 0
     if limit <= 0:
         return f"… {_human(size)} elided — no size budget left. Full log at {link} …", 0
+    hide = variables.masker().text
     if size <= limit:
-        return file.read_text(encoding="utf-8", errors="replace"), size
+        return hide(file.read_text(encoding="utf-8", errors="replace")), size
     head_bytes = min(_LOG_HEAD_BYTES, limit // 4)
     tail_bytes = limit - head_bytes
     with file.open("rb") as handle:
@@ -437,7 +449,7 @@ def _read_log(path: str | None, limit: int, link: str) -> tuple[str, int]:
         tail = handle.read()
     marker = (f"\n\n… {_human(size - head_bytes - tail_bytes)} elided "
               f"— full log at {link} …\n\n")
-    return (head.decode("utf-8", "replace") + marker + tail.decode("utf-8", "replace"),
+    return (hide(head.decode("utf-8", "replace")) + marker + hide(tail.decode("utf-8", "replace")),
             head_bytes + tail_bytes)
 
 
@@ -622,7 +634,7 @@ def _export_report(db: Session, run: WorkflowRun, room: int, max_bytes: int,
         report, _ = resolve_report(db, run.id)
     except ReportError as exc:
         return None, None if exc.code == "no_notebook" else exc.detail
-    text = Path(report.path).read_text(encoding="utf-8", errors="replace")
+    text = variables.masker().text(Path(report.path).read_text(encoding="utf-8", errors="replace"))
     # Measured, not estimated: a notebook report is mostly markup and quoted
     # JSON, and escaping it for srcdoc made it 1.7× larger, not the 2% once
     # assumed — so an 18 MB report went into a "25 MB" file as 30 MB.
@@ -686,6 +698,9 @@ def notebook_progress(task_run: TaskRun) -> dict:
     except (OSError, ValueError):
         # Caught mid-write. The next poll will read a whole file.
         return {**base, "available": False}
+    # The file papermill is still writing has outputs as printed; it is
+    # masked on disk only when the task finishes.
+    notebook = variables.masker().json(notebook)
 
     code = [cell for cell in notebook.get("cells", []) if cell.get("cell_type") == "code"]
     states = []

@@ -23,6 +23,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from runrail import variables
 from runrail.config import get_settings
 from runrail.models import (
     RunStatus,
@@ -117,6 +118,9 @@ def search_logs(
         max_total_bytes = MAX_TOTAL_BYTES
     started = time.monotonic()
     deadline = started + timeout_ms / 1000
+    # Searched masked, as it is shown: a secret's value finds nothing, even
+    # in a log written before the secret was added.
+    masker = variables.masker()
     logs_root = get_settings().logs_dir.resolve()
 
     # Newest-first is what makes this usable during an incident; the
@@ -172,6 +176,7 @@ def search_logs(
                 continue
             files_scanned += 1
             bytes_scanned += len(data)
+            data = masker.bytes(data)
             truncated = size > len(data)
             if truncated: truncated_files += 1
             lines = data.split(b"\n")

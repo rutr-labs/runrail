@@ -87,9 +87,10 @@ export interface BackupPreview {
   manifest: {
     created_at?: string; runrail_version?: string; revision?: string | null;
     database?: string; home?: string;
-    counts?: Partial<Record<'workflows' | 'services' | 'projects' | 'environments' | 'runs', number>>;
+    counts?: Partial<Record<'workflows' | 'services' | 'projects' | 'environments' | 'runs' | 'secrets', number>>;
   };
   includes_database: boolean;
+  includes_secrets_key?: boolean;
   configuration: Record<string, number>;
 }
 
@@ -356,4 +357,74 @@ export function lastCleanupLine(last: LastCleanup | null | undefined, now = Date
   if (last.runs_deleted === 0) return `Last cleanup ${when}: nothing was older than ${last.days} days`;
   const runs = `${last.runs_deleted.toLocaleString('en-US')} run${last.runs_deleted === 1 ? '' : 's'}`;
   return `Last cleanup ${when}: deleted ${runs} older than ${last.days} days`;
+}
+
+/* ── Variables & secrets ──────────────────────────────── */
+
+export interface VariableRow {
+  id: number; name: string; secret: boolean;
+  /** Null for a secret: its value never comes back from the server. */
+  value: string | null;
+  description: string | null;
+  /** Why a secret is not reaching tasks (it does not decrypt), or null. */
+  problem: string | null;
+  /** Environments and services whose own variable of this name wins. */
+  overridden_in: string[];
+  created_at: string; updated_at: string;
+}
+
+export interface SecretsKey {
+  source: 'file' | 'environment' | null;
+  variable: string; path: string; sealed_to_account: boolean;
+  id: string | null; problem: string | null;
+}
+
+export interface VariablesResponse { variables: VariableRow[]; key: SecretsKey }
+
+/** What a secret looks like wherever RunRail shows output. */
+export const MASK = '••••••';
+export const MIN_SECRET_LENGTH = 4;
+const RESERVED_NAMES = new Set([
+  'PATH', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONNOUSERSITE', 'PYTHONUNBUFFERED',
+  'VIRTUAL_ENV', 'JUPYTER_PATH', 'COMSPEC', 'SYSTEMROOT',
+]);
+
+/** Why a name cannot be saved, said before the server has to; the server
+ *  checks the same rules. `self` is the row being renamed, if any. */
+export function variableNameProblem(name: string, taken: string[], self?: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) return 'Letters, digits and underscores, not starting with a digit';
+  const upper = trimmed.toUpperCase();
+  if (RESERVED_NAMES.has(upper)) return `${trimmed} is set by RunRail or the system`;
+  if (upper.startsWith('RUNRAIL_')) return 'Names starting with RUNRAIL_ are kept for RunRail';
+  if (taken.some(t => t.toUpperCase() === upper && t.toUpperCase() !== self?.toUpperCase())) return `${trimmed} already exists`;
+  return null;
+}
+
+export function secretValueProblem(value: string, secret: boolean): string | null {
+  if (secret && value.length > 0 && value.length < MIN_SECRET_LENGTH) {
+    return `At least ${MIN_SECRET_LENGTH} characters, or it could not be hidden in logs`;
+  }
+  return null;
+}
+
+/** "Overridden by environment prod and service api" — where this value does not apply. */
+export function overrideLine(where: string[]): string | null {
+  if (where.length === 0) return null;
+  const list = where.length === 1 ? where[0]
+    : `${where.slice(0, -1).join(', ')} and ${where[where.length - 1]}`;
+  return `Overridden by ${list}`;
+}
+
+/** Where the key that encrypts secrets lives, in a sentence. */
+export function keyLine(key: SecretsKey): string {
+  if (key.problem) return `The secrets key cannot be read: ${key.problem}`;
+  if (key.source === 'environment') return `Encrypted with the key in ${key.variable}.`;
+  if (key.source === 'file') {
+    return key.sealed_to_account
+      ? 'Encrypted with a key in the home folder, locked to your Windows account.'
+      : 'Encrypted with a key in the home folder that only your user can read.';
+  }
+  return 'A key is made in the home folder when the first secret is saved.';
 }

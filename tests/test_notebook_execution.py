@@ -169,3 +169,32 @@ def test_cancelling_a_notebook_kills_its_kernel(client, notebook_workflow, tmp_p
     finally:
         if process_alive(kernel):
             os.kill(kernel, 9)
+
+
+def test_a_secret_a_notebook_prints_is_masked_in_its_output_and_report(client, notebook_workflow):
+    """The kernel reads the secret from its environment and prints it; papermill
+    saves the output as printed. What RunRail keeps — the executed notebook,
+    its report, its download — holds the mask instead."""
+    from runrail.masking import MASK
+    workflow, root, _ = notebook_workflow
+    secret = "nb-Secret-9f3k2"
+    assert client.post("/api/variables", json={"name": "NB_TOKEN", "value": secret,
+                                               "secret": True}).status_code == 201
+    _notebook(root / "leaky.ipynb",
+              "import os\nprint('token=' + os.environ['NB_TOKEN'])\nos.environ['NB_TOKEN']")
+    _add_notebook_task(client, workflow, "leaky", "leaky.ipynb")
+    run_id = client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {}}).json()["id"]
+    with SessionLocal() as db:
+        execute_workflow_run(db, claim_runnable_run(db))
+    run = client.get(f"/api/runs/{run_id}").json()
+    assert run["status"] == "success", client.get(f"/api/task-runs/{run['task_runs'][0]['id']}/stderr").text
+
+    executed = _executed_notebook(run_id).read_text(encoding="utf-8")
+    assert secret not in executed, "the executed notebook kept the secret"
+    assert f"token={MASK}" in executed
+    artifact = client.get(f"/api/runs/{run_id}/outputs").json()["reports"][0]
+    download = client.get(f"/api/artifacts/{artifact['notebook_artifact_id']}/download").text
+    assert secret not in download
+    if renderer_available():
+        report = client.get(f"/api/runs/{run_id}/report")
+        assert report.status_code == 200 and secret not in report.text and MASK in report.text
