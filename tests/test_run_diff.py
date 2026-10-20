@@ -241,3 +241,25 @@ def test_a_shared_failed_run_carries_what_changed(client, tmp_path):
     assert "What changed since run" in html
     assert "+print(&#39;loaded 0 rows&#39;)" in html or "+print('loaded 0 rows')" in html
     assert "loaded 0 rows" in html
+
+
+def test_removing_an_environment_waits_for_its_package_listing(client, monkeypatch):
+    """The listing runs the environment's own Python; on Windows its files
+    cannot be deleted while it does."""
+    import threading
+    import time
+
+    from runrail import environments
+    finished = threading.Event()
+
+    def slow_freeze(key, command):
+        time.sleep(0.5)
+        finished.set()
+        return {"packages": []}
+
+    monkeypatch.setattr(rundiff, "_freeze", slow_freeze)
+    rundiff._packages_later(task_run_id=999_999, key=(7, ("python",), None), python_command=["python"])
+    rundiff._packages_later(task_run_id=999_998, key=(8, ("python",), None), python_command=["python"])
+    environments._sweep_directories(7, keep=None)
+    assert finished.is_set(), "the sweep went ahead while environment 7's listing still ran"
+    rundiff.wait_for_package_lists()

@@ -174,6 +174,11 @@ def _environment_directories(environment_id: int) -> list[Path]:
 
 
 def _sweep_directories(environment_id: int, keep: Path | None) -> None:
+    # A package listing may still be running this environment's Python; on
+    # Windows its files cannot be deleted until it exits. Bounded by the
+    # listing's own timeout.
+    from runrail.rundiff import FREEZE_TIMEOUT_SECONDS, wait_for_package_lists
+    wait_for_package_lists(FREEZE_TIMEOUT_SECONDS + 5, environment_id=environment_id)
     for path in _environment_directories(environment_id):
         if keep is None or path.resolve() != keep.resolve():
             shutil.rmtree(path, ignore_errors=True)

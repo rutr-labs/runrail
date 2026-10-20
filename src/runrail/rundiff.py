@@ -97,7 +97,8 @@ def _freeze(key: tuple, python_command: list[str]) -> dict[str, Any]:
     return result
 
 
-_pending: set[threading.Thread] = set()
+#: Listings in flight, with the environment each runs a Python from.
+_pending: dict[threading.Thread, int | None] = {}
 
 
 def _packages_later(task_run_id: int, key: tuple, python_command: list[str]) -> None:
@@ -119,20 +120,23 @@ def _packages_later(task_run_id: int, key: tuple, python_command: list[str]) -> 
             log.warning("could not list packages for task run %s", task_run_id, exc_info=True)
         finally:
             with _freeze_lock:
-                _pending.discard(thread)
+                _pending.pop(thread, None)
 
     thread = threading.Thread(target=work, daemon=True, name=f"runrail-packages-{task_run_id}")
     with _freeze_lock:
-        _pending.add(thread)
+        _pending[thread] = key[0]
     thread.start()
 
 
-def wait_for_package_lists(timeout: float = 60.0) -> None:
-    """Block until package listings in flight are recorded (tests, shutdown)."""
+def wait_for_package_lists(timeout: float = 60.0, environment_id: int | None = None) -> None:
+    """Block until package listings in flight are recorded: all of them, or
+    those of one environment. A listing runs that environment's own Python,
+    and on Windows a running program's files cannot be deleted, so removing
+    or rebuilding an environment waits for it first."""
     deadline = time.monotonic() + timeout
     while True:
         with _freeze_lock:
-            threads = list(_pending)
+            threads = [t for t, env in _pending.items() if environment_id is None or env == environment_id]
         if not threads or time.monotonic() > deadline:
             return
         for thread in threads:
