@@ -255,11 +255,15 @@ class _Cleanup:
             with self._lock:
                 self.state["errors"] += 1
         finally:
+            # On record first, finished second: in the other order a status
+            # read between the two showed a finished pass with no record of it.
+            finished = now()
             with self._lock:
-                self.state.update(running=False, finished_at=now())
-                record = dict(self.state)
+                record = {**self.state, "running": False, "finished_at": finished}
             storage.reset()  # the home folder just got smaller
             _record_pass(record)
+            with self._lock:
+                self.state.update(running=False, finished_at=finished)
         return stats
 
 
