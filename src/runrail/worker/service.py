@@ -10,6 +10,7 @@ import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -49,6 +50,7 @@ from runrail.models import (
     now,
 )
 from runrail.notify import notify_approval_requested, notify_run_outcome
+from runrail.rundiff import capture_inputs
 from runrail.worker.queue import claim_next_run
 from runrail.worker.runners import (
     CommandSpec,
@@ -368,6 +370,17 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
                     f"Environment '{environment.name}' is not ready: "
                     f"{environment.last_error or environment.status.value}"
                 )
+            # What this attempt runs with, for the comparison with the last
+            # good run: its scripts' versions and its packages.
+            try:
+                freeze_with = _python_command(environment) if environment else None
+            except RuntimeError:
+                freeze_with = None
+            task_run.inputs_json, list_packages = capture_inputs(
+                db, task, partial(render, context=context), cwd, environment, freeze_with, task_run.id)
+            db.commit()
+            if list_packages is not None:
+                list_packages()  # after the commit, so its update lands on top of this one
             if task.task_type.value == "sql":
                 task_run.rendered_command = f"sqlite3 < {render(task.sql_path, context)}"
                 result = execute_sql(task, context, cwd, stdout, stderr, task.timeout_seconds,

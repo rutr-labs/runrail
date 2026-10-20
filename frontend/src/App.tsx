@@ -37,6 +37,7 @@ import {
 } from './Services';
 import { attemptLabel, attemptTag, groupAttempts } from './attempts';
 import { RunFormEditor, RunFormFields, runFormValue } from './components/RunForm';
+import { RunChanges } from './components/RunChanges';
 import { collect, initialValues, needsAsking, type FormValues, type RunParameter } from './runForms';
 import type { AttemptGroup } from './attempts';
 import { LockField, LockBadge, lockValues } from './components/LockField';
@@ -1605,6 +1606,12 @@ function RunDetail() {
         {run.started_at && <div><span>Started</span><strong>{formatDate(run.started_at)}</strong></div>}
         {run.finished_at && <div><span>Finished</span><strong>{formatDate(run.finished_at)}</strong></div>}
       </div>
+
+      {/* "What is different from last time?" — the first question about a
+          failed run, so it opens there; any finished run can ask it. */}
+      {!LIVE(run.status) && (
+        <RunChanges key={run.id} runId={run.id} workflowId={run.workflow_id} failed={run.status === 'failed'} />
+      )}
 
       {params.length > 0 && (
         <div className="panel" style={{ marginBottom: 20 }}>

@@ -147,6 +147,19 @@ run_parameters:
   - {name: dry_run, type: bool, default: false}
 ```
 
+## What changed since the last good run
+
+A failed run opens with a **What changed** panel, comparing it with the last run of the same workflow that succeeded. Any finished run can be compared with any earlier one. It shows only what differs:
+
+- **Parameters** that changed.
+- **Scripts**, line by line. RunRail records each script a task runs (`script_path`, `sql_path`, or a `.py`/`.sql`/`.sh` file named in a shell command) when the task starts, keeping each distinct version once.
+- **Packages and Python version** of the task's environment (from `pip freeze`, listed in the background so it never slows a task).
+- **Commands as run**, ignoring the run's own dates and ids.
+- **Log lines** that are new, gone, or changed. Timestamps, durations and ids are ignored, but counts are not, so `loaded 48210 rows` → `loaded 0 rows` shows as one changed line.
+- **Notebook cells** whose code or output changed, the cell that failed, and cells that got much slower.
+
+It doesn't guess at causes. When nothing differs, it says so: the cause is then likely outside RunRail (the data, a database, the network). Secrets stay masked here as everywhere else.
+
 ## CLI
 
 ```bash

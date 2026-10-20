@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, Response, Streami
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from runrail import variables
+from runrail import rundiff, variables
 from runrail.api.crud import create_run, get_or_404
 from runrail.api.routes_workflows import _ensure_workflow_runnable
 from runrail.api.ws import manager as ws_manager
@@ -116,6 +116,23 @@ def retry_run(object_id: int, db: Session = Depends(get_db)):
         raise HTTPException(422, f"This run's parameters no longer fit the workflow's run form: {exc}") from None
     ws_manager.notify({"type": "run_created", "id": run.id, "workflow_id": run.workflow_id})
     return run
+
+
+@router.get("/runs/{object_id}/compare")
+def compare_run(object_id: int, with_run: int | None = Query(None, alias="with"),
+                db: Session = Depends(get_db)):
+    """What changed between this run and another of the same workflow — by
+    default the last one before it that succeeded."""
+    run = get_or_404(db, WorkflowRun, object_id)
+    if with_run is not None:
+        baseline = get_or_404(db, WorkflowRun, with_run)
+        if baseline.workflow_id != run.workflow_id:
+            raise HTTPException(400, "Both runs must be of the same workflow")
+        if baseline.id == run.id:
+            raise HTTPException(400, "Choose a different run to compare with")
+    else:
+        baseline = rundiff.baseline_for(db, run)
+    return rundiff.compare(db, run, baseline)
 
 
 @router.get("/task-runs/{object_id}", response_model=TaskRunOut)

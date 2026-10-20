@@ -25,6 +25,14 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
   fills them the same way, so a scheduled run records the defaults it used;
   date defaults can be `today` or `yesterday`. Run forms travel in YAML as
   `run_parameters`.
+- **What changed since the last good run.** A failed run opens with a
+  comparison against the last successful run of its workflow (any finished
+  run can be compared with any earlier one): parameters, scripts line by
+  line, package and Python versions, commands, new/gone/changed log lines,
+  and notebook cells whose code or output changed or that failed or slowed
+  down. Each task attempt now records its scripts' versions and its
+  environment's packages to make this possible; runs from before the upgrade
+  are compared on what they recorded.
 - Tasks get their run's parameters in the environment too: `RUNRAIL_PARAMS`
   (JSON) and `RUNRAIL_PARAM_<NAME>`, so a script run by path can read them.
 

@@ -308,6 +308,10 @@ class TaskRun(Base):
     resume_index: Mapped[int] = mapped_column(Integer, default=0)
     approval_note: Mapped[str | None] = mapped_column(Text)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # What this attempt ran with, for "what changed since the last good run":
+    # the scripts it read (by content hash, see SourceSnapshot) and its
+    # environment's Python and packages. See runrail.rundiff.
+    inputs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     workflow_run: Mapped[WorkflowRun] = relationship(back_populates="task_runs")
     task: Mapped[Task] = relationship()
 
@@ -495,6 +499,20 @@ class Variable(TimestampMixin, Base):
     value: Mapped[str] = mapped_column(Text)
     key_id: Mapped[str | None] = mapped_column(String(32))
     description: Mapped[str | None] = mapped_column(Text)
+
+
+class SourceSnapshot(Base):
+    """One version of a script a task ran, stored once however many runs used
+    it, so a diff can show the lines that changed. Dropped by retention once
+    no run inside the window has used it."""
+
+    __tablename__ = "source_snapshots"
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    path: Mapped[str] = mapped_column(Text)
+    size: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
 
 
 class AppSetting(Base):
