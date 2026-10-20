@@ -184,7 +184,7 @@ def test_code_lives_as_long_as_a_kept_run_points_at_it(client, tmp_path):
 
     from runrail.models import now
     script = tmp_path / "job.py"
-    script.write_text("print('old')\n")
+    script.write_bytes(b"print('old')\n")  # bytes: Windows would write \r\n
     workflow = make(client, "r", f'{PY} job.py', tmp_path)
     old = run(client, workflow)
     script.write_text("raise SystemExit('new and broken')\n")

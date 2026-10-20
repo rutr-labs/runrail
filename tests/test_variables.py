@@ -87,7 +87,7 @@ def test_a_notebook_is_masked_in_place_and_left_alone_when_clean(tmp_path):
                 "nbformat_minor": 5}
     notebook.write_text(json.dumps(document))
     assert mask_notebook(notebook, Masker([SECRET]))
-    text = notebook.read_text()
+    text = notebook.read_text(encoding="utf-8")
     assert SECRET not in text and MASK in text
     assert json.loads(text)["nbformat"] == 4
     before = notebook.stat().st_mtime_ns
@@ -183,7 +183,8 @@ def test_a_task_gets_variables_and_secrets_and_its_logs_hide_the_secret(client):
     with SessionLocal() as db:
         from runrail.models import TaskRun
         row = db.get(TaskRun, task_run["id"])
-        on_disk = Path(row.stdout_log_path).read_text() + Path(row.stderr_log_path).read_text()
+        on_disk = (Path(row.stdout_log_path).read_text(encoding="utf-8")
+                   + Path(row.stderr_log_path).read_text(encoding="utf-8"))
     assert SECRET not in on_disk, "the secret was written to the log file"
     assert f"pw={MASK}" in on_disk and "region=eu-west" in on_disk and f"err {MASK}" in on_disk
     assert f"pw={MASK}" in client.get(f"/api/task-runs/{task_run['id']}/stdout").text
@@ -243,7 +244,10 @@ def test_a_failing_sql_task_does_not_leak_a_secret_in_its_error(client, tmp_path
     task_run = client.get(f"/api/runs/{run_id}").json()["task_runs"][0]
     assert task_run["status"] == "failed"
     assert secret_sql not in (task_run["error_message"] or "")
-    assert secret_sql not in client.get(f"/api/task-runs/{task_run['id']}/stderr").text
+    stderr = client.get(f"/api/task-runs/{task_run['id']}/stderr").text
+    # The mask itself must survive: written in the platform's code page (cp1252
+    # on Windows), it read back as replacement characters.
+    assert secret_sql not in stderr and MASK in stderr
 
 
 # ─── Services ───────────────────────────────────────────────────────────
@@ -266,7 +270,7 @@ def test_a_service_log_is_masked_even_when_a_read_splits_the_secret(client, tmp_
 
     log = tmp_path / "service.log"
     process._pump(io.BufferedReader(Trickle(), buffer_size=5), log)
-    assert log.read_text() == f"starting\nconnected with {MASK}\n"
+    assert log.read_text(encoding="utf-8") == f"starting\nconnected with {MASK}\n"
 
 
 def test_a_service_starts_with_the_variables(client):

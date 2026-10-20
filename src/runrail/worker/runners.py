@@ -342,15 +342,15 @@ def execute_sql(task: Task, context: dict[str, Any], cwd: Path, stdout: Path,
         connection.set_progress_handler(interrupt, _SQL_CHECK_EVERY)
         with connection:
             connection.executescript(render(script, context))
-        stdout.write_text("SQL script completed successfully\n")
-        stderr.write_text("")
+        stdout.write_text("SQL script completed successfully\n", encoding="utf-8")
+        stderr.write_text("", encoding="utf-8")
         return ExecutionResult(0)
     except Exception as exc:
         if stopped:
-            stderr.write_text(f"{stopped[0].error}\n")
+            stderr.write_text(f"{stopped[0].error}\n", encoding="utf-8")
             return stopped[0]
         hide = masker.text if masker else (lambda text: text)
-        stderr.write_text(hide(f"{type(exc).__name__}: {exc}\n"))
+        stderr.write_text(hide(f"{type(exc).__name__}: {exc}\n"), encoding="utf-8")
         return ExecutionResult(1, hide(str(exc)))
     finally:
         if connection is not None:

@@ -421,7 +421,7 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
                 artifact = spec.artifact
         except Exception as exc:
             hide = variables.masker().text
-            stdout.touch(); stderr.write_text(hide(f"{type(exc).__name__}: {exc}\n"))
+            stdout.touch(); stderr.write_text(hide(f"{type(exc).__name__}: {exc}\n"), encoding="utf-8")
             result, artifact = type("Result", (), {"exit_code": 1, "error": hide(str(exc))})(), None
         task_run.exit_code = result.exit_code
         task_run.error_message = variables.masker().text(result.error)

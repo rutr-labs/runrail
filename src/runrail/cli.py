@@ -49,7 +49,7 @@ def _apply_yaml(file: Path) -> None:
 
     init_db()
     try:
-        data = yaml.safe_load(file.read_text())
+        data = yaml.safe_load(file.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise typer.BadParameter(f"Could not read {file}: {exc}") from exc
     with SessionLocal() as db:
@@ -343,7 +343,7 @@ def export(name: str | None = typer.Argument(None, help="Workflow name; omit for
             raise typer.BadParameter(str(exc)) from exc
     text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
     if output:
-        Path(output).write_text(text)
+        Path(output).write_text(text, encoding="utf-8")
         typer.echo(f"Wrote {len(data['workflows'])} workflow(s) to {output}")
     else:
         typer.echo(text)
