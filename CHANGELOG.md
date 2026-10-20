@@ -2,7 +2,14 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any release that is safe to upgrade into without doing anything: new features that are opt-in, fixes, migrations that only add. The middle one (0.**9**.0) moves only when upgrading asks something of you or changes results: a setting, CLI flag or API field renamed or removed, or behaviour that changes what a run produces. 1.0 is when RunRail declares that stable, after which these follow semver's usual meaning.
+
+## [0.8.2] — 2026-10-20
+
+Secrets, run forms, and a comparison with the last good run. Everything here
+is opt-in, and upgrading asks nothing of you. Three migrations run on first
+start (new tables and nullable columns only); on SQLite a restore point is
+taken first. New dependency: `cryptography`, for encrypting secrets.
 
 ### Added
 - **Variables and secrets.** Settings has a list of variables and secrets that
