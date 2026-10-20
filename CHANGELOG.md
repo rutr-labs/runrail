@@ -34,7 +34,11 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
   code it ran — its whole project, or a loose script and the files it
   imports — and its environment's packages; each file version is stored
   once and kept as long as a run that used it. Runs from before the upgrade
-  are compared on what they recorded.
+  are compared on what they recorded. Read-only and light: environments
+  (found by `pyvenv.cfg` / `conda-meta`, whatever their name), caches and
+  secret files are skipped; on a network drive only the files a task runs
+  are checked; cloud placeholders are never opened. Settings → Code
+  tracking turns it down to the files a task runs, or off.
 - Tasks get their run's parameters in the environment too: `RUNRAIL_PARAMS`
   (JSON) and `RUNRAIL_PARAM_<NAME>`, so a script run by path can read them.
 

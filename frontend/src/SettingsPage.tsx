@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react';
 import {
   Archive, Bell, BellOff, CalendarClock, Check, Copy, Cpu, Database, Download, ExternalLink, Eye, EyeOff, FileArchive,
-  HardDrive, KeyRound, Lock, Minus, Moon, Pause, Pencil, Play, Plus, RefreshCw, Server, ShieldCheck, Sun, Trash2, Upload,
+  FileCode2, HardDrive, KeyRound, Lock, Minus, Moon, Pause, Pencil, Play, Plus, RefreshCw, Server, ShieldCheck, Sun, Trash2, Upload,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { ApiError, api, errorMessage, post, put } from './api';
@@ -10,10 +10,10 @@ import { formatDate, timeAgo, viewerZone } from './format';
 import { Button, PageHeader } from './components/ui';
 import { useToast } from './components/toast';
 import {
-  MASK, RETENTION_PRESETS, basename, cleanupLine, eventLabel, keyLine, lastCleanupLine, formatCountdown, formatSize, formatUptime, groupEvents,
+  CODE_TRACKING_OPTIONS, MASK, RETENTION_PRESETS, basename, cleanupLine, eventLabel, keyLine, lastCleanupLine, formatCountdown, formatSize, formatUptime, groupEvents,
   lockedNote, overrideLine, parseCount, parseDays, pausedBanner, provenance, quietSpans, restoreSummaryLine,
   retentionSentence, sameValue, secretValueProblem, settledSentence, storageSegments, systemHeadline, variableNameProblem,
-  type VariableRow, type VariablesResponse,
+  type CodeTracking, type VariableRow, type VariablesResponse,
   type BackupPreview, type CleanupState, type LastCleanup, type NotifyTestResult, type QuietHours, type RestorePoint,
   type RestoreSummary, type RetentionPreview, type Setting, type SettingKey,
   type SettingValues, type SettingsResponse, type SystemStatus,
@@ -103,6 +103,7 @@ export function SettingsPage() {
           <RetentionGroup settings={settings} now={now} onSaved={onSaved} cleanup={status?.retention.cleanup}
                           last={status?.retention.last} />
           <NotificationsGroup settings={settings} eventKinds={eventKinds} now={now} onSaved={onSaved} />
+          <CodeTrackingGroup settings={settings} now={now} onSaved={onSaved} />
         </div>
       )}
       <VariablesSection />
@@ -673,6 +674,41 @@ function NotificationsGroup({ settings, eventKinds, now, onSaved }: GroupProps &
       </div>
       <GroupFooter error={error} dirty={dirty}>
         <Button onClick={() => save(unlocked(settings, values))} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save'}</Button>
+      </GroupFooter>
+    </section>
+  );
+}
+
+function CodeTrackingGroup({ settings, now, onSaved }: GroupProps) {
+  const setting = settings.get('code_tracking');
+  const saved = (valueOf(settings, 'code_tracking') ?? 'auto') as CodeTracking;
+  const [choice, setChoice] = useState<CodeTracking>(saved);
+  useEffect(() => { setChoice(saved); }, [saved]);
+  const { save, saving, error } = useGroupSave(onSaved);
+  if (!setting) return null;
+  const dirty = choice !== saved;
+  return (
+    <section className="settings-section settings-group settings-group--wide" aria-label="Code tracking">
+      <SectionHead icon={<FileCode2 size={15} />} title="Code tracking">
+        What each task records of its code, so a failed run can show what changed since the last good one.
+        Read-only: nothing in your folders is written, and .env files, keys and credentials are never read.
+      </SectionHead>
+      <SettingField setting={setting} now={now}>
+        <div className="tracking-options" role="radiogroup" aria-label={setting.title}>
+          {CODE_TRACKING_OPTIONS.map(option => (
+            <label key={option.value} className={clsx('tracking-option', choice === option.value && 'is-on')}>
+              <input type="radio" name="code-tracking" value={option.value} checked={choice === option.value}
+                     disabled={setting.locked} onChange={() => setChoice(option.value)} />
+              <strong>{option.title}</strong>
+              <span>{option.text}</span>
+            </label>
+          ))}
+        </div>
+      </SettingField>
+      <GroupFooter error={error} dirty={dirty}>
+        <Button onClick={() => save(unlocked(settings, { code_tracking: choice }))} disabled={!dirty || saving || setting.locked}>
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
       </GroupFooter>
     </section>
   );

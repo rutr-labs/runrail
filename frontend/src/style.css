@@ -5340,3 +5340,14 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 .changes-file-head { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
 .changes-file-head code { font-family: var(--font-mono); color: var(--text-1); background: none; padding: 0; overflow-wrap: anywhere; }
 .changes-file-head em { font-style: normal; color: var(--text-3); }
+
+/* ── Settings: code tracking ─────────────────────────────── */
+.tracking-options { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+.tracking-option {
+  position: relative; display: flex; flex-direction: column; gap: 4px; padding: 12px 14px 12px 36px; border-radius: 10px;
+  cursor: pointer; background: var(--bg-card-r); border: 1px solid var(--border);
+}
+.tracking-option input { position: absolute; left: 13px; top: 14px; accent-color: var(--accent); }
+.tracking-option strong { font-size: 13px; color: var(--text-1); }
+.tracking-option span { font-size: 12px; color: var(--text-3); line-height: 1.5; }
+.tracking-option.is-on { border-color: var(--accent-border); background: var(--accent-soft); }

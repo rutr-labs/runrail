@@ -148,7 +148,9 @@ def capture_inputs(db: Session, task: Task, render, cwd: Path, environment: Envi
     that cannot be made must not fail a run."""
     inputs: dict[str, Any] = {}
     later = None
-    code = codetrack.capture(db, task, render, cwd, project_root)
+    from runrail import runtime_settings
+    code = codetrack.capture(db, task, render, cwd, project_root,
+                             mode=runtime_settings.current("code_tracking") or "auto")
     if code:
         inputs["code"] = code
     if environment is not None:

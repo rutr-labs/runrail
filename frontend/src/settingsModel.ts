@@ -20,8 +20,18 @@ export interface SettingValues {
   retention_days: number | null;
   worker_concurrency: number;
   task_parallelism: number;
+  code_tracking: CodeTracking;
   paused: boolean;
 }
+
+export type CodeTracking = 'auto' | 'files' | 'off';
+export const CODE_TRACKING_OPTIONS: { value: CodeTracking; title: string; text: string }[] = [
+  { value: 'auto', title: 'Automatic',
+    text: 'The whole project, or a loose script and the files it imports. On a network drive, only the files a task runs.' },
+  { value: 'files', title: 'Only the files a task runs',
+    text: 'The script and what it imports, wherever it is. No folder is scanned.' },
+  { value: 'off', title: 'Off', text: 'Nothing is recorded; comparisons leave code out.' },
+];
 export type SettingKey = keyof SettingValues;
 export type SettingValue = SettingValues[SettingKey];
 

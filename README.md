@@ -156,7 +156,9 @@ A failed run opens with a **What changed** panel, comparing it with the last run
   - in a **project** (a RunRail project, a git repository, or a folder with `pyproject.toml` / `setup.py`), every code and config file in it, so a fix in a helper or a config shows up too. In a git repository it uses git's own file list and shows the commit, e.g. "commit 3c5e757 → 967bc4f, with uncommitted edits";
   - for a **loose script** in a shared folder, the script and the local files it imports or opens, not its neighbours.
 
-  Each version of a file is stored once (compressed), and a project nobody touched costs nothing. Stored code is kept exactly as long as a run that used it is kept. `.env` files, keys and credential files are never read.
+  Each version of a file is stored once (compressed), and a project nobody touched costs nothing. Stored code is kept exactly as long as a run that used it is kept.
+
+  It only reads, never writes, and it stays out of what isn't your code. Virtualenvs and conda environments are skipped whatever they're called (by their `pyvenv.cfg` / `conda-meta`), as are caches, build output, and `.env` files, keys and credentials. It is light where reading is costly. On a network drive, only the files the task runs are checked. A OneDrive placeholder is never opened (that would download it). A project that's slow to list isn't listed again for an hour. After the first run, an unchanged file costs one look at its size and date. **Settings → Code tracking** turns it down to only the files a task runs, or off.
 - **Packages and Python version** of the task's environment (from `pip freeze`, listed in the background so it never slows a task).
 - **Commands as run**, ignoring the run's own dates and ids.
 - **Log lines** that are new, gone, or changed. Timestamps, durations and ids are ignored, but counts are not, so `loaded 48210 rows` → `loaded 0 rows` shows as one changed line.
@@ -226,6 +228,7 @@ An environment variable pins a setting: the page shows it locked and names the v
 | `RUNRAIL_BROWSE_ROOT` | user home; limits the UI file picker |
 | `RUNRAIL_SQLITE_DB_PATH` | unset; the database SQL tasks run against, unless the task sets `sqlite_db_path` |
 | `RUNRAIL_SECRETS_KEY` | unset; the key secrets are encrypted with, instead of `$RUNRAIL_HOME/secrets.key` |
+| `RUNRAIL_CODE_TRACKING` | unset (the Settings choice, `auto` by default); `auto`, `files` or `off` |
 
 Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:00 on that workflow's clock across DST. The UI shows occurrences in yours.
 

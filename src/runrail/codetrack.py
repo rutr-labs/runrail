@@ -24,6 +24,22 @@ manifest lives exactly as long as some run that is still kept points at it
 
 Secrets stay out: .env files, keys and credential files are never read, and
 anything shown is masked.
+
+It stays out of what is not code, and stays light where reading is costly:
+
+- Environments are recognised by what makes them one, not by name: a folder
+  holding `pyvenv.cfg` (every virtualenv) or `conda-meta` (every conda
+  environment) is skipped whole, as are caches and build output.
+- On a network drive (a UNC path or mapped drive on Windows; an SMB, NFS or
+  AFP mount elsewhere) only the files the task runs are looked at — the ones
+  Python opens anyway to run it. No folder is walked.
+- A cloud placeholder (OneDrive "files on demand") is never opened, which
+  would download it; its size and date stand in for its content.
+- Listing a project is given a few seconds; one that takes longer is not
+  listed again for an hour.
+- After the first run, an unchanged file costs one stat: nothing is read.
+
+The `code_tracking` setting turns it down to the files a task runs, or off.
 """
 
 import ast
@@ -65,8 +81,26 @@ SKIP_DIRS = frozenset({
     "build", "dist", ".idea", ".vscode", "site-packages", ".runrail", "logs",
 })
 PROJECT_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg")
+#: Folders holding one of these are environments, whatever they are called.
+ENVIRONMENT_MARKERS = ("pyvenv.cfg", "conda-meta")
+SKIP_DIR_PATTERNS = ("*.egg-info", "*.dist-info", "htmlcov", "wheelhouse", ".eggs")
 #: A file larger than this is tracked by fingerprint only: "changed", no lines.
 MAX_FILE_BYTES = 512 * 1024
+#: JSON past this size is data, not configuration: fingerprint only.
+MAX_JSON_BYTES = 64 * 1024
+#: New text stored by one task start, at most; past it, fingerprints only.
+MAX_NEW_BYTES = 16 * 1024 * 1024
+#: How long listing a project may take before it is not listed again for an hour.
+LIST_BUDGET_SECONDS = 3.0
+SLOW_ROOT_SECONDS = 3600.0
+#: Filesystems that live on another machine.
+REMOTE_FILESYSTEMS = frozenset({
+    "nfs", "nfs4", "cifs", "smbfs", "smb2", "smb3", "afpfs", "webdav", "davfs", "fuse.sshfs",
+    "sshfs", "9p", "ncpfs", "fuse.rclone", "fuse.s3fs", "s3fs", "fuse.gcsfuse", "glusterfs",
+    "fuse.glusterfs", "ceph", "fuse.ceph", "lustre", "gpfs", "panfs",
+})
+#: Windows attributes of a cloud placeholder: opening it downloads it.
+_PLACEHOLDER = 0x00400000 | 0x00040000 | 0x00001000  # RECALL_ON_DATA_ACCESS, RECALL_ON_OPEN, OFFLINE
 #: A folder with more tracked files than this is not a project to snapshot
 #: whole (a home directory, a shared drive); the task's own files are tracked.
 MAX_PROJECT_FILES = 5000
@@ -80,6 +114,14 @@ GIT_TIMEOUT = 5
 def _secret(name: str) -> bool:
     lower = name.lower()
     return any(fnmatch.fnmatch(lower, pattern) for pattern in SECRET_PATTERNS)
+
+
+def _skip_dir(name: str) -> bool:
+    return name in SKIP_DIRS or any(fnmatch.fnmatch(name.lower(), p) for p in SKIP_DIR_PATTERNS)
+
+
+def _environment(directory: Path) -> bool:
+    return any((directory / marker).exists() for marker in ENVIRONMENT_MARKERS)
 
 
 def _code_file(path: Path) -> bool:
@@ -131,12 +173,17 @@ class _StatCache:
             hit = self.entries.get(key)
         if hit and hit[0] == info.st_size and hit[1] == info.st_mtime_ns:
             return _Read(hit[2], hit[3], hit[4])
+        if getattr(info, "st_file_attributes", 0) & _PLACEHOLDER:
+            # Opening it would download it: its size and date stand in.
+            marker = f"placeholder:{info.st_size}:{info.st_mtime_ns}"
+            return _Read(hashlib.sha256(marker.encode()).hexdigest(), info.st_size, False)
         try:
             data = path.read_bytes()
         except OSError:
             return None
         text: str | None = None
-        if len(data) <= MAX_FILE_BYTES:
+        limit = MAX_JSON_BYTES if path.suffix.lower() == ".json" else MAX_FILE_BYTES
+        if len(data) <= limit:
             if path.suffix.lower() == ".ipynb":
                 text = _notebook_code(data)
             else:
@@ -229,29 +276,97 @@ def _within(path: Path, root: Path) -> bool:
         return False
 
 
-def _project_files(scope: Scope) -> list[Path] | None:
-    """Every code file in the project, or None when it is too big to be one."""
+class _TooBig(Exception):
+    pass
+
+
+_slow_roots: dict[str, float] = {}
+
+
+def _project_files(scope: Scope) -> list[Path] | str:
+    """Every code file in the project, or why the project is not listed."""
+    key = str(scope.root)
+    if time.monotonic() - _slow_roots.get(key, -SLOW_ROOT_SECONDS) < SLOW_ROOT_SECONDS:
+        return "slow"
+    deadline = time.monotonic() + LIST_BUDGET_SECONDS
     found: list[Path] = []
-    if scope.git_root is not None and _within(scope.root, scope.git_root):
-        out = _git(scope.root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".")
-        if out is not None:
-            for relative in filter(None, out.split("\0")):
-                path = scope.root / relative
-                if (not any(part in SKIP_DIRS for part in Path(relative).parts[:-1])
-                        and _code_file(path) and path.is_file()):
-                    found.append(path)
-                    if len(found) > MAX_PROJECT_FILES:
-                        return None
-            return found
-    for directory, dirs, files in os.walk(scope.root):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-        for name in files:
-            path = Path(directory) / name
-            if _code_file(path):
-                found.append(path)
-                if len(found) > MAX_PROJECT_FILES:
-                    return None
+    environments: dict[Path, bool] = {}
+
+    def inside_environment(path: Path) -> bool:
+        for parent in path.parents:
+            if parent == scope.root or not _within(parent, scope.root):
+                return False
+            if parent not in environments:
+                environments[parent] = _environment(parent)
+            if environments[parent]:
+                return True
+        return False
+
+    def add(path: Path) -> None:
+        found.append(path)
+        if len(found) > MAX_PROJECT_FILES:
+            raise _TooBig
+        if time.monotonic() > deadline:
+            _slow_roots[key] = time.monotonic()
+            raise TimeoutError
+
+    try:
+        if scope.git_root is not None and _within(scope.root, scope.git_root):
+            out = _git(scope.root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".")
+            if out is not None:
+                for relative in filter(None, out.split("\0")):
+                    path = scope.root / relative
+                    if (not any(_skip_dir(part) for part in Path(relative).parts[:-1])
+                            and _code_file(path) and not inside_environment(path) and path.is_file()):
+                        add(path)
+                return found
+        for directory, dirs, files in os.walk(scope.root):
+            if _environment(Path(directory)) and Path(directory) != scope.root:
+                dirs[:] = []
+                continue
+            dirs[:] = [d for d in dirs if not _skip_dir(d) and not d.startswith(".")]
+            for name in files:
+                path = Path(directory) / name
+                if _code_file(path):
+                    add(path)
+    except _TooBig:
+        return "too_big"
+    except TimeoutError:
+        return "slow"
     return found
+
+
+# ─── Network drives ─────────────────────────────────────────────────────
+
+
+_mounts: tuple[float, list] = (0.0, [])
+
+
+def on_network_drive(path: Path) -> bool:
+    """Whether the folder lives on another machine, where every listing is
+    a round trip and a scan is traffic someone may be watching."""
+    try:
+        if os.name == "nt":
+            text = str(path)
+            if text.startswith("\\\\"):
+                return True
+            if path.drive:
+                import ctypes
+                drive_remote = 4
+                return ctypes.windll.kernel32.GetDriveTypeW(path.drive + "\\") == drive_remote
+            return False
+        global _mounts
+        if time.monotonic() - _mounts[0] > 300:
+            import psutil
+            _mounts = (time.monotonic(), psutil.disk_partitions(all=True))
+        best = None
+        for part in _mounts[1]:
+            mount = Path(part.mountpoint)
+            if _within(path, mount) and (best is None or len(mount.parts) > len(Path(best.mountpoint).parts)):
+                best = part
+        return bool(best and best.fstype.lower() in REMOTE_FILESYSTEMS)
+    except Exception:
+        return False
 
 
 # ─── What the task uses ─────────────────────────────────────────────────
@@ -310,7 +425,7 @@ def _used(entries: list[Path], roots: list[Path]) -> list[Path]:
     folders the task's code is looked up in, never the installed packages."""
     seen: dict[Path, None] = {}
     queue = [p.resolve() for p in entries]
-    local = [r for r in roots if not _too_broad(r)]
+    local = [r for r in roots if not _too_broad(r) and not _environment(r)]
     while queue and len(seen) < MAX_FOLLOWED:
         path = queue.pop(0)
         if (path in seen or not path.is_file() or not _code_file(path)
@@ -366,21 +481,36 @@ def _insert_missing(db: Session, model, rows: list[dict]) -> None:
         db.execute(insert(model).values(rows[start:start + 200]).on_conflict_do_nothing())
 
 
-def _git_state(scope: Scope) -> dict[str, Any] | None:
+def _git_state(scope: Scope, files: list[Path]) -> dict[str, Any] | None:
     if scope.git_root is None:
         return None
     commit = _git(scope.git_root, "rev-parse", "HEAD")
     if commit is None:
         return None
-    status = _git(scope.root, "status", "--porcelain", "--untracked-files=no", "--", ".")
+    # Only the files tracked: a whole-tree status on a network drive is the
+    # very scan the files-only mode is there to avoid.
+    paths = ["."] if scope.mode == "project" else [str(f) for f in files[:200]]
+    status = _git(scope.root, "status", "--porcelain", "--untracked-files=no", "--", *paths) if paths else ""
     branch = _git(scope.git_root, "rev-parse", "--abbrev-ref", "HEAD")
     return {"commit": commit.strip(), "branch": (branch or "").strip() or None,
             "dirty": bool(status and status.strip())}
 
 
-def capture(db: Session, task, render, cwd: Path, project_root: str | None) -> dict[str, Any] | None:
+_LIGHT_NOTES = {
+    "files": "Only the files this task uses are tracked (Settings → Code tracking)",
+    "network": "On a network drive: only the files this task uses are tracked",
+    "too_big": f"Over {MAX_PROJECT_FILES} code files: only the files this task uses are tracked",
+    "slow": "Listing this project was slow: only the files this task uses are tracked",
+}
+
+
+def capture(db: Session, task, render, cwd: Path, project_root: str | None,
+            mode: str = "auto") -> dict[str, Any] | None:
     """Record the code this task attempt is about to run. Returns the
-    record for the task run's inputs; never raises."""
+    record for the task run's inputs; never raises. `mode` is the
+    code_tracking setting: auto, files or off."""
+    if mode == "off":
+        return None
     try:
         entries = entry_files(task, render, cwd)
         if not entries and not project_root and not task.cwd:
@@ -390,11 +520,14 @@ def capture(db: Session, task, render, cwd: Path, project_root: str | None) -> d
         scope = find_scope(entries, cwd, project_root)
         roots = list(dict.fromkeys([scope.root, cwd.resolve(), *(e.parent for e in entries),
                                     scope.root / "src"]))
-        files = _project_files(scope) if scope.mode == "project" else None
-        if scope.mode == "project" and files is None:
-            scope = Scope(scope.root, "script", scope.git_root,
-                          note=f"{scope.root.name} has over {MAX_PROJECT_FILES} code files; "
-                               "only the files this task uses are tracked")
+        files = None
+        if scope.mode == "project":
+            light = "files" if mode == "files" else "network" if on_network_drive(scope.root) else None
+            listed = _project_files(scope) if light is None else light
+            if isinstance(listed, list):
+                files = listed
+            else:
+                scope = Scope(scope.root, "script", scope.git_root, note=_LIGHT_NOTES[listed])
         used = _used(entries, roots)
         if files is None:
             files = used
@@ -417,7 +550,7 @@ def capture(db: Session, task, render, cwd: Path, project_root: str | None) -> d
             "entries": [_relative(e, scope.root) for e in entries],
             "used": sorted(_relative(u, scope.root) for u in used),
         }
-        git = _git_state(scope)
+        git = _git_state(scope, used)
         if git:
             record["git"] = git
         if scope.note:
@@ -445,9 +578,12 @@ def _store_blobs(db: Session, blobs: list[dict]) -> None:
     for start in range(0, len(shas), 500):
         have |= set(db.scalars(select(CodeBlob.sha256).where(CodeBlob.sha256.in_(shas[start:start + 500]))))
     rows = []
+    budget = MAX_NEW_BYTES
     for sha, blob in wanted.items():
         if sha in have:
             continue
+        if budget <= 0:
+            break  # a first run on a big project: the rest are fingerprints until next time
         text = blob["text"]
         if text is None:  # known from the stat cache, but its blob was collected since
             try:
@@ -457,6 +593,7 @@ def _store_blobs(db: Session, blobs: list[dict]) -> None:
                 continue
             if hashlib.sha256(text.encode()).hexdigest() != sha:
                 continue  # changed under us; the next run records it
+        budget -= len(text.encode())
         rows.append({"sha256": sha, "size": len(text.encode()), "content": zlib.compress(text.encode(), 6)})
     _insert_missing(db, CodeBlob, rows)
 

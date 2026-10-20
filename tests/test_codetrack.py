@@ -211,3 +211,106 @@ def test_a_task_with_no_code_of_its_own_records_none(client):
     with SessionLocal() as db:
         task_run = db.get(TaskRun, done["task_runs"][0]["id"])
         assert "code" not in task_run.inputs_json and task_run.code_manifest is None
+
+
+# ─── Staying out of what is not code, and light where reading costs ─────
+
+
+def _project(tmp_path):
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\n")
+    (root / "main.py").write_text("import helper\nprint(helper.X)\n")
+    (root / "helper.py").write_text("X = 1\n")
+    (root / "other.py").write_text("print('not used')\n")
+    return root
+
+
+def _manifest_files(run_json):
+    with SessionLocal() as db:
+        return set(db.get(CodeManifest, inputs(run_json)["manifest"]).files)
+
+
+def test_environments_are_skipped_by_what_makes_them_one_not_their_name(client, tmp_path):
+    root = _project(tmp_path)
+    for env, marker in (("myenv", "pyvenv.cfg"), ("tools", "conda-meta")):
+        (root / env / "bin").mkdir(parents=True)
+        (root / env / "bin" / "activate_this.py").write_text("x = 1\n")
+        if marker == "conda-meta":
+            (root / env / marker).mkdir()
+        else:
+            (root / env / marker).write_text("home = /usr\n")
+    (root / "orders.egg-info").mkdir()
+    (root / "orders.egg-info" / "setup.cfg").write_text("")
+    (root / "big.json").write_text(json.dumps({"rows": list(range(30_000))}))
+    first = run(client, make(client, "e", f'{PY} main.py', root))
+    assert _manifest_files(first) == {"big.json", "helper.py", "main.py", "other.py", "pyproject.toml"}
+    with SessionLocal() as db:
+        assert db.get(CodeManifest, inputs(first)["manifest"]).files["big.json"][1] is False, \
+            "a large JSON file is data: fingerprint only"
+
+
+def test_on_a_network_drive_only_the_files_the_task_runs_are_read(client, tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    monkeypatch.setattr(codetrack, "on_network_drive", lambda path: True)
+    listed = []
+    monkeypatch.setattr(codetrack, "_project_files", lambda scope: listed.append(scope) or [])
+    workflow = make(client, "net", f'{PY} main.py', root)
+    first = run(client, workflow)
+    assert listed == [], "no folder is walked on a network drive"
+    recorded = inputs(first)
+    assert recorded["mode"] == "script" and "network drive" in recorded["note"]
+    assert _manifest_files(first) == {"main.py", "helper.py"}
+    (root / "other.py").write_text("print('edited')\n")
+    assert code_change(client, run(client, workflow), first) is None
+
+
+def test_a_slow_project_is_not_listed_again_for_a_while(client, tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    monkeypatch.setattr(codetrack, "LIST_BUDGET_SECONDS", -1.0)
+    workflow = make(client, "slow", f'{PY} main.py', root)
+    assert "slow" in inputs(run(client, workflow))["note"]
+    monkeypatch.setattr(codetrack, "LIST_BUDGET_SECONDS", 60.0)
+    assert "slow" in inputs(run(client, workflow))["note"], "remembered for an hour"
+
+
+def test_the_setting_turns_it_down_or_off(client, tmp_path):
+    root = _project(tmp_path)
+    workflow = make(client, "set", f'{PY} main.py', root)
+    assert client.put("/api/settings", json={"code_tracking": "files"}).status_code == 200
+    assert _manifest_files(run(client, workflow)) == {"main.py", "helper.py"}
+    assert client.put("/api/settings", json={"code_tracking": "off"}).status_code == 200
+    with SessionLocal() as db:
+        done = run(client, workflow)
+        assert "code" not in db.get(TaskRun, done["task_runs"][0]["id"]).inputs_json
+    assert client.put("/api/settings", json={"code_tracking": "everything"}).status_code == 422
+
+
+def test_a_cloud_placeholder_is_never_opened(tmp_path):
+    class Stat:
+        st_size, st_mtime_ns, st_file_attributes = 120, 1, 0x00400000
+
+    class Placeholder:
+        suffix = ".py"
+        def stat(self):
+            return Stat()
+        def read_bytes(self):
+            raise AssertionError("opening a placeholder downloads it")
+        def __str__(self):
+            return "C:/Users/me/OneDrive/job.py"
+
+    read = codetrack._StatCache().read(Placeholder())
+    assert read is not None and read.textual is False
+
+
+def test_a_network_mount_is_recognised_by_its_filesystem(monkeypatch, tmp_path):
+    if sys.platform == "win32":
+        pytest.skip("Windows asks the drive itself")
+    from collections import namedtuple
+    Part = namedtuple("Part", "device mountpoint fstype opts")
+    import psutil
+    monkeypatch.setattr(psutil, "disk_partitions", lambda all=True: [
+        Part("/dev/disk1", "/", "apfs", ""), Part("//server/share", str(tmp_path / "share"), "smbfs", "")])
+    monkeypatch.setattr(codetrack, "_mounts", (0.0, []))
+    assert codetrack.on_network_drive(tmp_path / "share" / "etl") is True
+    assert codetrack.on_network_drive(tmp_path / "local") is False
