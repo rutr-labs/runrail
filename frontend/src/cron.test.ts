@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { cronLabel, nextCronOccurrence, zoneTag } from './cron';
+import { cronLabel, cronProblem, nextCronOccurrence, zoneTag } from './cron';
 
 /* ─── Cron occurrence engine ───────────────────────────────
    Two jobs here. The first is ordinary regression cover for the zone and DST
@@ -153,7 +153,44 @@ const APSCHEDULER_TRUTH: { expr: string; tz: string; after: string; fires: strin
   { expr: '30 2 * * *', tz: 'Australia/Sydney', after: '2026-04-04T12:00:00Z',
     fires: ['2026-04-04T15:30:00Z'] },
   { expr: '30 1 * * *', tz: 'America/New_York', after: '2026-10-31T12:00:00Z',
-    fires: ['2026-11-01T05:30:00Z'] },
+    fires: ['2026-11-01T05:30:00Z', '2026-11-02T06:30:00Z'] },
+
+  // The rest of standard cron: lists, ranges, steps over ranges, names and
+  // months. The builder's Advanced box takes any of these.
+  { expr: '0 9,17 * * *', tz: 'UTC', after: '2026-08-30T10:00:00Z',
+    fires: ['2026-08-30T17:00:00Z', '2026-08-31T09:00:00Z', '2026-08-31T17:00:00Z', '2026-09-01T09:00:00Z'] },
+  // Friday evening: the next window opens on Monday, three days out.
+  { expr: '*/15 9-17 * * 1-5', tz: 'UTC', after: '2026-09-04T17:40:00Z',
+    fires: ['2026-09-04T17:45:00Z', '2026-09-07T09:00:00Z', '2026-09-07T09:15:00Z'] },
+  { expr: '0 9 * * MON-FRI', tz: 'Asia/Kolkata', after: '2026-08-29T00:00:00Z',
+    fires: ['2026-08-31T03:30:00Z', '2026-09-01T03:30:00Z', '2026-09-02T03:30:00Z'] },
+  { expr: '0 0 1,15 * *', tz: 'UTC', after: '2026-08-30T00:00:00Z',
+    fires: ['2026-09-01T00:00:00Z', '2026-09-15T00:00:00Z', '2026-10-01T00:00:00Z'] },
+  { expr: '0 9 * JAN,JUL *', tz: 'UTC', after: '2026-08-30T00:00:00Z',
+    fires: ['2027-01-01T09:00:00Z', '2027-01-02T09:00:00Z'] },
+  { expr: '0 9-17/4 * * *', tz: 'Europe/London', after: '2026-08-30T10:00:00Z',
+    fires: ['2026-08-30T12:00:00Z', '2026-08-30T16:00:00Z', '2026-08-31T08:00:00Z', '2026-08-31T12:00:00Z'] },
+  { expr: '30 8 * * 1-5/2', tz: 'UTC', after: '2026-08-30T00:00:00Z',
+    fires: ['2026-08-31T08:30:00Z', '2026-09-02T08:30:00Z', '2026-09-04T08:30:00Z'] },
+  // N/step runs from N to the end of the field.
+  { expr: '0 9 5/10 * *', tz: 'UTC', after: '2026-08-30T00:00:00Z',
+    fires: ['2026-09-05T09:00:00Z', '2026-09-15T09:00:00Z', '2026-09-25T09:00:00Z'] },
+  { expr: '0 6 * */3 *', tz: 'UTC', after: '2026-08-30T00:00:00Z',
+    fires: ['2026-10-01T06:00:00Z', '2026-10-02T06:00:00Z'] },
+  { expr: '5/20 * * * *', tz: 'UTC', after: '2026-08-30T10:00:00Z',
+    fires: ['2026-08-30T10:05:00Z', '2026-08-30T10:25:00Z', '2026-08-30T10:45:00Z', '2026-08-30T11:05:00Z'] },
+  { expr: '0 0 29 2 *', tz: 'UTC', after: '2026-08-30T00:00:00Z',
+    fires: ['2028-02-29T00:00:00Z', '2032-02-29T00:00:00Z'] },
+  // A range ending on 7 wraps to Sunday.
+  { expr: '0 9 * * 5-7', tz: 'UTC', after: '2026-08-30T00:00:00Z',
+    fires: ['2026-08-30T09:00:00Z', '2026-09-04T09:00:00Z', '2026-09-05T09:00:00Z', '2026-09-06T09:00:00Z'] },
+  // Pinned hours on a fall-back night: once each, at the earlier instant.
+  { expr: '0,30 1 * * *', tz: 'America/New_York', after: '2026-10-31T12:00:00Z',
+    fires: ['2026-11-01T05:00:00Z', '2026-11-01T05:30:00Z', '2026-11-02T06:00:00Z'] },
+  // An hour cadence across a spring-forward gap: 02:00 does not exist, and the
+  // server fires it at 03:00 EDT rather than skipping it.
+  { expr: '0 */2 * * *', tz: 'America/New_York', after: '2026-03-08T06:01:00Z',
+    fires: ['2026-03-08T07:00:00Z', '2026-03-08T08:00:00Z', '2026-03-08T10:00:00Z'] },
 ];
 
 describe('nextCronOccurrence agrees with the backend scheduler', () => {
@@ -197,29 +234,13 @@ describe('a wall time inside a spring-forward gap', () => {
    APScheduler's own quirks to close — its fall-back walk is not even monotonic.
    When one is fixed, rewrite the test to assert agreement and move the case up
    into APSCHEDULER_TRUTH. */
-describe('KNOWN DIVERGENCE from the backend scheduler', () => {
-  test('an hour cadence loses the fire that lands in the gap', () => {
-    // Not only fixed times: `0 */2` wants local hours 0,2,4… and 02:00 does not
-    // exist on 2026-03-08, so the minute walk never matches it. APScheduler
-    // still fires, at 07:00Z — 03:00 EDT.
-    const chain = walk('0 */2 * * *', 'America/New_York', '2026-03-08T06:01:00Z', 3);
-    expect(chain).toEqual(['2026-03-08T08:00:00Z', '2026-03-08T10:00:00Z',
-                           '2026-03-08T12:00:00Z']);
-    const APSCHEDULER_FIRES_FIRST = '2026-03-08T07:00:00Z';
-    expect(chain[0]).not.toBe(APSCHEDULER_FIRES_FIRST);
-  });
-
-  test('a fall-back repeat is one fire here, two on the backend', () => {
-    // 2026-11-01 in New York: 01:30 happens twice, once EDT and once EST.
-    const after = at('2026-10-31T12:00:00Z');
-    const chain = walk('30 1 * * *', 'America/New_York', after.toISOString(), 2);
-    // First fire agrees.
-    expect(chain[0]).toBe('2026-11-01T05:30:00Z');
-    // The builder's "Next: X, then Y" preview then jumps to the next day; the
-    // backend fires 01:30 EST an hour after 01:30 EDT and only then moves on.
-    expect(chain[1]).toBe('2026-11-02T06:30:00Z');
-    const APSCHEDULER_SECOND_FIRE = '2026-11-01T06:30:00Z';
-    expect(chain[1]).not.toBe(APSCHEDULER_SECOND_FIRE);
+describe('a fall-back night with an hour cadence', () => {
+  test('fires in both repeated hours, as the server does', () => {
+    // 2026-11-01 in New York: 01:30 happens at 05:30Z (EDT) and 06:30Z (EST).
+    // The server's own walk yields 06:30Z twice; the per-minute run key makes
+    // that one run, so the runs are these four.
+    expect(walk('30 * * * *', 'America/New_York', '2026-11-01T04:00:00Z', 4)).toEqual([
+      '2026-11-01T04:30:00Z', '2026-11-01T05:30:00Z', '2026-11-01T06:30:00Z', '2026-11-01T07:30:00Z']);
   });
 });
 
@@ -256,12 +277,9 @@ describe('nextCronOccurrence returns null rather than throwing', () => {
     '   ',
     '0 9 * *',             // four fields
     '0 9 * * * *',         // six fields
-    '0 9 * 6 *',           // a restricted month is out of grammar
-    '0 9 1 * 1',           // dom AND dow — cron's OR semantics, deliberately unsupported
-    // The backend runs both; this engine does not read them, so the raw text is
-    // shown. That is the safe direction — never a confident wrong time.
-    '0 9 * * mon',
-    '0 9 * * 1-5',
+    '0 9 1 * 1',           // dom AND dow: the server refuses new ones
+    '0 0 last * *',        // the server's rarer forms are not read here
+    '0 9 * * sat-mon',     // a range that runs backwards
     'a b c d e',
     '@daily',
     '*/ * * * *',
@@ -373,10 +391,27 @@ describe('cronLabel', () => {
     // Never a guess and never blank — the operator still sees what is saved.
     // `*/2` is in the list because a weekly label with the days left out
     // ("at 09:00") is worse than the expression itself.
-    for (const expr of ['@daily', '0 9 * * mon', '0 9 * * 1-5', '0 9 1 * 1',
-                        '0 9 * 6 *', 'nonsense', '0 9 * * */2']) {
+    for (const expr of ['@daily', '0 9 1 * 1', 'nonsense', '3,9,14,22,41 * * * *', '0 0 last * *']) {
       expect(cronLabel(expr, 'UTC'), expr).toBe(expr);
     }
+  });
+
+  test('lists, ranges and names read as plain words', () => {
+    expect(cronLabel('0 9 * * 1-5', 'UTC')).toBe('weekdays at 09:00');
+    expect(cronLabel('0 9 * * MON-FRI', 'UTC')).toBe('weekdays at 09:00');
+    expect(cronLabel('0 10 * * 0,6', 'UTC')).toBe('weekends at 10:00');
+    expect(cronLabel('0 9 * * */2', 'UTC')).toBe('Sun/Tue/Thu/Sat at 09:00');
+    expect(cronLabel('0 9,17 * * *', 'UTC')).toBe('daily at 09:00 and 17:00');
+    expect(cronLabel('0 0 1,15 * *', 'UTC')).toBe('on days 1 and 15 at 00:00');
+    expect(cronLabel('0 9 * 6 *', 'UTC')).toBe('daily at 09:00 in Jun');
+    expect(cronLabel('0 9 1 JAN,JUL *', 'UTC')).toBe('monthly on day 1 at 09:00 in Jan and Jul');
+    expect(cronLabel('0,30 * * * *', 'UTC')).toBe('hourly at :00 and :30');
+    expect(cronLabel('*/15 9-17 * * 1-5', 'UTC')).toBe('every 15 min, 09:00–17:45, weekdays');
+    expect(cronLabel('0 */2 * * 1-5', 'UTC')).toBe('every 2h, weekdays');
+    expect(cronLabel('*/10 * * * 6', 'UTC')).toBe('every 10 min, every Sat');
+    expect(cronLabel('0 9-17/2 * * *', 'UTC')).toBe('every 2h, 09:00–17:00');
+    expect(cronLabel('15 */2 * * *', 'UTC')).toBe('every 2h, 00:15–22:15');
+    expect(cronLabel('30 8-18/5 * * *', 'UTC')).toBe('daily at 08:30, 13:30 and 18:30');
   });
 
   test('the weekly label names the day that actually fires', () => {
@@ -393,5 +428,28 @@ describe('cronLabel', () => {
     // 7 is Sunday, not a workflow that never runs.
     expect(cronLabel('0 9 * * 7', 'UTC')).toBe('every Sun at 09:00');
     expect(cronLabel('0 9 * * 0,7', 'UTC')).toBe('every Sun at 09:00');
+  });
+});
+
+/* ─── Saying what is wrong ─────────────────────────────────
+   The builder shows this under the Advanced box, so a mistake is named before
+   the save is refused. Same rules as the server. */
+describe('cronProblem', () => {
+  test('a readable expression has no problem', () => {
+    // `last` included: the server reads it, this preview does not, and that is
+    // not the operator's mistake.
+    for (const expr of ['', '0 9 * * *', '*/15 9-17 * * 1-5', '0 9 * JAN,JUL *', '0 9 * * MON-FRI', '0 0 last * *']) {
+      expect(cronProblem(expr), expr).toBeNull();
+    }
+  });
+
+  test('a problem names the field', () => {
+    expect(cronProblem('0 9 * *')).toMatch(/five fields/);
+    expect(cronProblem('60 9 * * *')).toBe('minute: 60 is outside 0-59');
+    expect(cronProblem('0 24 * * *')).toBe('hour: 24 is outside 0-23');
+    expect(cronProblem('0 9 * * 8')).toBe('day-of-week: 8 is outside 0-7');
+    expect(cronProblem('*/0 * * * *')).toBe('minute: a step must be at least 1');
+    expect(cronProblem('0 9 * * sat-mon')).toBe('day-of-week: the range sat-mon runs backwards');
+    expect(cronProblem('0 9 1 * 1')).toMatch(/not both/);
   });
 });

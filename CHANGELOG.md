@@ -29,6 +29,12 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
   (JSON) and `RUNRAIL_PARAM_<NAME>`, so a script run by path can read them.
 
 ### Fixed
+- **Advanced cron schedules read in full.** The schedule builder's preview
+  understood only the shapes its dropdowns make, so lists, ranges, steps over
+  ranges, names and months (`0 9,17 * * 1-5`, `*/15 9-17 * * MON-FRI`,
+  `0 6 1 */3 *`) showed "Unrecognized expression" though the server took
+  them. They now get a label and next-run times that match the scheduler, and
+  a real mistake is named under the box ("hour: 25 is outside 0-23").
 - Restoring a backup on Windows waits out a file lock that passes (an
   antivirus scan, the search indexer) and explains one that does not.
 
