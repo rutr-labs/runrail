@@ -65,6 +65,10 @@ svg { width: 100%; height: auto; }
 .s-skipped, .s-cancelled, .s-queued { fill: #8b93a0; color: #8b93a0; }
 .s-running, .s-awaiting_approval, .s-rejected { fill: #b7791f; color: #b7791f; }
 .s-approved { fill: #1f9254; color: #1f9254; }
+.changes .change-block { margin-bottom: 14px; }
+.changes .change-block:last-child { margin-bottom: 0; }
+.muted { color: #5d6570; font-size: 13px; }
+pre.diff .add { color: #7ee2a8; } pre.diff .del { color: #ff9b95; } pre.diff .hunk { color: #8ab4ff; }
 @media print { body { background: #fff; } .card { break-inside: avoid; } pre { max-height: none; } }
 </style>
 </head>
@@ -108,6 +112,49 @@ svg { width: 100%; height: auto; }
     {% endfor %}
     {% endfor %}
   </svg>
+</div>
+{% endif %}
+
+{% if changes and changes.baseline %}
+<h2>What changed since run #{{ changes.baseline.id }}, the last that succeeded</h2>
+<div class="card changes">
+  {% if changes.parameters %}
+  <div class="change-block"><b>Parameters</b>
+    {% for p in changes.parameters %}<div><code>{{ p.name }}</code>
+      {{ p.before if p.change != 'added' else '—' }} → {{ p.after if p.change != 'removed' else '—' }}</div>{% endfor %}
+  </div>
+  {% endif %}
+  {% set ns = namespace(any=changes.parameters|length > 0) %}
+  {% for task in changes.tasks or [] %}
+  {% set logs = task.logs or {} %}
+  {% if task.code or task.environment or task.command or logs.new_total or logs.changed_total
+        or (task.before and task.after and task.before.status != task.after.status) %}
+  {% set ns.any = true %}
+  <div class="change-block"><b>{{ task.name }}</b>
+    <span class="muted">{{ task.before.status if task.before else 'not run' }} → {{ task.after.status if task.after else 'not run' }}</span>
+    {% if task.code %}
+    {% for f in task.code.files %}
+    <details{{ ' open' if f.used else '' }}><summary>{{ f.path }} {{ f.change }}{{ '' if f.used else ' (not used by this task)' }}</summary>
+      {% if f.diff %}<pre class="diff">{% for line in f.diff[2:] %}<span class="{{ 'add' if line.startswith('+') else 'del' if line.startswith('-') else 'hunk' if line.startswith('@@') else '' }}">{{ line }}
+</span>{% endfor %}</pre>{% elif f.note %}<div class="muted">{{ f.note }}</div>{% endif %}
+    </details>
+    {% endfor %}
+    {% endif %}
+    {% if task.environment and task.environment.packages %}
+    <div class="muted">Packages: {% for p in task.environment.packages %}{{ p.name }} {{ (p.before or '—').split('==')[-1] }} → {{ (p.after or '—').split('==')[-1] }}{{ ', ' if not loop.last }}{% endfor %}</div>
+    {% endif %}
+    {% if task.command %}<pre class="diff"><span class="del">- {{ task.command.before }}
+</span><span class="add">+ {{ task.command.after }}</span></pre>{% endif %}
+    {% if logs.changed or logs.new %}
+    <pre class="diff">{% for c in logs.changed[:15] %}<span class="del">- {{ c.before }}
+</span><span class="add">+ {{ c.after }}
+</span>{% endfor %}{% for l in logs.new[:30] %}<span class="add">+ {{ l.text }}
+</span>{% endfor %}</pre>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% endfor %}
+  {% if not ns.any %}<div class="muted">Nothing differs in parameters, code, packages or logs: the cause is likely outside RunRail.</div>{% endif %}
 </div>
 {% endif %}
 

@@ -612,7 +612,18 @@ def export_run_html(db: Session, run: WorkflowRun, logs: str = "tail",
         report_html, report_note = _export_report(
             db, run, max_bytes - _SHELL_BYTES - spent, max_bytes, run_url)
 
+    # A failed run is shared to ask "why": the comparison with the last good
+    # run travels with it, as on the run page.
+    changes = None
+    if run.status == RunStatus.failed:
+        from runrail import rundiff
+        try:
+            changes = rundiff.compare(db, run, rundiff.baseline_for(db, run))
+        except Exception:
+            changes = None
+
     return _export_template().render(
+        changes=changes,
         run=run, workflow=workflow, task_runs=task_runs, sections=sections,
         timeline=_timeline(run, task_runs), report_html=report_html, report_note=report_note,
         exported_at=_stamp(now()), run_url=run_url, version=__version__,

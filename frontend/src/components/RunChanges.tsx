@@ -162,6 +162,9 @@ function TaskChanges({ task, openByDefault }: { task: TaskDiff; openByDefault: b
               <h4><ScrollText size={13} /> Log
                 <em>{[logs.new_total && `${logs.new_total} new`, logs.changed_total && `${logs.changed_total} changed`,
                       logs.gone_total && `${logs.gone_total} gone`].filter(Boolean).join(' · ')}</em></h4>
+              {logs.changed_total > logs.changed.length && (
+                <p className="changes-quiet">The {logs.changed.length} most telling of {logs.changed_total} changed lines: counts that went to or from zero first.</p>
+              )}
               {logs.changed.length > 0 && (
                 <pre className="changes-diff">
                   {logs.changed.map((c, i) => (

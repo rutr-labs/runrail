@@ -138,6 +138,8 @@ Tasks also get the parameters in their environment, for scripts that are not tem
 
 A workflow can say which parameters a run takes. Under **Edit → Run form**, give each one a name, a type (text, number, date, choice, yes/no), an optional default, a label and a line of help. **Run with…** then shows a form instead of a JSON box: a date picker, a dropdown, a switch. Values are checked before anything is queued.
 
+![A run form](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/10-run-form.png)
+
 Every way a run starts goes through the same form — the button, the API, `runrail run --param`, a backfill, the schedule — so a run always records exactly what it ran with. Missing values take their default; a date default can be `today` or `yesterday`, counted on the workflow's calendar (in a backfill, from each backfilled day). A required parameter with no default makes **Run now** ask first, and a scheduled workflow must give one a default, since nobody is there to ask. Parameters the form does not list still pass through as before.
 
 ```yaml
@@ -150,6 +152,9 @@ run_parameters:
 ## What changed since the last good run
 
 A failed run opens with a **What changed** panel, comparing it with the last run of the same workflow that succeeded. Any finished run can be compared with any earlier one. It shows only what differs:
+
+![What changed since the last good run](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/09-what-changed.png)
+
 
 - **Parameters** that changed.
 - **Code**, file by file, the files the task uses first. When a task starts, RunRail records the code it is about to run:
@@ -235,6 +240,8 @@ Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:0
 ### Variables and secrets
 
 Settings also holds **variables and secrets** that every task and service gets as environment variables: a database host, a folder, an API token. Your scripts read them the usual way — `$NAME` in a shell, `%NAME%` in a Windows command, `os.environ["NAME"]` in Python or a notebook — so nothing in them changes. An environment's or a service's own variables win over these when both set the same name.
+
+![Variables and secrets](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/11-variables.png)
 
 A secret is shown only while you type it. It is stored encrypted, and its value is replaced with `••••••` wherever RunRail writes or shows output: task and service logs, the notebooks papermill writes, rendered reports, recorded commands and errors, log search. Logs written before a secret was added are masked when they are read. Masking catches the exact value (and its JSON-escaped form), not a piece or an encoding of it.
 

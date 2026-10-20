@@ -370,3 +370,14 @@ def test_an_export_carries_variables_but_never_secrets(client):
     assert summary["updated"] == ["variable REGION"] and summary["created"] == ["variable NEW_ONE"]
     assert summary["skipped"] == ["variable db_password (a secret has that name)"]
     assert variables.current().env["DB_PASSWORD"] == SECRET
+
+
+def test_a_secret_cannot_be_typed_in_as_a_run_parameter(client):
+    add(client, "DB_PASSWORD", SECRET, secret=True)
+    workflow = client.post("/api/workflows", json={"name": "p", "enabled": True}).json()
+    client.post(f"/api/workflows/{workflow['id']}/tasks", json={
+        "name": "t", "task_type": "shell", "command": _python("print(1)"), "depends_on_json": []})
+    response = client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {"pw": SECRET}})
+    assert response.status_code == 422 and "value of a saved secret" in response.json()["detail"]
+    assert client.get("/api/runs").json() == []
+    assert client.post(f"/api/workflows/{workflow['id']}/run", json={"parameters": {"pw": "fine"}}).status_code == 201

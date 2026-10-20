@@ -252,6 +252,20 @@ def _tail_lines(path: str | None, masker: Masker) -> tuple[list[str], bool]:
     return lines, size > LOG_BYTES
 
 
+def _weight(before: str, after: str) -> int:
+    """How telling a changed number is: 3 to or from zero, 2 off by ten
+    times or more, 1 otherwise."""
+    weight = 0
+    for x, y in zip(map(int, _Volatile.INTEGER.findall(before)), map(int, _Volatile.INTEGER.findall(after)),
+                    strict=False):
+        if x == y:
+            continue
+        if 0 in (x, y):
+            return 3
+        weight = max(weight, 2 if max(x, y) >= 10 * min(x, y) else 1)
+    return weight
+
+
 def _log_changes(after: TaskRun, before: TaskRun, volatile: _Volatile, masker: Masker) -> dict[str, Any]:
     def read(task_run: TaskRun) -> tuple[list[tuple[str, int, str]], bool]:
         out, cut = [], False
@@ -278,18 +292,25 @@ def _log_changes(after: TaskRun, before: TaskRun, volatile: _Volatile, masker: M
             seen.add(key)
             gone.append({"stream": stream, "line": number, "text": line, "key": key})
     # Pair lines that differ only in their whole numbers: one changed line.
-    by_loose: dict[str, dict] = {}
+    # Many lines share a shape ("step 12 processed 523 rows"), so each shape
+    # holds a queue and pairs in order, line for line.
+    by_loose: dict[str, list[dict]] = {}
     for row in gone:
-        by_loose.setdefault(volatile.loose(row["key"]), row)
+        by_loose.setdefault(volatile.loose(row["key"]), []).append(row)
     changed, still_new = [], []
     for row in fresh:
-        match = by_loose.pop(volatile.loose(row["key"]), None)
-        if match is not None:
+        queue = by_loose.get(volatile.loose(row["key"]))
+        if queue:
+            match = queue.pop(0)
             changed.append({"stream": row["stream"], "before": match["text"], "after": row["text"],
                             "line": row["line"]})
             match["paired"] = True
         else:
             still_new.append(row)
+    # Shown: the changes that say most — a count to or from zero, then one
+    # off by ten times or more — in log order.
+    shown = sorted(changed, key=lambda c: (-_weight(c["before"], c["after"]), c["line"]))[:MAX_CHANGED_LINES]
+    shown.sort(key=lambda c: (c["stream"], c["line"]))
     still_gone = [row for row in gone if not row.get("paired")]
     first_error = next((row["text"] for row in still_new if _ERROR.search(row["text"])), None)
     def strip(rows: list[dict], cap: int) -> list[dict]:
@@ -298,7 +319,7 @@ def _log_changes(after: TaskRun, before: TaskRun, volatile: _Volatile, masker: M
     return {
         "new": strip(still_new, MAX_NEW_LINES), "new_total": len(still_new),
         "gone": strip(still_gone, MAX_GONE_LINES), "gone_total": len(still_gone),
-        "changed": changed[:MAX_CHANGED_LINES], "changed_total": len(changed),
+        "changed": shown, "changed_total": len(changed),
         "first_error": first_error, "truncated": new_cut or old_cut,
     }
 

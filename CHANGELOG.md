@@ -19,6 +19,8 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
   Settings); `runrail restore` installs it, and says which secrets will not
   open when it is missing. `runrail secrets-key` prints the current key.
 - Exports and backups carry plain variables in the YAML; secrets never.
+- A secret's value typed in as a run parameter is refused: parameters are
+  shown and stored as typed, and secrets reach tasks as environment variables.
 - **Run forms.** A workflow can list the parameters a run takes — text,
   number, date, choice or yes/no, each with a default and a line of help —
   and "Run with…" shows them as a form. Every way a run starts checks and
@@ -39,6 +41,7 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
   secret files are skipped; on a network drive only the files a task runs
   are checked; cloud placeholders are never opened. Settings → Code
   tracking turns it down to the files a task runs, or off.
+- A shared (exported) failed run carries the same "what changed" section.
 - Tasks get their run's parameters in the environment too: `RUNRAIL_PARAMS`
   (JSON) and `RUNRAIL_PARAM_<NAME>`, so a script run by path can read them.
 

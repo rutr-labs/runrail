@@ -201,3 +201,43 @@ def test_a_task_that_never_started_shows_only_that(client):
     second = tasks["second"]
     assert second["after"]["status"] in ("skipped", "cancelled", "upstream_failed") or second["after"] is None
     assert not {"command", "logs", "code", "inputs_unknown"} & set(second)
+
+
+def test_many_lines_of_one_shape_pair_up_and_the_telling_ones_are_shown(tmp_path):
+    from runrail import rundiff
+    from runrail.masking import Masker
+    good = [f"step {i} processed {100 + i} rows" for i in range(500)]
+    bad = [f"step {i} processed {100 + i + 1} rows" for i in range(500)]
+    bad[250] = "step 250 processed 0 rows"
+    bad.append("ValueError: empty")
+    a, b = tmp_path / "good.log", tmp_path / "bad.log"
+    a.write_text("\n".join(good)); b.write_text("\n".join(bad))
+
+    class Run:
+        def __init__(self, path):
+            self.stdout_log_path, self.stderr_log_path = str(path), None
+
+    rundiff_confined = rundiff.confined
+    rundiff.confined = lambda path, root: True
+    try:
+        out = rundiff._log_changes(Run(b), Run(a), rundiff._Volatile([]), Masker([]))
+    finally:
+        rundiff.confined = rundiff_confined
+    assert out["new_total"] == 1 and out["gone_total"] == 0, "every line found its counterpart"
+    assert out["changed_total"] == 500
+    assert out["changed"][0]["after"] == "step 0 processed 101 rows"
+    assert any(c["after"] == "step 250 processed 0 rows" for c in out["changed"]), \
+        "a count that fell to zero is among those shown, whatever its place in the log"
+
+
+def test_a_shared_failed_run_carries_what_changed(client, tmp_path):
+    script = tmp_path / "job.py"
+    script.write_text("print('loaded 10 rows')\n")
+    workflow = workflow_with(client, "share", f'{PY} "{script}"', cwd=str(tmp_path))
+    run(client, workflow)
+    script.write_text("print('loaded 0 rows')\nraise SystemExit(1)\n")
+    bad = run(client, workflow)
+    html = client.get(f"/api/runs/{bad['id']}/export").text
+    assert "What changed since run" in html
+    assert "+print(&#39;loaded 0 rows&#39;)" in html or "+print('loaded 0 rows')" in html
+    assert "loaded 0 rows" in html
