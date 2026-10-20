@@ -311,6 +311,6 @@ def test_a_network_mount_is_recognised_by_its_filesystem(monkeypatch, tmp_path):
     import psutil
     monkeypatch.setattr(psutil, "disk_partitions", lambda all=True: [
         Part("/dev/disk1", "/", "apfs", ""), Part("//server/share", str(tmp_path / "share"), "smbfs", "")])
-    monkeypatch.setattr(codetrack, "_mounts", (0.0, []))
+    monkeypatch.setattr(codetrack, "_mounts", None)
     assert codetrack.on_network_drive(tmp_path / "share" / "etl") is True
     assert codetrack.on_network_drive(tmp_path / "local") is False

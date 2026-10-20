@@ -339,7 +339,9 @@ def _project_files(scope: Scope) -> list[Path] | str:
 # ─── Network drives ─────────────────────────────────────────────────────
 
 
-_mounts: tuple[float, list] = (0.0, [])
+#: (when read, the mount table), or None until first read. Not a zero time:
+#: on a machine up for under five minutes, zero would read as fresh.
+_mounts: tuple[float, list] | None = None
 
 
 def on_network_drive(path: Path) -> bool:
@@ -356,7 +358,7 @@ def on_network_drive(path: Path) -> bool:
                 return ctypes.windll.kernel32.GetDriveTypeW(path.drive + "\\") == drive_remote
             return False
         global _mounts
-        if time.monotonic() - _mounts[0] > 300:
+        if _mounts is None or time.monotonic() - _mounts[0] > 300:
             import psutil
             _mounts = (time.monotonic(), psutil.disk_partitions(all=True))
         best = None
