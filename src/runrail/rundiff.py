@@ -1,13 +1,13 @@
 """What changed between two runs of a workflow — usually a failed run and the
 last one that succeeded.
 
-Recorded as each task starts (`capture_inputs`): the scripts it reads, by
-content hash, with each distinct version kept once in source_snapshots; and
-its environment's Python and installed packages, from `pip freeze` (cached a
-few minutes per environment, so a busy schedule does not pay for it each run).
+Recorded as each task starts (`capture_inputs`): the code it runs, by
+runrail.codetrack (its project, or a loose script and what it imports); and
+its environment's Python and installed packages, from `pip freeze`, listed in
+the background and cached a few minutes per environment.
 
 Compared on request (`compare`): parameters, task outcomes and timings, the
-commands as run, the scripts line by line, package versions, the log lines
+commands as run, the code file by file, package versions, the log lines
 that are new, gone or changed, and for notebooks the cells whose code or
 output changed, the cell that failed and the cells that got much slower.
 
@@ -17,12 +17,9 @@ pass through the secrets masker before they leave.
 
 import difflib
 import functools
-import hashlib
 import json
 import logging
-import os
 import re
-import shlex
 import subprocess
 import threading
 import time
@@ -32,7 +29,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from runrail import variables
+from runrail import codetrack, variables
 from runrail.config import get_settings
 from runrail.masking import Masker
 from runrail.models import (
@@ -40,22 +37,15 @@ from runrail.models import (
     ArtifactType,
     Environment,
     RunStatus,
-    SourceSnapshot,
     Task,
     TaskRun,
     WorkflowRun,
     _aware,
-    now,
 )
 from runrail.paths import confined
 
 log = logging.getLogger("runrail.rundiff")
 
-#: Files a shell command names that are worth tracking as its source.
-SOURCE_SUFFIXES = (".py", ".sql", ".sh", ".r", ".ps1", ".bat", ".cmd", ".ipynb", ".js", ".ts")
-MAX_SOURCES = 4
-#: Larger scripts are tracked by hash only: a change is reported, not shown.
-MAX_STORED_BYTES = 256 * 1024
 FREEZE_CACHE_SECONDS = 600.0
 FREEZE_TIMEOUT_SECONDS = 30
 
@@ -73,44 +63,6 @@ SLOWER_SECONDS = 5.0
 
 
 # ─── Recording what a task ran with ─────────────────────────────────────
-
-
-def _command_files(command: str, cwd: Path) -> list[str]:
-    try:
-        tokens = shlex.split(command, posix=os.name != "nt")
-    except ValueError:
-        tokens = command.split()
-    found = []
-    for token in tokens:
-        token = token.strip("\"'")
-        if token.lower().endswith(SOURCE_SUFFIXES) and token not in found:
-            found.append(token)
-    return found[:MAX_SOURCES]
-
-
-def _source(db: Session, written: str, cwd: Path) -> dict[str, Any] | None:
-    path = Path(written).expanduser()
-    if not path.is_absolute():
-        path = cwd / path
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return {"path": written, "missing": True}
-    sha = hashlib.sha256(data).hexdigest()
-    entry: dict[str, Any] = {"path": written, "sha256": sha, "size": len(data)}
-    if path.suffix.lower() == ".ipynb" or len(data) > MAX_STORED_BYTES:
-        return entry  # a notebook is compared through its executed output
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return entry
-    snapshot = db.get(SourceSnapshot, sha)
-    if snapshot is None:
-        db.add(SourceSnapshot(sha256=sha, path=str(path), size=len(data), content=text))
-    else:
-        snapshot.last_seen = now()
-    entry["stored"] = True
-    return entry
 
 
 _freeze_lock = threading.Lock()
@@ -188,23 +140,17 @@ def wait_for_package_lists(timeout: float = 60.0) -> None:
 
 
 def capture_inputs(db: Session, task: Task, render, cwd: Path, environment: Environment | None,
-                   python_command: list[str] | None, task_run_id: int | None = None):
+                   python_command: list[str] | None, task_run_id: int | None = None,
+                   project_root: str | None = None):
     """The record of what this task attempt is about to run with, and a
     callable to start once that record is committed (it lists the packages in
     the background when they are not cached), or None. Never raises: a diff
     that cannot be made must not fail a run."""
     inputs: dict[str, Any] = {}
     later = None
-    try:
-        written = [path for path in (task.script_path, task.notebook_path, task.sql_path) if path]
-        files = [render(path) for path in written]
-        if task.command:
-            files += [f for f in _command_files(render(task.command), cwd) if f not in files]
-        sources = [s for s in (_source(db, f, cwd) for f in files[:MAX_SOURCES]) if s]
-        if sources:
-            inputs["sources"] = sources
-    except Exception:
-        log.warning("could not record the sources of task %s", task.id, exc_info=True)
+    code = codetrack.capture(db, task, render, cwd, project_root)
+    if code:
+        inputs["code"] = code
     if environment is not None:
         env: dict[str, Any] = {"id": environment.id, "name": environment.name,
                                "python": environment.python_version,
@@ -219,17 +165,6 @@ def capture_inputs(db: Session, task: Task, render, cwd: Path, environment: Envi
                 later = functools.partial(_packages_later, task_run_id, key, list(python_command))
         inputs["environment"] = env
     return inputs, later
-
-
-def prune_snapshots(db: Session, older_than_days: int) -> int:
-    """Drop script versions no run inside the retention window used."""
-    from datetime import timedelta
-
-    from sqlalchemy import delete
-    cutoff = now() - timedelta(days=older_than_days)
-    result = db.execute(delete(SourceSnapshot).where(SourceSnapshot.last_seen < cutoff))
-    db.commit()
-    return result.rowcount or 0
 
 
 # ─── Comparing ──────────────────────────────────────────────────────────
@@ -370,37 +305,6 @@ def _unified(before: str, after: str, label_before: str, label_after: str) -> li
     lines = list(difflib.unified_diff(before.splitlines(), after.splitlines(),
                                       label_before, label_after, n=2, lineterm=""))
     return lines[:MAX_DIFF_LINES]
-
-
-def _source_changes(db: Session, after: dict, before: dict, masker: Masker) -> list[dict[str, Any]]:
-    old = {s["path"]: s for s in before.get("sources", [])}
-    changes = []
-    for source in after.get("sources", []):
-        previous = old.pop(source["path"], None)
-        if previous is None:
-            changes.append({"path": source["path"], "change": "added"})
-            continue
-        if source.get("missing") or previous.get("missing"):
-            if source.get("missing") != previous.get("missing"):
-                changes.append({"path": source["path"],
-                                "change": "missing" if source.get("missing") else "found"})
-            continue
-        if source.get("sha256") == previous.get("sha256"):
-            continue
-        entry: dict[str, Any] = {"path": source["path"], "change": "modified",
-                                 "size_before": previous.get("size"), "size_after": source.get("size")}
-        a, b = db.get(SourceSnapshot, previous.get("sha256")), db.get(SourceSnapshot, source.get("sha256"))
-        if a is not None and b is not None:
-            name = Path(source["path"]).name
-            entry["diff"] = _unified(masker.text(a.content), masker.text(b.content),
-                                     f"{name} (last good run)", f"{name} (this run)")
-        else:
-            entry["note"] = ("A notebook's code is compared cell by cell below"
-                             if source["path"].lower().endswith(".ipynb")
-                             else "The file changed; its text is too large to keep, or no longer kept")
-        changes.append(entry)
-    changes += [{"path": path, "change": "removed"} for path in old]
-    return changes
 
 
 def _package_map(packages: list[str]) -> dict[str, str]:
@@ -613,9 +517,9 @@ def compare(db: Session, run: WorkflowRun, baseline: WorkflowRun | None) -> dict
                 entry["command"] = {"before": masker.text(b_cmd), "after": masker.text(a_cmd)}
             a_in, b_in = a_row.inputs_json, b_row.inputs_json
             if a_in is not None and b_in is not None:
-                sources = _source_changes(db, a_in, b_in, masker)
-                if sources:
-                    entry["sources"] = sources
+                code = codetrack.compare(db, a_in.get("code"), b_in.get("code"), _unified, masker)
+                if code:
+                    entry["code"] = code
                 env = _environment_changes(a_in, b_in)
                 if env:
                     entry["environment"] = env

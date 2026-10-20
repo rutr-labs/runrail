@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -309,9 +310,12 @@ class TaskRun(Base):
     approval_note: Mapped[str | None] = mapped_column(Text)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # What this attempt ran with, for "what changed since the last good run":
-    # the scripts it read (by content hash, see SourceSnapshot) and its
-    # environment's Python and packages. See runrail.rundiff.
+    # its code (see runrail.codetrack) and its environment's Python and
+    # packages. See runrail.rundiff.
     inputs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # The code it ran (a CodeManifest). A column, not only a key in
+    # inputs_json, so retention can tell which code is still needed.
+    code_manifest: Mapped[str | None] = mapped_column(String(64), index=True)
     workflow_run: Mapped[WorkflowRun] = relationship(back_populates="task_runs")
     task: Mapped[Task] = relationship()
 
@@ -501,18 +505,23 @@ class Variable(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
 
 
-class SourceSnapshot(Base):
-    """One version of a script a task ran, stored once however many runs used
-    it, so a diff can show the lines that changed. Dropped by retention once
-    no run inside the window has used it."""
+class CodeBlob(Base):
+    """One version of one code file, stored once (zlib-compressed) however
+    many runs read it. See runrail.codetrack."""
 
-    __tablename__ = "source_snapshots"
+    __tablename__ = "code_blobs"
     sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
-    path: Mapped[str] = mapped_column(Text)
     size: Mapped[int] = mapped_column(Integer)
-    content: Mapped[str] = mapped_column(Text)
-    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class CodeManifest(Base):
+    """The code a task saw: every tracked file and its blob, stored once per
+    distinct state of a project. {path: [blob sha256, text kept]}."""
+
+    __tablename__ = "code_manifests"
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    files: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
 class AppSetting(Base):

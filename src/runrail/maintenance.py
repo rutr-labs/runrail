@@ -199,8 +199,7 @@ def cleanup_runs(db: Session, older_than_days: int, dry_run: bool = False,
     if not dry_run:
         _sweep_orphans(db, logs_root, artifacts_root, stats)
         db.rollback()
-        # Script versions kept for run comparisons, which no run in the
-        # window used. Imported here: rundiff reads the app's settings.
-        from runrail.rundiff import prune_snapshots
-        prune_snapshots(db, older_than_days)
+        # Code kept for run comparisons that no remaining run points at.
+        from runrail.codetrack import collect_garbage
+        collect_garbage(db)
     return stats

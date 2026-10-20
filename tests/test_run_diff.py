@@ -3,12 +3,11 @@ request, deterministic, and masked."""
 
 import json
 import sys
-from datetime import timedelta
 
 from runrail import rundiff
 from runrail.config import get_settings
 from runrail.db import SessionLocal
-from runrail.models import Artifact, ArtifactType, SourceSnapshot, TaskRun, now
+from runrail.models import Artifact, ArtifactType, TaskRun
 from runrail.worker.queue import claim_next_run
 from runrail.worker.service import execute_workflow_run
 
@@ -56,8 +55,10 @@ def test_a_failure_after_a_script_edit_shows_the_edit_and_the_new_error(client, 
     assert diff["baseline"]["id"] == good["id"]
     task = diff["tasks"][0]
     assert (task["before"]["status"], task["after"]["status"]) == ("success", "failed")
-    source = task["sources"][0]
-    assert source["change"] == "modified" and source["path"].endswith("load.py")
+    code = task["code"]
+    assert code["mode"] == "script" and code["used_changed"] == 1
+    source = code["files"][0]
+    assert source == {**source, "path": "load.py", "change": "modified", "used": True}
     assert "-rows = 48210" in source["diff"] and "+rows = 0" in source["diff"]
     logs = task["logs"]
     # A count that moved is one changed line; the timestamp line is not news.
@@ -67,7 +68,7 @@ def test_a_failure_after_a_script_edit_shows_the_edit_and_the_new_error(client, 
     assert logs["first_error"] == "ValueError: no rows to load"
     assert logs["gone"] == []
     assert "command" not in task, "the same command, with its own run ids, is not a change"
-    assert "load.py (last good run)" in source["diff"][0], "the diff is labelled by file name"
+    assert "load.py (before)" in source["diff"][0], "the diff is labelled by file name"
 
 
 def test_parameters_and_the_command_they_rendered_are_compared(client):
@@ -187,17 +188,6 @@ def test_notebook_cells_are_compared_by_their_code(client):
     assert cells[3]["reasons"] == ["failed", "output"] and cells[3]["error"] == "ValueError: empty frame"
 
 
-def test_retention_drops_script_versions_nobody_used_since(client, tmp_path):
-    with SessionLocal() as db:
-        db.add(SourceSnapshot(sha256="a" * 64, path="old.py", size=1, content="x",
-                              last_seen=now() - timedelta(days=40)))
-        db.add(SourceSnapshot(sha256="b" * 64, path="new.py", size=1, content="y"))
-        db.commit()
-        from runrail.maintenance import cleanup_runs
-        cleanup_runs(db, 30)
-        assert [s.path for s in db.query(SourceSnapshot)] == ["new.py"]
-
-
 def test_a_task_that_never_started_shows_only_that(client):
     workflow = client.post("/api/workflows", json={"name": "chain", "enabled": True}).json()
     client.post(f"/api/workflows/{workflow['id']}/tasks", json={
@@ -210,4 +200,4 @@ def test_a_task_that_never_started_shows_only_that(client):
     tasks = {t["name"]: t for t in compare(client, bad["id"], **{"with": good["id"]})["tasks"]}
     second = tasks["second"]
     assert second["after"]["status"] in ("skipped", "cancelled", "upstream_failed") or second["after"] is None
-    assert not {"command", "logs", "sources", "inputs_unknown"} & set(second)
+    assert not {"command", "logs", "code", "inputs_unknown"} & set(second)

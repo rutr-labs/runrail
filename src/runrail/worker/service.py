@@ -377,7 +377,9 @@ def _run_task(db: Session, run: WorkflowRun, workflow: Workflow, task: Task) -> 
             except RuntimeError:
                 freeze_with = None
             task_run.inputs_json, list_packages = capture_inputs(
-                db, task, partial(render, context=context), cwd, environment, freeze_with, task_run.id)
+                db, task, partial(render, context=context), cwd, environment, freeze_with, task_run.id,
+                project.root_path if project else None)
+            task_run.code_manifest = (task_run.inputs_json.get("code") or {}).get("manifest")
             db.commit()
             if list_packages is not None:
                 list_packages()  # after the commit, so its update lands on top of this one

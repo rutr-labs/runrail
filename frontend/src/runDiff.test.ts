@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { headline, inputsNote, packageLine, quietNote, shortDuration, taskChanged, type RunDiff, type TaskDiff } from './runDiff';
+import { gitLine, headline, inputsNote, packageLine, quietNote, shortDuration, taskChanged, type RunDiff, type TaskDiff } from './runDiff';
 
 /* ─── Run comparison ───────────────────────────────────────
    The headline a failed run opens with: what differs, most telling first,
@@ -19,14 +19,16 @@ describe('headline', () => {
       parameters: [{ name: 'region', change: 'changed', before: 'EU', after: 'US' }],
       tasks: [task({
         after: side('failed'),
-        sources: [{ path: 'etl/load.py', change: 'modified', diff: [] }],
+        code: { root: '/srv/orders', mode: 'project', used_changed: 1, other_changed: 2,
+                files: [{ path: 'etl/load.py', change: 'modified', used: true, diff: [] },
+                        { path: 'docs/a.py', change: 'modified', used: false }, { path: 'b.py', change: 'added', used: false }] },
         environment: { name: 'etl', packages: [{ name: 'pandas', before: 'pandas==2.1.0', after: 'pandas==2.2.1' }] },
         logs: { new: [], new_total: 3, gone: [], gone_total: 0, changed: [], changed_total: 0, first_error: null, truncated: false },
       })],
     };
     expect(headline(diff).map(p => p.text)).toEqual([
       'load failed (passed last time)', 'parameter region changed', 'load.py changed',
-      'pandas 2.1.0 → 2.2.1', 'load: 3 new log lines',
+      '2 other files in orders changed', 'pandas 2.1.0 → 2.2.1', 'load: 3 new log lines',
     ]);
   });
 
@@ -58,5 +60,15 @@ describe('pieces', () => {
     expect(taskChanged(task({}))).toBe(false);
     expect(taskChanged(task({ command: { before: 'a', after: 'b' } }))).toBe(true);
     expect(taskChanged(task({ before: null }))).toBe(true);
+  });
+});
+
+describe('gitLine', () => {
+  const at = (commit: string, dirty = false) => ({ commit, branch: 'main', dirty });
+  test('commits move, edits are named, nothing new says nothing', () => {
+    expect(gitLine({ before: at('a1b2c3d4e5'), after: at('f6e5d4c3b2') })).toBe('commit a1b2c3d → f6e5d4c');
+    expect(gitLine({ before: at('a1b2c3d4e5'), after: at('a1b2c3d4e5', true) })).toBe('same commit a1b2c3d, with uncommitted edits');
+    expect(gitLine({ before: at('a1b2c3d4e5'), after: at('a1b2c3d4e5') })).toBeNull();
+    expect(gitLine(undefined)).toBeNull();
   });
 });

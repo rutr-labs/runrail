@@ -5,8 +5,8 @@ import clsx from 'clsx';
 import { api } from '../api';
 import { formatDate } from '../format';
 import {
-  fileName, headline, inputsNote, packageLine, quietNote, shortDuration, slower, taskChanged,
-  type CellChange, type RunDiff, type TaskDiff,
+  fileName, gitLine, headline, inputsNote, packageLine, quietNote, shortDuration, slower, taskChanged,
+  type CellChange, type CodeChange, type CodeFile, type RunDiff, type TaskDiff,
 } from '../runDiff';
 
 /* ─── What changed since the last good run ───────────────────
@@ -119,7 +119,7 @@ function TaskChanges({ task, openByDefault }: { task: TaskDiff; openByDefault: b
   const a = task.after, b = task.before;
   const logs = task.logs;
   // A task that never started has only its status to say: no body to open.
-  const detail = Boolean((a?.error && a.status === 'failed') || task.sources?.length || task.environment
+  const detail = Boolean((a?.error && a.status === 'failed') || task.code || task.environment
     || task.command || task.notebook || (logs && (logs.new_total || logs.changed_total || logs.gone_total)));
   const [open, setOpen] = useState(openByDefault && detail);
   return (
@@ -138,12 +138,7 @@ function TaskChanges({ task, openByDefault }: { task: TaskDiff; openByDefault: b
       {open && (
         <div className="changes-task-body">
           {a?.error && a.status === 'failed' && <p className="changes-error">{a.error}</p>}
-          {task.sources?.map(source => (
-            <div key={source.path} className="changes-block">
-              <h4><Code2 size={13} /> {fileName(source.path)} <em>{source.change}</em></h4>
-              {source.diff ? <Diff lines={source.diff.slice(2)} /> : source.note && <p className="changes-quiet">{source.note}</p>}
-            </div>
-          ))}
+          {task.code && <CodeChanges code={task.code} />}
           {task.environment && (
             <div className="changes-block">
               <h4><Package size={13} /> Environment {task.environment.name && <em>{task.environment.name}</em>}</h4>
@@ -195,6 +190,37 @@ function TaskChanges({ task, openByDefault }: { task: TaskDiff; openByDefault: b
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ChangedFile({ file }: { file: CodeFile }) {
+  return (
+    <div className="changes-file">
+      <div className="changes-file-head"><code>{file.path}</code><em>{file.change}</em></div>
+      {file.diff ? <Diff lines={file.diff.slice(2)} /> : file.note && <p className="changes-quiet">{file.note}</p>}
+    </div>
+  );
+}
+
+function CodeChanges({ code }: { code: CodeChange }) {
+  const used = code.files.filter(f => f.used);
+  const other = code.files.filter(f => !f.used);
+  const git = gitLine(code.git);
+  return (
+    <div className="changes-block">
+      <h4><Code2 size={13} /> Code
+        <em>{code.mode === 'project' ? `in ${fileName(code.root)}` : 'the script and the files it reads'}{git ? ` · ${git}` : ''}</em>
+      </h4>
+      {code.moved && <p className="changes-quiet">The code ran from {code.moved.after}; last time from {code.moved.before}.</p>}
+      {used.map(file => <ChangedFile key={file.path} file={file} />)}
+      {other.length > 0 && (
+        <details className="changes-gone" open={used.length === 0}>
+          <summary>{other.length} other file{other.length === 1 ? '' : 's'} in {fileName(code.root)} changed — not used by this task</summary>
+          {other.map(file => <ChangedFile key={file.path} file={file} />)}
+        </details>
+      )}
+      {code.note && <p className="changes-quiet">{code.note}</p>}
     </div>
   );
 }

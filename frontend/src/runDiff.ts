@@ -7,9 +7,11 @@
 export interface RunRef { id: number; status: string; trigger: string; created_at: string; started_at: string | null; duration: number | null }
 export interface ParamChange { name: string; change: 'added' | 'removed' | 'changed'; before?: unknown; after?: unknown }
 export interface TaskSide { task_run_id: number; status: string; duration: number | null; exit_code: number | null; attempts: number; error: string | null }
-export interface SourceChange {
-  path: string; change: 'added' | 'removed' | 'modified' | 'missing' | 'found';
-  diff?: string[]; note?: string; size_before?: number; size_after?: number;
+export interface CodeFile { path: string; change: 'added' | 'removed' | 'modified'; used: boolean; diff?: string[]; note?: string }
+export interface GitState { commit: string; branch: string | null; dirty: boolean }
+export interface CodeChange {
+  root: string; mode: 'project' | 'script'; files: CodeFile[]; used_changed: number; other_changed: number;
+  moved?: { before: string; after: string }; git?: { before: GitState | null; after: GitState | null }; note?: string;
 }
 export interface PackageChange { name: string; before: string | null; after: string | null }
 export interface EnvironmentChange {
@@ -33,7 +35,7 @@ export interface TaskDiff {
   task_id: number; name: string; type: string | null;
   before: TaskSide | null; after: TaskSide | null;
   command?: { before: string; after: string };
-  sources?: SourceChange[]; environment?: EnvironmentChange; inputs_unknown?: boolean;
+  code?: CodeChange; environment?: EnvironmentChange; inputs_unknown?: boolean;
   logs?: LogChanges; notebook?: NotebookChanges;
 }
 export interface RunDiff { run: RunRef; baseline: RunRef | null; note?: string; parameters?: ParamChange[]; tasks?: TaskDiff[] }
@@ -72,7 +74,7 @@ export function slower(task: TaskDiff): boolean {
 export function taskChanged(task: TaskDiff): boolean {
   if (!task.before || !task.after) return true;
   const logs = task.logs;
-  return task.before.status !== task.after.status || Boolean(task.command) || Boolean(task.sources?.length)
+  return task.before.status !== task.after.status || Boolean(task.command) || Boolean(task.code)
     || Boolean(task.environment) || Boolean(logs && (logs.new_total || logs.changed_total || logs.gone_total))
     || Boolean(task.notebook?.cells?.length || task.notebook?.missing) || slower(task);
 }
@@ -94,11 +96,22 @@ export function headline(diff: RunDiff): Point[] {
   }
   const seen = new Set<string>();
   for (const task of diff.tasks ?? []) {
-    for (const source of task.sources ?? []) {
-      const name = fileName(source.path);
-      if (seen.has(name)) continue;
-      seen.add(name);
-      points.push({ tone: 'warn', text: source.change === 'modified' ? `${name} changed` : `${name} ${source.change}` });
+    const code = task.code;
+    if (code) {
+      const used = code.files.filter(f => f.used);
+      const key = `code:${code.root}:${code.files.map(f => f.path).join(',')}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        if (used.length === 1) {
+          const f = used[0];
+          points.push({ tone: 'warn', text: f.change === 'modified' ? `${fileName(f.path)} changed` : `${fileName(f.path)} ${f.change}` });
+        } else if (used.length > 1) {
+          points.push({ tone: 'warn', text: `${used.length} files ${task.name} uses changed` });
+        }
+        if (code.other_changed) {
+          points.push({ tone: 'info', text: `${code.other_changed} other file${code.other_changed === 1 ? '' : 's'} in ${fileName(code.root)} changed` });
+        }
+      }
     }
     const env = task.environment;
     if (env?.python) points.push({ tone: 'warn', text: `Python ${env.python.before ?? '?'} → ${env.python.after ?? '?'}` });
@@ -132,4 +145,14 @@ export function inputsNote(diff: RunDiff): string | null {
   return diff.tasks?.some(t => t.inputs_unknown)
     ? 'Scripts and packages are not compared: one of these runs is from before RunRail recorded them.'
     : null;
+}
+
+/** "a1b2c3d → d4e5f6a, with uncommitted edits", or null when git says nothing new. */
+export function gitLine(git: CodeChange['git']): string | null {
+  if (!git?.after) return null;
+  const short = (state: GitState) => state.commit.slice(0, 7);
+  const edits = git.after.dirty ? ', with uncommitted edits' : '';
+  if (!git.before) return `commit ${short(git.after)}${edits}`;
+  if (git.before.commit === git.after.commit) return git.after.dirty ? `same commit ${short(git.after)}, with uncommitted edits` : null;
+  return `commit ${short(git.before)} → ${short(git.after)}${edits}`;
 }

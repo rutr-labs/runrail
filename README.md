@@ -152,7 +152,11 @@ run_parameters:
 A failed run opens with a **What changed** panel, comparing it with the last run of the same workflow that succeeded. Any finished run can be compared with any earlier one. It shows only what differs:
 
 - **Parameters** that changed.
-- **Scripts**, line by line. RunRail records each script a task runs (`script_path`, `sql_path`, or a `.py`/`.sql`/`.sh` file named in a shell command) when the task starts, keeping each distinct version once.
+- **Code**, file by file, the files the task uses first. When a task starts, RunRail records the code it is about to run:
+  - in a **project** (a RunRail project, a git repository, or a folder with `pyproject.toml` / `setup.py`), every code and config file in it, so a fix in a helper or a config shows up too. In a git repository it uses git's own file list and shows the commit, e.g. "commit 3c5e757 → 967bc4f, with uncommitted edits";
+  - for a **loose script** in a shared folder, the script and the local files it imports or opens, not its neighbours.
+
+  Each version of a file is stored once (compressed), and a project nobody touched costs nothing. Stored code is kept exactly as long as a run that used it is kept. `.env` files, keys and credential files are never read.
 - **Packages and Python version** of the task's environment (from `pip freeze`, listed in the background so it never slows a task).
 - **Commands as run**, ignoring the run's own dates and ids.
 - **Log lines** that are new, gone, or changed. Timestamps, durations and ids are ignored, but counts are not, so `loaded 48210 rows` → `loaded 0 rows` shows as one changed line.
