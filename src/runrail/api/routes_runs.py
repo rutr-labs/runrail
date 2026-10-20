@@ -2,16 +2,18 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from runrail import rundiff, variables
 from runrail.api.crud import create_run, get_or_404
 from runrail.api.routes_workflows import _ensure_workflow_runnable
 from runrail.api.ws import manager as ws_manager
 from runrail.config import get_settings
 from runrail.daybuckets import day_bounds, local_date_expr, offset_segments, resolve_zone
 from runrail.db import get_db
+from runrail.masking import masked_chunks, notebook_bytes
 from runrail.models import (
     Artifact,
     RunStatus,
@@ -23,6 +25,7 @@ from runrail.models import (
     now,
 )
 from runrail.paths import confined
+from runrail.run_parameters import ParameterError
 from runrail.schemas import TaskRunOut, WorkflowRunDetail, WorkflowRunOut
 
 router = APIRouter(prefix="/api")
@@ -106,9 +109,30 @@ def retry_run(object_id: int, db: Session = Depends(get_db)):
     # no task rows at all, and that phantom failure counts toward the
     # auto-pause streak — one click silently disabling the schedule.
     _ensure_workflow_runnable(db, workflow)
-    run = create_run(db, workflow, TriggerType.manual, dict(source.parameters_json or {}))
+    try:
+        run = create_run(db, workflow, TriggerType.manual, dict(source.parameters_json or {}))
+    except ParameterError as exc:
+        # The run form changed since: an option removed, a type changed.
+        raise HTTPException(422, f"This run's parameters no longer fit the workflow's run form: {exc}") from None
     ws_manager.notify({"type": "run_created", "id": run.id, "workflow_id": run.workflow_id})
     return run
+
+
+@router.get("/runs/{object_id}/compare")
+def compare_run(object_id: int, with_run: int | None = Query(None, alias="with"),
+                db: Session = Depends(get_db)):
+    """What changed between this run and another of the same workflow — by
+    default the last one before it that succeeded."""
+    run = get_or_404(db, WorkflowRun, object_id)
+    if with_run is not None:
+        baseline = get_or_404(db, WorkflowRun, with_run)
+        if baseline.workflow_id != run.workflow_id:
+            raise HTTPException(400, "Both runs must be of the same workflow")
+        if baseline.id == run.id:
+            raise HTTPException(400, "Choose a different run to compare with")
+    else:
+        baseline = rundiff.baseline_for(db, run)
+    return rundiff.compare(db, run, baseline)
 
 
 @router.get("/task-runs/{object_id}", response_model=TaskRunOut)
@@ -129,10 +153,21 @@ def log_response(task_run: TaskRun, attr: str, tail_bytes: int | None = None):
             if size > tail_bytes:
                 handle.seek(size - tail_bytes)
             data = handle.read()
-        return PlainTextResponse(data.decode("utf-8", errors="replace"))
+        text = data.decode("utf-8", errors="replace")
+        masker = variables.masker()
+        if masker and size > tail_bytes and "\n" in text:
+            # The cut can fall inside a secret, leaving a piece no pattern
+            # matches; the partial first line goes.
+            text = text.split("\n", 1)[1]
+        return PlainTextResponse(masker.text(text))
     # Streamed from disk, never read whole: a multi-gigabyte log of a finished
     # task used to land in memory three times over on the way to the browser,
     # decoded in the platform's default encoding (cp1252 on Windows) at that.
+    # Masked again on the way out: a log written before a secret was added
+    # still holds its value.
+    masker = variables.masker()
+    if masker:
+        return StreamingResponse(masked_chunks(file, masker), media_type="text/plain; charset=utf-8")
     return FileResponse(file, media_type="text/plain; charset=utf-8")
 
 
@@ -253,4 +288,10 @@ def download_artifact(object_id: int, db: Session = Depends(get_db)):
     path = Path(artifact.path)
     if not confined(path, get_settings().artifacts_dir) or not path.is_file():
         raise HTTPException(404, "Artifact file not found")
+    masker = variables.masker()
+    if masker and path.suffix.lower() in (".ipynb", ".html", ".htm"):
+        body = (notebook_bytes(path, masker) if path.suffix.lower() == ".ipynb"
+                else masker.bytes(path.read_bytes()))
+        return Response(body, media_type="application/octet-stream",
+                        headers={"Content-Disposition": f'attachment; filename="{artifact.name}"'})
     return FileResponse(path, filename=artifact.name)

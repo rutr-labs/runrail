@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from runrail.masking import Masker, StreamMasker
 from runrail.models import Task, TaskType
 from runrail.worker.templating import render
 
@@ -174,14 +175,21 @@ def kill_running_tasks() -> None:
 
 def execute_command(spec: CommandSpec, cwd: Path, env: dict[str, str], stdout: Path,
                     stderr: Path, timeout: int | None,
-                    should_stop: Callable[[], bool] | None = None) -> ExecutionResult:
+                    should_stop: Callable[[], bool] | None = None,
+                    mask: Callable[[], Masker] | None = None) -> ExecutionResult:
     """Run one task's subprocess to completion, a timeout, or a cancellation.
 
     `should_stop` is polled while the process runs. Without it, cancelling a run
     only marked it cancelled: this call blocked in wait() until the command
     finished on its own, so a long task kept running — for hours, with no
     timeout set — under a run the UI already showed as cancelled.
+
+    With secrets to hide (`mask` returns a non-empty Masker), output goes
+    through a pipe and is masked on its way to the log files; otherwise the
+    process writes to them directly, as it always has.
     """
+    if mask is not None and mask():
+        return _execute_masked(spec, cwd, env, stdout, stderr, timeout, should_stop, mask)
     try:
         with stdout.open("w") as out, stderr.open("w") as err:
             process = subprocess.Popen(
@@ -199,6 +207,70 @@ def execute_command(spec: CommandSpec, cwd: Path, env: dict[str, str], stdout: P
                     _LIVE.discard(process)
     except OSError as exc:
         return ExecutionResult(1, f"Could not start subprocess: {exc}")
+
+
+#: After the process exits, how long its output gets to drain into the logs.
+#: Longer only when something it started in the background still holds the
+#: pipe; that output keeps arriving after the task is recorded as finished.
+PUMP_DRAIN_SECONDS = 5.0
+
+
+def _pump(stream, out, source: Callable[[], Masker]) -> None:
+    """Copy one output stream to its log, masked. The pipe is drained to the
+    end whatever happens to the file, or the process would block on a full
+    pipe."""
+    masker = StreamMasker(source)
+    try:
+        for chunk in iter(lambda: stream.read1(65536), b""):
+            try:
+                out.write(masker.feed(chunk))
+                out.flush()
+            except (OSError, ValueError):
+                pass
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            out.write(masker.flush())
+            out.close()
+        except (OSError, ValueError):
+            pass
+
+
+def _execute_masked(spec: CommandSpec, cwd: Path, env: dict[str, str], stdout: Path,
+                    stderr: Path, timeout: int | None,
+                    should_stop: Callable[[], bool] | None,
+                    mask: Callable[[], Masker]) -> ExecutionResult:
+    try:
+        out, err = stdout.open("wb"), stderr.open("wb")
+    except OSError as exc:
+        return ExecutionResult(1, f"Could not open the task's log files: {exc}")
+    try:
+        process = subprocess.Popen(
+            spec.command, shell=spec.shell, cwd=cwd, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=os.name != "nt",
+            creationflags=(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                           if os.name == "nt" else 0),
+        )
+    except OSError as exc:
+        out.close(); err.close()
+        return ExecutionResult(1, f"Could not start subprocess: {exc}")
+    pumps = [threading.Thread(target=_pump, args=(stream, handle, mask), daemon=True,
+                              name=f"runrail-task-log-{process.pid}")
+             for stream, handle in ((process.stdout, out), (process.stderr, err))]
+    for pump in pumps:
+        pump.start()
+    with _LIVE_LOCK:
+        _LIVE.add(process)
+    try:
+        return _supervise(process, timeout, should_stop)
+    finally:
+        with _LIVE_LOCK:
+            _LIVE.discard(process)
+        deadline = time.monotonic() + PUMP_DRAIN_SECONDS
+        for pump in pumps:
+            pump.join(max(0.0, deadline - time.monotonic()))
 
 
 def _supervise(process: subprocess.Popen, timeout: int | None,
@@ -235,7 +307,8 @@ _SQL_CHECK_EVERY = 10_000
 
 def execute_sql(task: Task, context: dict[str, Any], cwd: Path, stdout: Path,
                 stderr: Path, timeout: int | None = None,
-                should_stop: Callable[[], bool] | None = None) -> ExecutionResult:
+                should_stop: Callable[[], bool] | None = None,
+                masker: Masker | None = None) -> ExecutionResult:
     """Run a task's SQL script against a SQLite database, in this process.
 
     There is no subprocess to kill, so timeouts and cancellation go through
@@ -269,15 +342,16 @@ def execute_sql(task: Task, context: dict[str, Any], cwd: Path, stdout: Path,
         connection.set_progress_handler(interrupt, _SQL_CHECK_EVERY)
         with connection:
             connection.executescript(render(script, context))
-        stdout.write_text("SQL script completed successfully\n")
-        stderr.write_text("")
+        stdout.write_text("SQL script completed successfully\n", encoding="utf-8")
+        stderr.write_text("", encoding="utf-8")
         return ExecutionResult(0)
     except Exception as exc:
         if stopped:
-            stderr.write_text(f"{stopped[0].error}\n")
+            stderr.write_text(f"{stopped[0].error}\n", encoding="utf-8")
             return stopped[0]
-        stderr.write_text(f"{type(exc).__name__}: {exc}\n")
-        return ExecutionResult(1, str(exc))
+        hide = masker.text if masker else (lambda text: text)
+        stderr.write_text(hide(f"{type(exc).__name__}: {exc}\n"), encoding="utf-8")
+        return ExecutionResult(1, hide(str(exc)))
     finally:
         if connection is not None:
             connection.close()

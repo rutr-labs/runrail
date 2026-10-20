@@ -125,6 +125,15 @@ def _quiet_hours(value: Any) -> dict | None:
     return {"start": start.strftime("%H:%M"), "end": end.strftime("%H:%M"), "timezone": zone}
 
 
+CODE_TRACKING = ("auto", "files", "off")
+
+
+def _code_tracking(value: Any) -> str:
+    if value not in CODE_TRACKING:
+        raise ValueError(f"must be one of {', '.join(CODE_TRACKING)}")
+    return value
+
+
 DEFINITIONS: tuple[Definition, ...] = (
     Definition("notify_webhook_url", "notify_webhook_url", None, _optional_url,
                "Default webhook",
@@ -145,6 +154,9 @@ DEFINITIONS: tuple[Definition, ...] = (
     Definition("task_parallelism", "task_parallelism", 4, _count(1, 64), "Tasks per run",
                "Independent tasks of one run executing at once. Applies to runs that start "
                "after the change."),
+    Definition("code_tracking", "code_tracking", "auto", _code_tracking, "Code tracking",
+               "Applies to tasks that start after the change. Code already recorded is "
+               "kept with its runs."),
     Definition("paused", None, False, _flag, "Paused",
                "While paused nothing new starts: queued runs wait, services are not "
                "started, and alerts about missed schedules and deadlines are held. "

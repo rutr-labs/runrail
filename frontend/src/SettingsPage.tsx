@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react';
 import {
-  Archive, Bell, BellOff, CalendarClock, Check, Copy, Cpu, Database, Download, ExternalLink, FileArchive,
-  HardDrive, Minus, Moon, Pause, Play, Plus, RefreshCw, Server, ShieldCheck, Sun, Trash2, Upload,
+  Archive, Bell, BellOff, CalendarClock, Check, Copy, Cpu, Database, Download, ExternalLink, Eye, EyeOff, FileArchive,
+  FileCode2, HardDrive, KeyRound, Lock, Minus, Moon, Pause, Pencil, Play, Plus, RefreshCw, Server, ShieldCheck, Sun, Trash2, Upload,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { ApiError, api, errorMessage, post, put } from './api';
@@ -10,9 +10,10 @@ import { formatDate, timeAgo, viewerZone } from './format';
 import { Button, PageHeader } from './components/ui';
 import { useToast } from './components/toast';
 import {
-  RETENTION_PRESETS, basename, cleanupLine, eventLabel, lastCleanupLine, formatCountdown, formatSize, formatUptime, groupEvents,
-  lockedNote, parseCount, parseDays, pausedBanner, provenance, quietSpans, restoreSummaryLine,
-  retentionSentence, sameValue, settledSentence, storageSegments, systemHeadline,
+  CODE_TRACKING_OPTIONS, MASK, RETENTION_PRESETS, basename, cleanupLine, eventLabel, keyLine, lastCleanupLine, formatCountdown, formatSize, formatUptime, groupEvents,
+  lockedNote, overrideLine, parseCount, parseDays, pausedBanner, provenance, quietSpans, restoreSummaryLine,
+  retentionSentence, sameValue, secretValueProblem, settledSentence, storageSegments, systemHeadline, variableNameProblem,
+  type CodeTracking, type VariableRow, type VariablesResponse,
   type BackupPreview, type CleanupState, type LastCleanup, type NotifyTestResult, type QuietHours, type RestorePoint,
   type RestoreSummary, type RetentionPreview, type Setting, type SettingKey,
   type SettingValues, type SettingsResponse, type SystemStatus,
@@ -102,8 +103,10 @@ export function SettingsPage() {
           <RetentionGroup settings={settings} now={now} onSaved={onSaved} cleanup={status?.retention.cleanup}
                           last={status?.retention.last} />
           <NotificationsGroup settings={settings} eventKinds={eventKinds} now={now} onSaved={onSaved} />
+          <CodeTrackingGroup settings={settings} now={now} onSaved={onSaved} />
         </div>
       )}
+      <VariablesSection />
       <BackupSection home={status?.home ?? null} />
       <AppearanceSection />
       {status && <SettingsFooter status={status} />}
@@ -676,10 +679,232 @@ function NotificationsGroup({ settings, eventKinds, now, onSaved }: GroupProps &
   );
 }
 
+function CodeTrackingGroup({ settings, now, onSaved }: GroupProps) {
+  const setting = settings.get('code_tracking');
+  const saved = (valueOf(settings, 'code_tracking') ?? 'auto') as CodeTracking;
+  const [choice, setChoice] = useState<CodeTracking>(saved);
+  useEffect(() => { setChoice(saved); }, [saved]);
+  const { save, saving, error } = useGroupSave(onSaved);
+  if (!setting) return null;
+  const dirty = choice !== saved;
+  return (
+    <section className="settings-section settings-group settings-group--wide" aria-label="Code tracking">
+      <SectionHead icon={<FileCode2 size={15} />} title="Code tracking">
+        What each task records of its code, so a failed run can show what changed since the last good one.
+        Read-only: nothing in your folders is written, and .env files, keys and credentials are never read.
+      </SectionHead>
+      <SettingField setting={setting} now={now}>
+        <div className="tracking-options" role="radiogroup" aria-label={setting.title}>
+          {CODE_TRACKING_OPTIONS.map(option => (
+            <label key={option.value} className={clsx('tracking-option', choice === option.value && 'is-on')}>
+              <input type="radio" name="code-tracking" value={option.value} checked={choice === option.value}
+                     disabled={setting.locked} onChange={() => setChoice(option.value)} />
+              <strong>{option.title}</strong>
+              <span>{option.text}</span>
+            </label>
+          ))}
+        </div>
+      </SettingField>
+      <GroupFooter error={error} dirty={dirty}>
+        <Button onClick={() => save(unlocked(settings, { code_tracking: choice }))} disabled={!dirty || saving || setting.locked}>
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+      </GroupFooter>
+    </section>
+  );
+}
+
+/* ─── Variables & secrets ─────────────────────────────────── */
+
+/** Sends JSON with any method; api() sets the content type. */
+const send = <T,>(path: string, method: 'POST' | 'PATCH' | 'DELETE', body?: unknown) =>
+  api<T>(path, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+
+function VariablesSection() {
+  const [data, setData] = useState<VariablesResponse | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  useEffect(() => {
+    void api<VariablesResponse>('/variables').then(next => { setData(next); setLoadError(null); })
+      .catch(error => setLoadError(reasonOf(error, 'Could not load variables')));
+  }, []);
+  const rows = data?.variables ?? [];
+  const names = rows.map(r => r.name);
+  const secrets = rows.filter(r => r.secret).length;
+  const key = data?.key;
+  return (
+    <section className="settings-section settings-section--wide settings-vars" aria-label="Variables and secrets">
+      <SectionHead icon={<KeyRound size={15} />} title="Variables & secrets">
+        Every task and service gets these as environment variables. An environment&apos;s or a service&apos;s own variables win over them.
+      </SectionHead>
+      {loadError && <p className="settings-error" role="alert">{loadError}</p>}
+      {key?.problem && <div className="callout callout--warning" role="alert">{keyLine(key)}</div>}
+      <AddVariable taken={names} onSaved={setData} />
+      {data && (rows.length === 0 ? (
+        <p className="vars-empty">Nothing yet. Add a database host, a folder, an API token — anything your scripts read from the environment.</p>
+      ) : (
+        <ul className="vars-list" aria-label="Saved variables">
+          {rows.map(row => <VariableItem key={row.id} row={row} onSaved={setData} />)}
+        </ul>
+      ))}
+      {key && (
+        <div className="vars-foot">
+          <p className="vars-foot-line">
+            <Lock size={12} /> {secrets > 0 || key.source ? keyLine(key) : 'Secrets are stored encrypted.'} They show as <code>{MASK}</code> in logs, notebooks and reports.
+            {key.source === 'file' && <> <PathChip path={key.path} what="secrets key" /></>}
+          </p>
+          <p className="vars-foot-line">
+            Read them as <code>$NAME</code>, <code>%NAME%</code> in Windows commands, or <code>os.environ[&quot;NAME&quot;]</code> in Python.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function KindSwitch({ secret, onChange }: { secret: boolean; onChange: (secret: boolean) => void }) {
+  return (
+    <div className="vars-kind" role="group" aria-label="Kind">
+      <button type="button" aria-pressed={!secret} className={clsx(!secret && 'is-on')} onClick={() => onChange(false)}>Variable</button>
+      <button type="button" aria-pressed={secret} className={clsx(secret && 'is-on')} onClick={() => onChange(true)}><Lock size={11} /> Secret</button>
+    </div>
+  );
+}
+
+function ValueInput({ id, value, onChange, secret, placeholder, autoFocus }: {
+  id: string; value: string; onChange: (value: string) => void; secret: boolean; placeholder: string; autoFocus?: boolean;
+}) {
+  const [shown, setShown] = useState(false);
+  return (
+    <div className="vars-value-input">
+      <input id={id} type={secret && !shown ? 'password' : 'text'} value={value} placeholder={placeholder}
+             autoComplete="off" spellCheck={false} autoFocus={autoFocus} onChange={e => onChange(e.target.value)} />
+      {secret && (
+        <button type="button" className="vars-peek" onClick={() => setShown(s => !s)}
+                aria-label={shown ? 'Hide what you typed' : 'Show what you typed'} title={shown ? 'Hide' : 'Show what you typed'}>
+          {shown ? <EyeOff size={13} /> : <Eye size={13} />}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AddVariable({ taken, onSaved }: { taken: string[]; onSaved: (next: VariablesResponse) => void }) {
+  const { toast } = useToast();
+  const [name, setName] = useState('');
+  const [value, setValue] = useState('');
+  const [note, setNote] = useState('');
+  const [secret, setSecret] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const problem = variableNameProblem(name, taken) ?? secretValueProblem(value, secret);
+  const ready = name.trim() !== '' && !problem && !busy && (!secret || value !== '');
+  const submit = async (e: { preventDefault: () => void }) => {
+    e.preventDefault();
+    if (!ready) return;
+    setBusy(true); setError(null);
+    try {
+      const saved = await send<VariablesResponse>('/variables', 'POST',
+        { name: name.trim(), value, secret, description: note.trim() || null });
+      onSaved(saved);
+      toast(secret ? `Secret ${name.trim()} saved` : `Variable ${name.trim()} saved`);
+      setName(''); setValue(''); setNote('');
+    } catch (caught) { setError(reasonOf(caught, 'Could not save')); }
+    finally { setBusy(false); }
+  };
+  return (
+    <form className="vars-add" onSubmit={submit} aria-label="Add a variable">
+      <KindSwitch secret={secret} onChange={setSecret} />
+      <label className="field vars-add-name"><span>Name</span>
+        <input value={name} placeholder={secret ? 'DB_PASSWORD' : 'DATA_DIR'} autoComplete="off" spellCheck={false}
+               onChange={e => setName(e.target.value)} />
+      </label>
+      <label className="field vars-add-value" htmlFor="new-variable-value"><span>Value</span>
+        <ValueInput id="new-variable-value" value={value} onChange={setValue} secret={secret}
+                    placeholder={secret ? 'Shown only while you type it' : '/srv/data'} />
+      </label>
+      <label className="field vars-add-note"><span>Note <em>optional</em></span>
+        <input value={note} placeholder="What it is for" onChange={e => setNote(e.target.value)} />
+      </label>
+      <Button type="submit" disabled={!ready}><Plus size={13} /> {busy ? 'Saving…' : 'Add'}</Button>
+      {(error || (name.trim() && problem)) && <p className="settings-error vars-add-error" role="alert">{error ?? problem}</p>}
+    </form>
+  );
+}
+
+function VariableItem({ row, onSaved }: { row: VariableRow; onSaved: (next: VariablesResponse) => void }) {
+  const { toast } = useToast();
+  const now = useNow(true, 60_000);
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const start = () => { setValue(row.secret ? '' : row.value ?? ''); setError(null); setEditing(true); };
+  const run = async (action: () => Promise<VariablesResponse>, done: string) => {
+    setBusy(true); setError(null);
+    try { onSaved(await action()); setEditing(false); toast(done); }
+    catch (caught) { setError(reasonOf(caught, 'Could not save')); }
+    finally { setBusy(false); }
+  };
+  const save = () => run(() => send<VariablesResponse>(`/variables/${row.id}`, 'PATCH', { value }),
+                         row.secret ? `Secret ${row.name} replaced` : `Variable ${row.name} saved`);
+  const makeSecret = () => {
+    if (!confirm(`Make ${row.name} a secret? Its value will be encrypted, hidden in logs, and never shown again.`)) return;
+    void run(() => send<VariablesResponse>(`/variables/${row.id}`, 'PATCH', { secret: true }), `${row.name} is now a secret`);
+  };
+  const remove = () => {
+    if (!confirm(`Delete ${row.name}? Tasks and services started from now on will not get it.`)) return;
+    void run(() => send<VariablesResponse>(`/variables/${row.id}`, 'DELETE'), `${row.name} deleted`);
+  };
+  const valueProblem = secretValueProblem(value, row.secret);
+  const override = overrideLine(row.overridden_in);
+  return (
+    <li className={clsx('vars-item', row.secret && 'is-secret', row.problem && 'has-problem')}>
+      <div className="vars-item-name">
+        <code>{row.name}</code>
+        {row.secret && <span className="vars-badge"><Lock size={10} /> Secret</span>}
+        {row.description && <span className="vars-note">{row.description}</span>}
+      </div>
+      <div className="vars-item-value">
+        {editing ? (
+          <form className="vars-edit" onSubmit={e => { e.preventDefault(); if (!valueProblem && !busy) void save(); }}>
+            <ValueInput id={`variable-${row.id}`} value={value} onChange={setValue} secret={row.secret} autoFocus
+                        placeholder={row.secret ? 'The new value' : ''} />
+            <Button type="submit" size="sm" disabled={busy || !!valueProblem || (row.secret && value === '')}>{busy ? 'Saving…' : 'Save'}</Button>
+            <Button variant="ghost" size="sm" onClick={() => setEditing(false)} disabled={busy}>Cancel</Button>
+          </form>
+        ) : row.secret ? (
+          row.problem
+            ? <span className="vars-problem">Not set for tasks: {row.problem}. Enter it again.</span>
+            : <span className="vars-masked" title="The value is never shown again"><span aria-hidden="true">{MASK}</span> <small>set {timeAgo(row.updated_at, now)}</small></span>
+        ) : (
+          <span className="vars-plain" title={row.value ?? ''}>{row.value === '' ? <em>empty</em> : row.value}</span>
+        )}
+        {(error || (editing && valueProblem)) && <small className="settings-error" role="alert">{error ?? valueProblem}</small>}
+        {override && !editing && <small className="vars-override">{override}</small>}
+      </div>
+      {!editing && (
+        <div className="vars-item-actions">
+          <button type="button" className="icon-button" onClick={start} disabled={busy}
+                  title={row.secret ? 'Replace the value' : 'Edit the value'} aria-label={row.secret ? `Replace ${row.name}` : `Edit ${row.name}`}>
+            <Pencil size={13} />
+          </button>
+          {!row.secret && (
+            <button type="button" className="icon-button" onClick={makeSecret} disabled={busy}
+                    title="Make it a secret" aria-label={`Make ${row.name} a secret`}><Lock size={13} /></button>
+          )}
+          <button type="button" className="icon-button is-danger" onClick={remove} disabled={busy}
+                  title="Delete" aria-label={`Delete ${row.name}`}><Trash2 size={13} /></button>
+        </div>
+      )}
+    </li>
+  );
+}
+
 /* ─── Backup & restore ────────────────────────────────────── */
 
 function BackupSection({ home }: { home: string | null }) {
   const { toast } = useToast();
+  const [withKey, setWithKey] = useState(false);
   const [points, setPoints] = useState<{ points: RestorePoint[]; directory: string } | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<BackupPreview | null>(null);
@@ -737,10 +962,21 @@ function BackupSection({ home }: { home: string | null }) {
             <strong>Download a backup</strong>
             <ul className="backup-contents">
               <li><Check size={12} /> Workflows, services, projects and environments</li>
-              <li><Check size={12} /> A consistent snapshot of the database</li>
+              <li><Check size={12} /> A consistent snapshot of the database, secrets encrypted</li>
               <li className="is-out"><Minus size={12} /> Logs and artifacts — copy {home ? <PathChip path={home} what="home folder" /> : 'the home folder'} for those</li>
             </ul>
-            <a className="btn btn-primary btn-md" href="/api/system/backup" download><Download size={14} /> Download backup</a>
+            <label className="backup-key-option">
+              <input type="checkbox" checked={withKey} onChange={e => setWithKey(e.target.checked)} />
+              <span>
+                <strong>Include the secrets key</strong>
+                <small>{withKey
+                  ? 'Anyone with this file can read your secrets. Keep it like a password.'
+                  : 'Without it, the secrets in this backup open only here.'}</small>
+              </span>
+            </label>
+            <a className="btn btn-primary btn-md" href={withKey ? '/api/system/backup?include_key=true' : '/api/system/backup'} download>
+              <Download size={14} /> Download backup
+            </a>
           </div>
         </div>
 
@@ -772,7 +1008,12 @@ function BackupSection({ home }: { home: string | null }) {
                 <div><b>{figure('environments')}</b><span>environments</span></div>
                 {counts.runs != null && <div><b>{counts.runs.toLocaleString('en-US')}</b><span>runs</span></div>}
               </div>
-              <p className="settings-hint">{preview.includes_database ? 'Includes a database snapshot.' : 'Configuration only — no database inside.'}</p>
+              <p className="settings-hint">
+                {preview.includes_database ? 'Includes a database snapshot.' : 'Configuration only — no database inside.'}
+                {(counts.secrets ?? 0) > 0 && (preview.includes_secrets_key
+                  ? ` ${counts.secrets} secret${counts.secrets === 1 ? '' : 's'}, with the key to open them.`
+                  : ` ${counts.secrets} secret${counts.secrets === 1 ? '' : 's'}, without the key: they come back with the database only where they were made.`)}
+              </p>
               {!summary ? (
                 <div className="settings-inline-actions">
                   <Button onClick={restore} disabled={busy != null}><Upload size={13} /> {busy === 'restore' ? 'Restoring…' : 'Restore configuration'}</Button>

@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     # exported run file, a report permalink. Set it when RunRail sits behind a
     # proxy; the fallback only resolves inside the same network.
     public_url: str | None = None
+    # The key secrets are encrypted with, when it should not sit in the home
+    # folder: a Fernet key (`runrail secrets-key` prints the current one).
+    # Unset, RunRail keeps one in <home>/secrets.key. Never passed to tasks.
+    secrets_key: str | None = None
+    # What tasks record of their code for run comparisons: auto, files or off.
+    # Pins the Settings page choice when set.
+    code_tracking: str | None = None
 
     @property
     def base_url(self) -> str:

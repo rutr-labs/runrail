@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { cronLabel, nextCronOccurrence, viewerZone, zoneTag } from '../cron';
+import { cronLabel, cronProblem, nextCronOccurrence, viewerZone, zoneTag } from '../cron';
 
 /* ─── Schedule builder ─────────────────────────────────────
    Dropdown-first schedule authoring; raw cron is the "Advanced"
@@ -104,7 +104,9 @@ export function ScheduleBuilder({ initialCron, initialTimezone }: {
   const preview = useMemo(() => {
     if (!cron) return null;
     const first = nextCronOccurrence(cron, tz);
-    if (!first) return state.mode === 'custom' ? 'Unrecognized expression — previews unavailable' : null;
+    // The server reads a few forms this preview does not (`last`, `1st mon`):
+    // say so, rather than calling an expression it will accept wrong.
+    if (!first) return state.mode === 'custom' && !cronProblem(cron) ? 'No preview for this one; it is checked when you save' : null;
     const second = nextCronOccurrence(cron, tz, first);
     const fmt = (d: Date) => d.toLocaleString(undefined, {
       weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -214,8 +216,11 @@ export function ScheduleBuilder({ initialCron, initialTimezone }: {
       {state.mode === 'custom' && (
         <label className="field">
           <span>Cron expression <em>five fields, evaluated in the timezone above</em></span>
-          <input className="code-input" value={state.custom} placeholder="0 6 * * *"
+          <input className="code-input" value={state.custom} placeholder="0 6 * * 1-5"
                  onChange={e => set({ custom: e.target.value })} />
+          {cronProblem(state.custom)
+            ? <small className="sched-warn">{cronProblem(state.custom)}</small>
+            : <small>Lists, ranges and steps work: <code>0 9,17 * * 1-5</code>, <code>*/15 9-17 * * MON-FRI</code>, <code>0 6 1 */3 *</code></small>}
         </label>
       )}
 

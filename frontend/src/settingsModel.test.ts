@@ -6,7 +6,8 @@ import {
   basename, groupEvents, quietSpans, storageSegments, systemHeadline,
   EVENT_LABELS, eventLabel, formatCountdown, formatSize, formatUptime, lockedNote, parseCount, parseDays,
   pausedBanner, provenance, restoreSummaryLine, retentionSentence, sameValue,
-  type RetentionPreview, type Setting,
+  keyLine, overrideLine, secretValueProblem, variableNameProblem,
+  type RetentionPreview, type SecretsKey, type Setting,
 } from './settingsModel';
 
 /* ─── Settings page model ──────────────────────────────────
@@ -253,5 +254,40 @@ describe('lastCleanupLine', () => {
     expect(lastCleanupLine(last, now)).toBe('Last cleanup 2h ago: deleted 39,624 runs older than 90 days');
     expect(lastCleanupLine({ ...last, runs_deleted: 0 }, now)).toBe('Last cleanup 2h ago: nothing was older than 90 days');
     expect(lastCleanupLine(null, now)).toBeNull();
+  });
+});
+
+describe('variables', () => {
+  test('a name is checked the way the server checks it', () => {
+    expect(variableNameProblem('', [])).toBeNull();
+    expect(variableNameProblem('DB_PASSWORD', [])).toBeNull();
+    expect(variableNameProblem('2FA', [])).toMatch(/not starting with a digit/);
+    expect(variableNameProblem('path', [])).toMatch(/set by RunRail or the system/);
+    expect(variableNameProblem('RUNRAIL_HOME', [])).toMatch(/kept for RunRail/);
+    expect(variableNameProblem('db_host', ['DB_HOST'])).toBe('db_host already exists');
+    expect(variableNameProblem('db_host', ['DB_HOST'], 'DB_HOST')).toBeNull();
+  });
+
+  test('a secret too short to hide is refused, a variable is not', () => {
+    expect(secretValueProblem('abc', true)).toMatch(/At least 4/);
+    expect(secretValueProblem('abc', false)).toBeNull();
+    expect(secretValueProblem('', true)).toBeNull();
+  });
+
+  test('overrides read as a list', () => {
+    expect(overrideLine([])).toBeNull();
+    expect(overrideLine(['environment prod'])).toBe('Overridden by environment prod');
+    expect(overrideLine(['environment prod', 'service api', 'service etl']))
+      .toBe('Overridden by environment prod, service api and service etl');
+  });
+
+  test('the key line says where the key is', () => {
+    const key: SecretsKey = { source: 'file', variable: 'RUNRAIL_SECRETS_KEY', path: '/h/secrets.key',
+                              sealed_to_account: false, id: 'abc', problem: null };
+    expect(keyLine(key)).toMatch(/only your user can read/);
+    expect(keyLine({ ...key, sealed_to_account: true })).toMatch(/Windows account/);
+    expect(keyLine({ ...key, source: 'environment' })).toBe('Encrypted with the key in RUNRAIL_SECRETS_KEY.');
+    expect(keyLine({ ...key, source: null })).toMatch(/when the first secret is saved/);
+    expect(keyLine({ ...key, problem: 'damaged' })).toBe('The secrets key cannot be read: damaged');
   });
 });

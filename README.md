@@ -132,6 +132,45 @@ Commands and paths are Jinja templates. Every run gets:
 | `project_root`, `artifacts_dir` | Resolved paths for the run |
 | *your parameters* | Run and per-task parameters, merged |
 
+Tasks also get the parameters in their environment, for scripts that are not templated: all of them as JSON in `RUNRAIL_PARAMS`, and each as `RUNRAIL_PARAM_<NAME>` (`RUNRAIL_PARAM_REGION=EU`, yes/no as `true`/`false`). Notebooks get them as papermill parameters.
+
+### Run forms
+
+A workflow can say which parameters a run takes. Under **Edit → Run form**, give each one a name, a type (text, number, date, choice, yes/no), an optional default, a label and a line of help. **Run with…** then shows a form instead of a JSON box: a date picker, a dropdown, a switch. Values are checked before anything is queued.
+
+![A run form](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/10-run-form.png)
+
+Every way a run starts goes through the same form — the button, the API, `runrail run --param`, a backfill, the schedule — so a run always records exactly what it ran with. Missing values take their default; a date default can be `today` or `yesterday`, counted on the workflow's calendar (in a backfill, from each backfilled day). A required parameter with no default makes **Run now** ask first, and a scheduled workflow must give one a default, since nobody is there to ask. Parameters the form does not list still pass through as before.
+
+```yaml
+run_parameters:
+  - {name: report_date, type: date, default: yesterday, label: Report date}
+  - {name: region, type: choice, choices: [EU, US, APAC], default: EU}
+  - {name: dry_run, type: bool, default: false}
+```
+
+## What changed since the last good run
+
+A failed run opens with a **What changed** panel, comparing it with the last run of the same workflow that succeeded. Any finished run can be compared with any earlier one. It shows only what differs:
+
+![What changed since the last good run](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/09-what-changed.png)
+
+
+- **Parameters** that changed.
+- **Code**, file by file, the files the task uses first. When a task starts, RunRail records the code it is about to run:
+  - in a **project** (a RunRail project, a git repository, or a folder with `pyproject.toml` / `setup.py`), every code and config file in it, so a fix in a helper or a config shows up too. In a git repository it uses git's own file list and shows the commit, e.g. "commit 3c5e757 → 967bc4f, with uncommitted edits";
+  - for a **loose script** in a shared folder, the script and the local files it imports or opens, not its neighbours.
+
+  Each version of a file is stored once (compressed), and a project nobody touched costs nothing. Stored code is kept exactly as long as a run that used it is kept.
+
+  It only reads, never writes, and it stays out of what isn't your code. Virtualenvs and conda environments are skipped whatever they're called (by their `pyvenv.cfg` / `conda-meta`), as are caches, build output, and `.env` files, keys and credentials. It is light where reading is costly. On a network drive, only the files the task runs are checked. A OneDrive placeholder is never opened (that would download it). A project that's slow to list isn't listed again for an hour. After the first run, an unchanged file costs one look at its size and date. **Settings → Code tracking** turns it down to only the files a task runs, or off.
+- **Packages and Python version** of the task's environment (from `pip freeze`, listed in the background so it never slows a task).
+- **Commands as run**, ignoring the run's own dates and ids.
+- **Log lines** that are new, gone, or changed. Timestamps, durations and ids are ignored, but counts are not, so `loaded 48210 rows` → `loaded 0 rows` shows as one changed line.
+- **Notebook cells** whose code or output changed, the cell that failed, and cells that got much slower.
+
+It doesn't guess at causes. When nothing differs, it says so: the cause is then likely outside RunRail (the data, a database, the network). Secrets stay masked here as everywhere else.
+
 ## CLI
 
 ```bash
@@ -193,12 +232,26 @@ An environment variable pins a setting: the page shows it locked and names the v
 | `RUNRAIL_PUBLIC_URL` | unset; base URL for links inside exported files and reports |
 | `RUNRAIL_BROWSE_ROOT` | user home; limits the UI file picker |
 | `RUNRAIL_SQLITE_DB_PATH` | unset; the database SQL tasks run against, unless the task sets `sqlite_db_path` |
+| `RUNRAIL_SECRETS_KEY` | unset; the key secrets are encrypted with, instead of `$RUNRAIL_HOME/secrets.key` |
+| `RUNRAIL_CODE_TRACKING` | unset (the Settings choice, `auto` by default); `auto`, `files` or `off` |
 
 Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:00 on that workflow's clock across DST. The UI shows occurrences in yours.
+
+### Variables and secrets
+
+Settings also holds **variables and secrets** that every task and service gets as environment variables: a database host, a folder, an API token. Your scripts read them the usual way — `$NAME` in a shell, `%NAME%` in a Windows command, `os.environ["NAME"]` in Python or a notebook — so nothing in them changes. An environment's or a service's own variables win over these when both set the same name.
+
+![Variables and secrets](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/11-variables.png)
+
+A secret is shown only while you type it. It is stored encrypted, and its value is replaced with `••••••` wherever RunRail writes or shows output: task and service logs, the notebooks papermill writes, rendered reports, recorded commands and errors, log search. Logs written before a secret was added are masked when they are read. Masking catches the exact value (and its JSON-escaped form), not a piece or an encoding of it.
+
+The key lives in `$RUNRAIL_HOME/secrets.key`, readable only by your user; on Windows it is also locked to your Windows account. `RUNRAIL_SECRETS_KEY` supplies it instead (`runrail secrets-key` prints the current one). The encryption protects the database file and its backups. It does not protect against code running as your user, which can read the key just as RunRail does.
 
 ### Backups
 
 `runrail backup` (or the button on Settings) writes a zip holding the configuration as YAML, a consistent snapshot of the SQLite database and a manifest. Logs and artifacts are not in it — they are the bulk of a home and sit in plain folders under `$RUNRAIL_HOME`; copy that folder for a full copy. Restoring the configuration (workflows, services, projects, environments) works from the page while RunRail runs, as an upsert that deletes nothing. Restoring the database is `runrail restore <zip>` with the server stopped; it refuses while one is alive and keeps the database it replaces. Before every schema upgrade RunRail also takes a restore point of its own under `$RUNRAIL_HOME/backups/` (the newest three are kept), so a downgrade to the previous version has something to return to. On PostgreSQL the backup holds configuration only; use `pg_dump` for the database.
+
+Secrets travel inside the database, encrypted; the key stays out of a backup unless you tick **Include the secrets key** (or pass `--include-secrets-key`). Without it the secrets open only on the machine that made them, and a restore elsewhere lists them for you to enter again. With it, `runrail restore` puts the key in place — keep that zip like a password.
 
 ## Worth knowing
 
@@ -206,7 +259,7 @@ Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:0
 - Work runs on a single machine. Plenty happens in parallel there, but there are no remote workers.
 - SQL tasks run against SQLite only.
 - Services are managed by `runrail serve` or `runrail worker`. `runrail api` on its own shows them but starts and stops nothing, and the Services page says so.
-- Environment variables, including anything secret, are stored unencrypted in the database.
+- Variables set on an environment or a service are stored as plain text. Put anything secret in Settings → Variables & secrets, where it is encrypted and masked.
 - Log search is a bounded grep rather than an index. Every limit is capped and the response says which cap it hit, so a partial answer never looks like a complete one.
 - Missed-run history is recomputed from the current schedule, so editing a cron expression redraws the past under the new one.
 

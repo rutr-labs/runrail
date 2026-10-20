@@ -22,6 +22,7 @@ from runrail.models import (
     ServiceStopReason,
     TaskType,
 )
+from runrail.run_parameters import check_definitions
 from runrail.services.windows import validate_windows
 
 
@@ -124,6 +125,13 @@ class WorkflowIn(BaseModel):
     # locking, and the mode is inert without a resource.
     lock_resource: str | None = Field(default=None, max_length=255)
     lock_mode: LockMode = LockMode.shared
+    # Configuration: the run form ("Run with…"), see runrail.run_parameters.
+    run_parameters_json: list[dict[str, Any]] | None = None
+
+    @field_validator("run_parameters_json")
+    @classmethod
+    def _valid_run_form(cls, value: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+        return check_definitions(value)
 
     @field_validator("lock_resource")
     @classmethod
@@ -174,6 +182,11 @@ class WorkflowOut(WorkflowIn, ORMModel):
     webhook_error: str | None = None
     webhook_error_at: UTCDateTime | None = None
     auto_paused_at: UTCDateTime | None = None
+
+    @field_validator("run_parameters_json")
+    @classmethod
+    def _valid_run_form(cls, value: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+        return value  # shown as stored; it was checked on the way in
 
     @field_validator("schedule_cron")
     @classmethod

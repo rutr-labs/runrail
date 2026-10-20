@@ -49,7 +49,7 @@ def _apply_yaml(file: Path) -> None:
 
     init_db()
     try:
-        data = yaml.safe_load(file.read_text())
+        data = yaml.safe_load(file.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise typer.BadParameter(f"Could not read {file}: {exc}") from exc
     with SessionLocal() as db:
@@ -103,17 +103,37 @@ def import_data(source: str = typer.Argument(
 
 
 @app.command()
-def backup(out: str | None = typer.Option(None, "--out", help="Where to write the zip")) -> None:
+def backup(out: str | None = typer.Option(None, "--out", help="Where to write the zip"),
+           include_secrets_key: bool = typer.Option(
+               False, "--include-secrets-key",
+               help="Put the key that opens the secrets in the zip; keep it like a password")) -> None:
     """Write a backup zip: configuration as YAML, the SQLite database, a manifest."""
     from runrail import system
     init_db()
     path = Path(out) if out else Path(f"runrail-backup-{datetime.now():%Y%m%d-%H%M%S}.zip")
     with SessionLocal() as db:
-        manifest = system.write_backup(db, path)
+        manifest = system.write_backup(db, path, include_key=include_secrets_key)
     counts = manifest["counts"]
     typer.echo(f"Wrote {path} — {counts['workflows']} workflows, {counts['services']} services, "
                f"{counts['runs']} runs" + ("" if manifest["includes_database"]
                                           else " (configuration only: PostgreSQL)"))
+
+
+@app.command("secrets-key")
+def secrets_key() -> None:
+    """Print the key this home encrypts secrets with, to move it into
+    RUNRAIL_SECRETS_KEY or keep a copy somewhere safe."""
+    from runrail import variables
+    try:
+        key = variables.load_key(get_settings())
+    except variables.SecretsKeyError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+    if key is None:
+        typer.echo("No secrets key yet: one is made when the first secret is saved.", err=True)
+        raise typer.Exit(1)
+    typer.echo("Anyone with this key and a copy of the database can read every secret.", err=True)
+    typer.echo(key.decode())
 
 
 @app.command()
@@ -281,7 +301,10 @@ def run_workflow(name: str, param: list[str] | None = typer.Option(None, "--para
     """Queue a workflow run."""
     init_db()
     with SessionLocal() as db:
-        run = create_run(db, _workflow(db, name), TriggerType.cli, _params(param))
+        try:
+            run = create_run(db, _workflow(db, name), TriggerType.cli, _params(param))
+        except ValueError as exc:  # a parameter the run form refuses
+            raise typer.BadParameter(str(exc)) from None
         typer.echo(f"Queued workflow run {run.id}")
 
 
@@ -320,7 +343,7 @@ def export(name: str | None = typer.Argument(None, help="Workflow name; omit for
             raise typer.BadParameter(str(exc)) from exc
     text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
     if output:
-        Path(output).write_text(text)
+        Path(output).write_text(text, encoding="utf-8")
         typer.echo(f"Wrote {len(data['workflows'])} workflow(s) to {output}")
     else:
         typer.echo(text)

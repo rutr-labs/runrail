@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from runrail import notify, runtime_settings
 from runrail.api.crud import (
     apply_update,
+    check_schedulable,
     create_backfill,
     create_run,
     ensure_environment_ready,
@@ -28,6 +29,7 @@ from runrail.models import (
     WorkflowRun,
     now,
 )
+from runrail.run_parameters import ParameterError
 from runrail.schemas import (
     BackfillCreate,
     RunCreate,
@@ -94,7 +96,16 @@ def list_workflows(db: Session = Depends(get_db)):
 @router.post("/workflows", response_model=WorkflowOut, status_code=201)
 def create_workflow(data: WorkflowIn, db: Session = Depends(get_db)):
     ensure_environment_ready(db, data.default_environment_id)
-    return save(db, Workflow(**data.model_dump()))
+    workflow = Workflow(**data.model_dump())
+    _schedulable_or_422(workflow)
+    return save(db, workflow)
+
+
+def _schedulable_or_422(workflow: Workflow) -> None:
+    try:
+        check_schedulable(workflow)
+    except ParameterError as exc:
+        raise HTTPException(422, str(exc)) from None
 
 
 @router.get("/workflows/{object_id}", response_model=WorkflowOut)
@@ -119,6 +130,11 @@ def update_workflow(object_id: int, data: WorkflowIn, db: Session = Depends(get_
     # it to.
     if not workflow.lock_resource:
         workflow.lock_mode = LockMode.shared
+    try:
+        check_schedulable(workflow)
+    except ParameterError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc)) from None
     return save(db, workflow)
 
 
@@ -155,7 +171,10 @@ def delete_workflow(object_id: int, db: Session = Depends(get_db)):
 def run_workflow(object_id: int, data: RunCreate, db: Session = Depends(get_db)):
     workflow = get_or_404(db, Workflow, object_id)
     _ensure_workflow_runnable(db, workflow)
-    run = create_run(db, workflow, TriggerType.manual, data.parameters)
+    try:
+        run = create_run(db, workflow, TriggerType.manual, data.parameters)
+    except ParameterError as exc:
+        raise HTTPException(422, str(exc)) from None
     ws_manager.notify({"type": "run_created", "id": run.id, "workflow_id": run.workflow_id})
     return run
 

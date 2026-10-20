@@ -199,4 +199,7 @@ def cleanup_runs(db: Session, older_than_days: int, dry_run: bool = False,
     if not dry_run:
         _sweep_orphans(db, logs_root, artifacts_root, stats)
         db.rollback()
+        # Code kept for run comparisons that no remaining run points at.
+        from runrail.codetrack import collect_garbage
+        collect_garbage(db)
     return stats

@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -181,6 +182,9 @@ class Workflow(TimestampMixin, Base):
     # wait on and deadlock is structurally impossible.
     lock_resource: Mapped[str | None] = mapped_column(String(255))
     lock_mode: Mapped[LockMode] = mapped_column(Enum(LockMode), default=LockMode.shared)
+    # Configuration: the run form — the parameters a run takes, with types and
+    # defaults (see runrail.run_parameters). NULL is no form.
+    run_parameters_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     # Alert state, written only by notify.py under a compare-and-set: "ok" or
     # "failing", and the run that put it there. A failure alerts when it moves
     # the state to failing, a success when it moves it back — whichever run
@@ -305,6 +309,13 @@ class TaskRun(Base):
     resume_index: Mapped[int] = mapped_column(Integer, default=0)
     approval_note: Mapped[str | None] = mapped_column(Text)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # What this attempt ran with, for "what changed since the last good run":
+    # its code (see runrail.codetrack) and its environment's Python and
+    # packages. See runrail.rundiff.
+    inputs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # The code it ran (a CodeManifest). A column, not only a key in
+    # inputs_json, so retention can tell which code is still needed.
+    code_manifest: Mapped[str | None] = mapped_column(String(64), index=True)
     workflow_run: Mapped[WorkflowRun] = relationship(back_populates="task_runs")
     task: Mapped[Task] = relationship()
 
@@ -478,6 +489,39 @@ class CleanupPass(Base):
     runs_deleted: Mapped[int]
     files_deleted: Mapped[int]
     errors: Mapped[int]
+
+
+class Variable(TimestampMixin, Base):
+    """A variable or secret every task and service gets in its environment;
+    see runrail.variables. A secret's value is stored encrypted, and `key_id`
+    names the key it was encrypted with."""
+
+    __tablename__ = "variables"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    secret: Mapped[bool] = mapped_column(Boolean, default=False)
+    value: Mapped[str] = mapped_column(Text)
+    key_id: Mapped[str | None] = mapped_column(String(32))
+    description: Mapped[str | None] = mapped_column(Text)
+
+
+class CodeBlob(Base):
+    """One version of one code file, stored once (zlib-compressed) however
+    many runs read it. See runrail.codetrack."""
+
+    __tablename__ = "code_blobs"
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    size: Mapped[int] = mapped_column(Integer)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class CodeManifest(Base):
+    """The code a task saw: every tracked file and its blob, stored once per
+    distinct state of a project. {path: [blob sha256, text kept]}."""
+
+    __tablename__ = "code_manifests"
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    files: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
 class AppSetting(Base):

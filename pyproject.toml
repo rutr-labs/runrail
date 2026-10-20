@@ -35,7 +35,10 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "alembic>=1.13", "apscheduler>=3.10,<4", "fastapi>=0.115", "jinja2>=3.1",
+  "alembic>=1.13", "apscheduler>=3.10,<4",
+  # Encrypts secrets at rest (Fernet). Prebuilt wheels for every platform
+  # RunRail supports, and on any internal mirror that carries pip itself.
+  "cryptography>=42", "fastapi>=0.115", "jinja2>=3.1",
   "platformdirs>=4", "psutil>=5.9", "psycopg[binary]>=3.2", "pydantic-settings>=2.5",
   "pyyaml>=6.0", "sqlalchemy>=2.0", "typer>=0.12", "uvicorn[standard]>=0.30",
   # zoneinfo reads the OS time zone database, and Windows has none: without

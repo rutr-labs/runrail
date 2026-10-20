@@ -2,6 +2,59 @@
 
 Notable changes to RunRail. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Variables and secrets.** Settings has a list of variables and secrets that
+  every task and service gets as environment variables; an environment's or a
+  service's own variables still win. A secret is stored encrypted (with a key
+  in `$RUNRAIL_HOME/secrets.key`, locked to your account on Windows, or from
+  `RUNRAIL_SECRETS_KEY`) and is never shown again once saved.
+- **Secrets are masked everywhere RunRail writes or shows output**: task and
+  service logs as they are written, the notebooks papermill writes, rendered
+  reports and notebook downloads, the live notebook view, recorded commands and
+  errors, log search and run exports. Logs from before a secret existed are
+  masked when read.
+- Backups can carry the secrets key (`--include-secrets-key`, or a checkbox on
+  Settings); `runrail restore` installs it, and says which secrets will not
+  open when it is missing. `runrail secrets-key` prints the current key.
+- Exports and backups carry plain variables in the YAML; secrets never.
+- A secret's value typed in as a run parameter is refused: parameters are
+  shown and stored as typed, and secrets reach tasks as environment variables.
+- **Run forms.** A workflow can list the parameters a run takes — text,
+  number, date, choice or yes/no, each with a default and a line of help —
+  and "Run with…" shows them as a form. Every way a run starts checks and
+  fills them the same way, so a scheduled run records the defaults it used;
+  date defaults can be `today` or `yesterday`. Run forms travel in YAML as
+  `run_parameters`.
+- **What changed since the last good run.** A failed run opens with a
+  comparison against the last successful run of its workflow (any finished
+  run can be compared with any earlier one): parameters, code file by file
+  (the files the task uses first), package and Python versions, commands,
+  new/gone/changed log lines, and notebook cells whose code or output
+  changed or that failed or slowed down. Each task attempt now records the
+  code it ran — its whole project, or a loose script and the files it
+  imports — and its environment's packages; each file version is stored
+  once and kept as long as a run that used it. Runs from before the upgrade
+  are compared on what they recorded. Read-only and light: environments
+  (found by `pyvenv.cfg` / `conda-meta`, whatever their name), caches and
+  secret files are skipped; on a network drive only the files a task runs
+  are checked; cloud placeholders are never opened. Settings → Code
+  tracking turns it down to the files a task runs, or off.
+- A shared (exported) failed run carries the same "what changed" section.
+- Tasks get their run's parameters in the environment too: `RUNRAIL_PARAMS`
+  (JSON) and `RUNRAIL_PARAM_<NAME>`, so a script run by path can read them.
+
+### Fixed
+- **Advanced cron schedules read in full.** The schedule builder's preview
+  understood only the shapes its dropdowns make, so lists, ranges, steps over
+  ranges, names and months (`0 9,17 * * 1-5`, `*/15 9-17 * * MON-FRI`,
+  `0 6 1 */3 *`) showed "Unrecognized expression" though the server took
+  them. They now get a label and next-run times that match the scheduler, and
+  a real mistake is named under the box ("hour: 25 is outside 0-23").
+- Restoring a backup on Windows waits out a file lock that passes (an
+  antivirus scan, the search indexer) and explains one that does not.
+
 ## [0.8.1] — 2026-10-18
 
 A repair release from the third audit pass: the worker, the scheduler and its
