@@ -53,6 +53,8 @@ taken first. New dependency: `cryptography`, for encrypting secrets.
   (JSON) and `RUNRAIL_PARAM_<NAME>`, so a script run by path can read them.
 
 ### Fixed
+- A retention cleanup was marked finished a moment before its record was
+  saved, so Settings could briefly show a finished pass with nothing on record.
 - **Advanced cron schedules read in full.** The schedule builder's preview
   understood only the shapes its dropdowns make, so lists, ranges, steps over
   ranges, names and months (`0 9,17 * * 1-5`, `*/15 9-17 * * MON-FRI`,
