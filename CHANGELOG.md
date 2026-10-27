@@ -4,6 +4,22 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 
 Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any release that is safe to upgrade into without doing anything: new features that are opt-in, fixes, migrations that only add. The middle one (0.**9**.0) moves only when upgrading asks something of you or changes results: a setting, CLI flag or API field renamed or removed, or behaviour that changes what a run produces. 1.0 is when RunRail declares that stable, after which these follow semver's usual meaning.
 
+## [Unreleased]
+
+### Security
+- **A website open in your browser can no longer reach RunRail by DNS
+  rebinding.** RunRail now answers only to loopback names, IP addresses, the
+  host in `RUNRAIL_PUBLIC_URL`, and names listed in the new
+  `RUNRAIL_ALLOWED_HOSTS` (comma-separated; `*` turns the check off). Before,
+  a page on a domain pointed at 127.0.0.1 passed the cross-site check and
+  could read the API and create and run workflows. If you reach RunRail by a
+  domain name, set one of those two; anything else gets a 403 that says so.
+- **WebSockets refuse other sites.** The live log and event streams accepted
+  a connection from any page, which could read your task logs and run events
+  as they happened. They now get the same Origin check as the rest of the API.
+- `docker compose` publishes port 8080 on 127.0.0.1 only. There are no
+  accounts, so publish it wider only behind a proxy that handles sign-in.
+
 ## [0.8.2] — 2026-10-20
 
 Secrets, run forms, and a comparison with the last good run. Everything here

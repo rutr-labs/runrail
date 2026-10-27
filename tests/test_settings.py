@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from portable import emit
+from starlette.websockets import WebSocketDisconnect
 from test_interactions import make_shell_task, make_workflow, start_run
 
 from runrail import notify, runtime_settings
@@ -215,6 +216,61 @@ def test_state_changing_requests_from_another_site_are_refused(client):
     assert client.get("/api/system/status", headers={"Origin": "https://evil.example"}
                       ).status_code == 200, "reads are protected by the browser itself (no CORS)"
     assert client.post("/api/system/pause", json={"paused": False}).status_code == 200
+
+
+def test_a_name_runrail_does_not_answer_to_is_refused(client):
+    """DNS rebinding: evil.example resolves to 127.0.0.1, so its page talks to
+    this RunRail with Origin and Host both naming evil.example. They agree, so
+    only the Host itself can give it away — reads included, since to the
+    browser the attacker's page is now same-origin."""
+    rebound = {"Origin": "http://evil.example:8080", "Host": "evil.example:8080"}
+    refused = client.post("/api/system/pause", json={"paused": True}, headers=rebound)
+    assert refused.status_code == 403 and "RUNRAIL_ALLOWED_HOSTS" in refused.json()["detail"]
+    assert client.get("/api/variables", headers={"Host": "evil.example:8080"}).status_code == 403
+    assert client.get("/", headers={"Host": "evil.example"}).status_code == 403
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/ws", headers=rebound):
+            pass
+
+
+@pytest.mark.parametrize("host", [
+    "127.0.0.1:8080", "localhost:8080", "LOCALHOST", "runrail.localhost:8080", "[::1]:8080",
+    "192.168.1.5:8080", "[fe80::1]:8080",
+])
+def test_loopback_names_and_ip_addresses_are_answered(client, host):
+    """Docker, a LAN address and the dev proxy need no setting: a rebinding
+    attack needs a domain name, never an IP address."""
+    assert client.get("/api/system/status", headers={"Host": host}).status_code == 200
+
+
+def test_names_set_in_configuration_are_answered(client, monkeypatch):
+    def status(host):
+        return client.get("/api/system/status", headers={"Host": host}).status_code
+    assert status("runrail.example.com") == status("ops.internal") == 403
+    monkeypatch.setenv("RUNRAIL_PUBLIC_URL", "https://RunRail.example.com/")
+    monkeypatch.setenv("RUNRAIL_ALLOWED_HOSTS", " ops.internal , box.lan ")
+    get_settings.cache_clear()
+    assert status("runrail.example.com") == status("runrail.example.com.") == 200
+    assert status("ops.internal:8080") == status("box.lan") == 200
+    assert status("evil.example") == 403
+    monkeypatch.setenv("RUNRAIL_ALLOWED_HOSTS", "*")
+    get_settings.cache_clear()
+    assert status("evil.example") == 200, "* turns the check off"
+
+
+def test_a_websocket_from_another_site_is_refused(client):
+    """Browsers do not hold WebSockets to the same-origin policy, so any tab
+    could open one and read live logs and run events. The UI's own page, the
+    dev proxy and header-less clients still connect."""
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/ws", headers={"Origin": "https://evil.example"}):
+            pass
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/ws/task-runs/1/logs", headers={"Origin": "null"}):
+            pass
+    for headers in ({"Origin": "http://127.0.0.1"}, {"Origin": "http://localhost:5173"}, {}):
+        with client.websocket_connect("/api/ws", headers=headers) as ws:
+            ws.send_text("ping")
 
 
 def test_saving_a_retention_figure_applies_it_now(client):
