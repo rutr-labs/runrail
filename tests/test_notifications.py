@@ -121,3 +121,71 @@ def test_payload_shape_follows_receiver():
     # Newer Power Platform endpoints and legacy connector URLs count as Teams too.
     assert _payload_for("https://x.api.powerplatform.com/flows/y", "t", {})["type"] == "message"
     assert _payload_for("https://contoso.webhook.office.com/webhookb2/z", "t", {})["type"] == "message"
+
+
+def test_apprise_targets_go_through_apprise(monkeypatch):
+    """A URL with any other scheme is Apprise's: added, then notified with the
+    message as its body. The structured fields have no place in a text body."""
+    import sys
+    import types
+
+    sent = {}
+
+    class FakeApprise:
+        def add(self, url):
+            sent["url"] = url
+            return True
+
+        def notify(self, body, title=""):
+            sent["title"], sent["body"] = title, body
+            return True
+
+    module = types.ModuleType("apprise")
+    module.Apprise = FakeApprise
+    monkeypatch.setitem(sys.modules, "apprise", module)
+
+    from runrail.notify import deliver
+
+    assert deliver("discord://123/abc", "boom", event="run_failed") is None
+    assert sent == {"url": "discord://123/abc", "title": "RunRail", "body": "boom"}
+
+
+def test_apprise_failure_returns_its_own_reason(monkeypatch):
+    """Apprise reports failures by logging, not by raising; the UI shows the
+    warning it captured rather than a bare False."""
+    import sys
+    import types
+
+    class Entry:
+        level, message = "WARNING", "A Connection error occurred"
+
+    class Result:
+        def logs(self):
+            return iter([Entry()])
+
+        def __bool__(self):
+            return False
+
+    class FakeApprise:
+        def add(self, url):
+            return True
+
+        def notify(self, body, title=""):
+            return Result()
+
+    module = types.ModuleType("apprise")
+    module.Apprise = FakeApprise
+    monkeypatch.setitem(sys.modules, "apprise", module)
+
+    from runrail.notify import deliver
+
+    assert deliver("discord://123/abc", "boom") == "A Connection error occurred"
+
+
+def test_apprise_extra_missing_says_how_to_install_it(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "apprise", None)  # import apprise -> ImportError
+    from runrail.notify import deliver
+
+    assert "runrail[apprise]" in deliver("discord://123/abc", "boom")

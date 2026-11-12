@@ -251,3 +251,52 @@ def test_saving_a_retention_figure_applies_it_now(client):
     assert system.cleanup._claim(30)
     assert system.cleanup.start(30) is False and system.cleanup.run(30, claimed=False) is None
     system.cleanup.state["running"] = False
+
+
+def test_apprise_urls_are_valid_targets_and_labelled_by_scheme(client):
+    saved = client.put("/api/settings", json={"notify_webhook_url": "json://127.0.0.1:9/hook"})
+    assert saved.status_code == 200
+    assert setting(client, "notify_webhook_url")["value"] == "json://127.0.0.1:9/hook"
+    # Apprise-shaped but not a URL at all is still refused.
+    assert client.put("/api/settings", json={"notify_webhook_url": "discord:"}).status_code == 422
+    # The UI names the service, never the token Apprise URLs often carry.
+    assert notify.target_label("json://127.0.0.1:9/hook") == "json"
+    assert notify.target_label("pover://user@apptoken") == "pover"
+
+
+def test_a_target_apprise_rejects_is_refused_at_save(client, monkeypatch):
+    import logging
+    import sys
+    import types
+
+    class FakeApprise:
+        def add(self, url):
+            logging.getLogger("apprise").warning("Unsupported URL: %s", url)
+            return False
+
+    module = types.ModuleType("apprise")
+    module.Apprise = FakeApprise
+    monkeypatch.setitem(sys.modules, "apprise", module)
+    refused = client.put("/api/settings", json={"notify_webhook_url": "nonsense://x"})
+    assert refused.status_code == 422
+    assert "Unsupported URL" in refused.json()["detail"]
+
+
+def test_workflow_targets_are_checked_on_save(client):
+    body = {"name": "bad-target", "notify_webhook_url": "nonsense"}
+    assert client.post("/api/workflows", json=body).status_code == 422
+    body["notify_webhook_url"] = "json://127.0.0.1:9/hook"
+    assert client.post("/api/workflows", json=body).status_code == 201
+
+
+def test_a_response_does_not_revalidate_the_stored_target(client, monkeypatch):
+    """WorkflowOut overrides the input validator by the same name: reading a
+    workflow must not load Apprise again (or refuse a URL it already took)."""
+    created = client.post("/api/workflows", json={
+        "name": "stored-target", "notify_webhook_url": "json://127.0.0.1:9/hook"}).json()
+
+    def boom(value):
+        raise AssertionError("stored targets are not validated again")
+
+    monkeypatch.setattr("runrail.schemas.check_target", boom)
+    assert client.get(f"/api/workflows/{created['id']}").status_code == 200

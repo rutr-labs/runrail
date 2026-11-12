@@ -10,7 +10,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY --from=ui /src/runrail/web/static ./src/runrail/web/static
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[apprise]"
 ENV RUNRAIL_HOME=/data RUNRAIL_HOST=0.0.0.0
 VOLUME /data
 EXPOSE 8080

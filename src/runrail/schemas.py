@@ -22,6 +22,7 @@ from runrail.models import (
     ServiceStopReason,
     TaskType,
 )
+from runrail.notify import check_target
 from runrail.run_parameters import check_definitions
 from runrail.services.windows import validate_windows
 
@@ -133,6 +134,13 @@ class WorkflowIn(BaseModel):
     def _valid_run_form(cls, value: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         return check_definitions(value)
 
+    @field_validator("notify_webhook_url")
+    @classmethod
+    def _valid_target(cls, value: str | None) -> str | None:
+        # A webhook or an Apprise URL; "typo at save" beats "typo discovered by
+        # the failure it was meant to report".
+        return check_target(value)
+
     @field_validator("lock_resource")
     @classmethod
     def _blank_resource_is_no_lock(cls, value: str | None) -> str | None:
@@ -187,6 +195,11 @@ class WorkflowOut(WorkflowIn, ORMModel):
     @classmethod
     def _valid_run_form(cls, value: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         return value  # shown as stored; it was checked on the way in
+
+    @field_validator("notify_webhook_url")
+    @classmethod
+    def _valid_target(cls, value: str | None) -> str | None:
+        return value  # checked on the way in; no Apprise load per response
 
     @field_validator("schedule_cron")
     @classmethod
@@ -391,6 +404,11 @@ class ServiceIn(BaseModel):
     @classmethod
     def _blank_is_no_lock(cls, value: str | None) -> str | None:
         return (value or "").strip() or None
+
+    @field_validator("notify_webhook_url")
+    @classmethod
+    def _valid_target(cls, value: str | None) -> str | None:
+        return check_target(value)
 
     @model_validator(mode="after")
     def _schedule_needs_windows(self) -> "ServiceIn":
