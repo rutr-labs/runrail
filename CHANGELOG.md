@@ -4,6 +4,17 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 
 Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any release that is safe to upgrade into without doing anything: new features that are opt-in, fixes, migrations that only add. The middle one (0.**9**.0) moves only when upgrading asks something of you or changes results: a setting, CLI flag or API field renamed or removed, or behaviour that changes what a run produces. 1.0 is when RunRail declares that stable, after which these follow semver's usual meaning.
 
+## [Unreleased]
+
+### Added
+- **Apprise as a notification target.** Any URL whose scheme is not http(s) —
+  `discord://`, `tgram://`, `pover://`, `mailto://` and the rest of Apprise's
+  services — is delivered through [Apprise](https://github.com/caronc/apprise),
+  in the default webhook or a workflow's or service's own. It is an optional
+  extra (`pip install 'runrail[apprise]'`); without it a delivery says how to
+  install it. Settings and forms check the URL on save, and a test message
+  names the service rather than echoing a token.
+
 ## [0.8.2] — 2026-10-20
 
 Secrets, run forms, and a comparison with the last good run. Everything here

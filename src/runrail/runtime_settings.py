@@ -19,7 +19,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -59,15 +58,9 @@ class Definition:
 
 
 def _optional_url(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    if not isinstance(value, str):
-        raise ValueError("must be an http(s) URL")
-    value = value.strip()
-    parts = urlsplit(value)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise ValueError("must be an http(s) URL with a host")
-    return value.rstrip("/")
+    """A webhook or Apprise URL; notify owns what either one means."""
+    from runrail.notify import check_target
+    return check_target(value)
 
 
 def _optional_days(value: Any) -> int | None:
@@ -138,7 +131,8 @@ DEFINITIONS: tuple[Definition, ...] = (
     Definition("notify_webhook_url", "notify_webhook_url", None, _optional_url,
                "Default webhook",
                "Where alerts go unless a workflow or service names its own. Slack and "
-               "Teams incoming webhooks work as they are."),
+               "Teams incoming webhooks work as they are; any Apprise URL (discord://, "
+               "pover://, mailto://…) needs the apprise extra."),
     Definition("notify_events", None, list(EVENT_KINDS), _events, "Events to send",
                "Kinds of alert that reach the webhook. Everything still shows in Activity."),
     Definition("quiet_hours", None, None, _quiet_hours, "Quiet hours",

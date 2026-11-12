@@ -9,7 +9,6 @@ background measurements with their age attached.
 import tempfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -62,7 +61,7 @@ def test_default_webhook(db: Session = Depends(get_db)):
     if not url:
         raise HTTPException(400, "No default webhook is set")
     error = notify.deliver(url, "🔔 RunRail: test message from Settings.", event="test")
-    return {"ok": error is None, "error": error, "url_host": urlsplit(url).hostname}
+    return {"ok": error is None, "error": error, "url_host": notify.target_label(url)}
 
 
 @router.get("/system/status")

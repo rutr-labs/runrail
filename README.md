@@ -75,7 +75,7 @@ A few workflows later, the dashboard looks like this:
 
 **Notebooks come out the other end as reports.** An executed notebook renders to HTML on the run page, charts and tables included. `/reports/<workflow>/latest` always resolves to the newest successful run, so a link you shared last month still shows this morning's numbers.
 
-Also in the box: retries and backfills, per-workflow concurrency, resource locks so two jobs never enter the same database at once, snooze, auto-pause after repeated failures, deadlines that alert while a run is still going, per-task duration trends, notes on a run, webhooks for Slack and Microsoft Teams, YAML export and apply, and a REST API with live docs at `/docs`.
+Also in the box: retries and backfills, per-workflow concurrency, resource locks so two jobs never enter the same database at once, snooze, auto-pause after repeated failures, deadlines that alert while a run is still going, per-task duration trends, notes on a run, webhooks for Slack, Microsoft Teams and Apprise, YAML export and apply, and a REST API with live docs at `/docs`.
 
 ## A look around
 
@@ -196,6 +196,8 @@ runrail worker --concurrency 8
 Set a default webhook on the Settings page (or `RUNRAIL_NOTIFY_WEBHOOK_URL`), or a webhook per workflow. RunRail posts on the first failure after a success, and again when it recovers. A schedule that breaks at midnight sends one message, not three hundred. Ten event kinds go out in all, covering failures, recoveries, auto-pause, approvals, missed schedules, deadlines and services in a crash loop; Settings lets you switch kinds off and set quiet hours, during which nothing is posted — what happened overnight is in Activity in the morning.
 
 Slack and custom receivers get JSON whose `text` field renders directly. For Microsoft Teams, make a Workflow from the "when a webhook request is received" template (Teams → channel → Workflows) and paste the URL. RunRail recognises Teams URLs and sends the Adaptive Card envelope that flow expects.
+
+Any other Apprise URL — `discord://`, `tgram://`, `pover://`, `mailto://` and the rest of Apprise's services — is delivered through [Apprise](https://github.com/caronc/apprise), which is an optional extra: `pip install 'runrail[apprise]'`. The same URL works in the default webhook, a workflow's or a service's own; Apprise URL options such as `?priority=1` travel in the URL.
 
 ## Architecture
 

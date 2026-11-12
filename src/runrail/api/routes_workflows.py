@@ -1,5 +1,3 @@
-from urllib.parse import urlsplit
-
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -158,7 +156,7 @@ def test_notification(object_id: int, db: Session = Depends(get_db)):
                            event="test", workflow=workflow.name)
     workflow.webhook_error, workflow.webhook_error_at = error, (now() if error else None)
     db.commit()
-    return {"ok": error is None, "error": error, "url_host": urlsplit(url).hostname}
+    return {"ok": error is None, "error": error, "url_host": notify.target_label(url)}
 
 
 @router.delete("/workflows/{object_id}", status_code=204)

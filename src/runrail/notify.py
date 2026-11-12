@@ -10,6 +10,11 @@ along. Microsoft Teams retired the Office 365 connector webhooks (which also
 rendered "text") in favor of Power Automate's "when a Teams webhook request is
 received" flow — its standard template only posts Adaptive Cards it finds in
 the "attachments" array — so Teams-shaped URLs get that envelope instead.
+
+A URL with any other scheme is handed to Apprise, which knows its own
+(discord://, pover://, mailto://…). That keeps RunRail's built-in webhook path
+unchanged and its optional dependency optional: without the apprise extra a
+delivery says how to install it.
 """
 
 import json
@@ -40,6 +45,72 @@ def _is_teams_url(url: str) -> bool:
     return host.endswith(_TEAMS_HOST_SUFFIXES)
 
 
+#: What a delivery says when the apprise extra is not installed.
+_APPRISE_MISSING = "Apprise is not installed: pip install 'runrail[apprise]'"
+
+
+def _is_apprise_url(url: str) -> bool:
+    """Any scheme but http(s) is Apprise's. A bare host has no scheme and stays
+    on the webhook path, failing exactly as it always did."""
+    parts = urllib.parse.urlsplit(url)
+    return bool(parts.scheme) and parts.scheme not in ("http", "https") and "://" in url
+
+
+def target_label(url: str) -> str:
+    """What to call the receiver in the UI: a webhook is its host, an Apprise
+    URL only its scheme, because the host part of those is often a token."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme in ("http", "https"):
+        return parts.hostname or ""
+    return parts.scheme
+
+
+def _apprise_logs() -> tuple[list[str], logging.Handler]:
+    """Apprise reports a bad URL and a failed delivery by logging, not by
+    raising: hold on to what it says during one call so it can be shown."""
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record.getMessage())
+
+    handler = _Capture(logging.WARNING)
+    logging.getLogger("apprise").addHandler(handler)
+    return records, handler
+
+
+def check_target(value: object) -> str | None:
+    """A webhook URL or an Apprise URL, as the settings and forms accept it.
+
+    Apprise URLs are checked with Apprise itself when the extra is installed;
+    without it only their shape is checked, so a save still works and the
+    delivery is what asks for the install.
+    """
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("must be a URL")
+    value = value.strip()
+    parts = urllib.parse.urlsplit(value)
+    if parts.scheme in ("http", "https"):
+        if not parts.hostname:
+            raise ValueError("must be an http(s) URL with a host")
+        return value.rstrip("/")
+    if not parts.scheme or "://" not in value:
+        raise ValueError("must be an http(s) URL or an Apprise URL such as discord://…")
+    try:
+        import apprise
+    except ImportError:
+        return value
+    records, handler = _apprise_logs()
+    try:
+        if apprise.Apprise().add(value):
+            return value
+        raise ValueError(records[-1] if records else "Apprise does not recognise this URL")
+    finally:
+        logging.getLogger("apprise").removeHandler(handler)
+
+
 def _payload_for(url: str, text: str, fields: dict) -> dict:
     if not _is_teams_url(url):
         return {"text": text, **fields}
@@ -67,8 +138,36 @@ def _payload_for(url: str, text: str, fields: dict) -> dict:
     }
 
 
+def _deliver_apprise(url: str, text: str) -> str | None:
+    """One Apprise URL: the library fans out to whichever service it names,
+    and its own logs say why a delivery failed."""
+    try:
+        import apprise
+    except ImportError:
+        return _APPRISE_MISSING
+    records, handler = _apprise_logs()
+    try:
+        client = apprise.Apprise()
+        if not client.add(url):
+            return records[-1] if records else "Apprise does not recognise this URL"
+        result = client.notify(text, title="RunRail")
+        if result:
+            return None
+        entries = getattr(result, "logs", None)  # Apprise 2 returns a result
+        for entry in entries() if entries else ():
+            if str(entry.level).upper() in ("WARNING", "ERROR", "CRITICAL"):
+                return str(entry.message)
+        return records[-1] if records else "Apprise could not deliver the message"
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    finally:
+        logging.getLogger("apprise").removeHandler(handler)
+
+
 def deliver(url: str, text: str, **fields) -> str | None:
     """POST one message now; return None on success or the error as text."""
+    if _is_apprise_url(url):
+        return _deliver_apprise(url, text)
     payload = _payload_for(url, text, fields)
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode(), method="POST",
