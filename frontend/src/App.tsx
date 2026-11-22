@@ -10,6 +10,7 @@ import {
   ArrowLeft, Terminal, Download, Settings, ChevronsRight,
   Ban, Menu, X, SlidersHorizontal,
   ShieldAlert, ShieldCheck, CircleSlash, Share2, BookOpen, Lock,
+  Sun, Moon, ArrowRight, MonitorPlay,
 } from 'lucide-react';
 import { api, del, post, put } from './api';
 import { rrws } from './ws';
@@ -19,7 +20,9 @@ import { DagGraph } from './components/DagGraph';
 import { RunHeatmap } from './components/Heatmap';
 import { cronLabel, nextCronOccurrence } from './cron';
 import { ScheduleBuilder } from './components/ScheduleBuilder';
-import { Button, CancelButton, StatusBadge, MetricCard, EmptyState, Modal, PageHeader, TaskTypeBadge, SkeletonCard, HealthChip, LoadingBar, CometCanvas } from './components/ui';
+import { Button, CancelButton, StatusBadge, CountUp, EmptyState, Modal, PageHeader, TaskTypeBadge, SkeletonCard, HealthChip, LoadingBar, CometCanvas } from './components/ui';
+import { PulseRail } from './components/PulseRail';
+import { untilLabel } from './pulseRail';
 import { LogViewer } from './components/LogViewer';
 import { useToast } from './components/toast';
 import { ApprovalGate, ApprovalInbox, useOpenApprovals } from './components/ApprovalGate';
@@ -382,7 +385,7 @@ function Shell() {
               icon on a phone and leave the bell room. */}
           <div className="topbar-actions">
             <button className="cmd-k-btn" onClick={() => setPaletteOpen(true)} aria-label="Open command palette">
-              <Search size={13} /> <span className="cmd-k-label">Search</span>
+              <Search size={13} /> <span className="cmd-k-label">Search or jump to…</span>
               <kbd>{navigator.platform?.includes('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
             </button>
             <NotificationBell />
@@ -426,8 +429,10 @@ function ThemeToggle() {
   };
   return (
     <div className="theme-toggle" role="group" aria-label="Theme">
-      <span className={theme === 'light' ? 'active' : ''} onClick={() => apply('light')}>☀</span>
-      <span className={theme === 'dark' ? 'active' : ''} onClick={() => apply('dark')}>☾</span>
+      <button type="button" className={theme === 'light' ? 'active' : ''} onClick={() => apply('light')}
+              aria-label="Light theme" aria-pressed={theme === 'light'}><Sun size={13} /></button>
+      <button type="button" className={theme === 'dark' ? 'active' : ''} onClick={() => apply('dark')}
+              aria-label="Dark theme" aria-pressed={theme === 'dark'}><Moon size={13} /></button>
     </div>
   );
 }
@@ -583,8 +588,8 @@ function CancelRunButton({ run, onDone, size = 'sm' }: { run: Run; onDone?: () =
     } finally { setBusy(false); }
   };
   return (
-    <Button variant="ghost" size={size} disabled={busy} onClick={cancel} className="cancel-run-btn">
-      <Ban size={12} /> Cancel
+    <Button variant="ghost" size={size} disabled={busy} onClick={cancel} className="cancel-run-btn" title="Cancel this run">
+      <Ban size={12} /> <span className="cancel-run-label">Cancel</span>
     </Button>
   );
 }
@@ -699,6 +704,7 @@ function UpcomingList({ flows }: { flows: Workflow[] }) {
   if (!upcoming.length) {
     return <EmptyState icon={<Clock size={22} />} title="No upcoming schedules" text="Enabled workflows with cron schedules will appear here." />;
   }
+  const today = localDateKey(new Date());
   return (
     <div style={{ padding: '4px 0 8px' }}>
       {upcoming.map(({ flow, next, label }) => (
@@ -708,9 +714,14 @@ function UpcomingList({ flows }: { flows: Workflow[] }) {
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={flow.name}>{flow.name}</div>
             <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 1 }}>{label}</div>
           </div>
-          <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>{next.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{next.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</div>
+          {/* The time, then how far off it is. The date only when it is not
+              today — eight rows each saying today's date said nothing. */}
+          <div className="tl-upcoming-when" title={formatDate(next.toISOString())}>
+            <b>{next.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</b>
+            <span>
+              {localDateKey(next) !== today && `${next.toLocaleDateString(undefined, { weekday: 'short' })} · `}
+              {untilLabel(next.getTime() - Date.now())}
+            </span>
           </div>
         </Link>
       ))}
@@ -727,49 +738,161 @@ type Summary = {
   done_7d: number; success_7d: number; success_rate_7d: number | null;
 };
 
-function WeeklyChart() {
+const CHART_DAYS = 14;
+
+/** Round a chart ceiling up to 1, 2 or 5 × a power of ten, so the gridline
+ *  labels are numbers a person would have picked. */
+function niceCeil(value: number): number {
+  if (value <= 5) return 5;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  for (const step of [1, 2, 5, 10]) if (value <= step * magnitude) return step * magnitude;
+  return 10 * magnitude;
+}
+
+function ActivityChart() {
   // Aggregated server-side so the counts stay correct no matter how many runs
   // a day holds (a client-side bucket of a capped /runs fetch under-counts).
   const [stats, setStats] = useState<Record<string, DailyStat>>({});
+  const [focus, setFocus] = useState<number | null>(null);
   useEffect(() => {
-    api<DailyStat[]>(`/stats/daily?days=7&tz=${encodeURIComponent(viewerZone())}`)
+    api<DailyStat[]>(`/stats/daily?days=${CHART_DAYS}&tz=${encodeURIComponent(viewerZone())}`)
       .then(rows => setStats(Object.fromEntries(rows.map(r => [r.date, r])))).catch(() => {});
   }, []);
-  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   // Local days, matching the buckets the server just counted. setDate rather
   // than setUTCDate, so "today" is the operator's today.
-  const days = Array.from({ length: 7 }, (_, i) => {
+  const days = Array.from({ length: CHART_DAYS }, (_, i) => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() - 6 + i);
+    d.setDate(d.getDate() - (CHART_DAYS - 1) + i);
     const key = localDateKey(d);
     const s = stats[key] ?? { success: 0, failed: 0, other: 0 };
-    return { label: names[d.getDay()], key, ...s, total: s.success + s.failed + s.other };
+    return { ...s, day: d, key, total: s.success + s.failed + s.other };
   });
-  const max = Math.max(...days.map(d => d.total), 1);
+  const ceiling = niceCeil(Math.max(...days.map(d => d.total), 1));
+  const total = days.reduce((sum, d) => sum + d.total, 0);
+  const finished = days.reduce((sum, d) => sum + d.success + d.failed, 0);
+  const succeeded = days.reduce((sum, d) => sum + d.success, 0);
+  const shown = focus != null ? days[focus] : null;
   return (
-    <div className="panel" style={{ marginBottom: 16 }}>
-      <div className="panel-head"><div><h2>7-day activity</h2><p>Runs per day by outcome</p></div></div>
-      <div className="weekly-chart-wrap">
-        <div className="weekly-chart">
-          {days.map(d => (
-            <div key={d.key} className="chart-col">
-              <div className="chart-bars">
-                <div className="chart-bar failed" style={{ height: `${(d.failed / max) * 100}%` }} title={`${d.failed} failed`} />
-                <div className="chart-bar other" style={{ height: `${(d.other / max) * 100}%` }} title={`${d.other} other`} />
-                <div className="chart-bar success" style={{ height: `${(d.success / max) * 100}%` }} title={`${d.success} succeeded`} />
-              </div>
-              <span className="chart-label">{d.label}</span>
-              {d.total > 0 && <span className="chart-count">{d.total}</span>}
-            </div>
-          ))}
+    <div className="panel activity-chart" style={{ marginBottom: 16 }}>
+      <div className="panel-head">
+        <div><h2>Activity</h2><p>Runs per day by outcome, last {CHART_DAYS} days</p></div>
+        {/* One readout for the whole chart: the period's totals at rest, the
+            day under the pointer while it is over a column. */}
+        <p className="ac-readout" aria-live="off">
+          {shown ? (
+            <>
+              <b>{shown.total.toLocaleString()}</b>
+              <span>{shown.day.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+              {shown.failed > 0 && <em>{shown.failed} failed</em>}
+            </>
+          ) : (
+            <>
+              <b>{total.toLocaleString()}</b>
+              <span>runs</span>
+              {finished > 0 && <span>{Math.round((succeeded / finished) * 100)}% succeeded</span>}
+            </>
+          )}
+        </p>
+      </div>
+      <div className="ac-plot" onMouseLeave={() => setFocus(null)}>
+        <div className="ac-grid" aria-hidden="true">
+          <span><i>{ceiling.toLocaleString()}</i></span>
+          <span><i>{(ceiling / 2).toLocaleString()}</i></span>
+          <span />
+        </div>
+        <div className="ac-cols">
+          {days.map((d, i) => {
+            const label = `${d.day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}: `
+              + (d.total ? `${d.total} runs, ${d.failed} failed` : 'no runs');
+            const body = (
+              <>
+                <span className="ac-track">
+                  <span className="ac-stack" style={{ height: `${(d.total / ceiling) * 100}%`, animationDelay: `${i * 22}ms` }}>
+                    {d.failed > 0 && <i className="failed" style={{ flexGrow: d.failed }} />}
+                    {d.other > 0 && <i className="other" style={{ flexGrow: d.other }} />}
+                    {d.success > 0 && <i className="success" style={{ flexGrow: d.success }} />}
+                  </span>
+                </span>
+                <span className="ac-label">{d.day.toLocaleDateString(undefined, { weekday: 'narrow' })}</span>
+              </>
+            );
+            const cls = clsx('ac-col', i === CHART_DAYS - 1 && 'is-today', focus === i && 'is-focus');
+            // Only the days that lead somewhere are links — as on the heatmap.
+            return d.total > 0
+              ? <Link key={d.key} to={`/runs?day=${d.key}`} className={cls} aria-label={label}
+                      onMouseEnter={() => setFocus(i)} onFocus={() => setFocus(i)} onBlur={() => setFocus(null)}>{body}</Link>
+              : <div key={d.key} className={cls} aria-label={label} onMouseEnter={() => setFocus(i)}>{body}</div>;
+          })}
         </div>
       </div>
     </div>
   );
 }
 
+/* ─── Dashboard instruments ────────────────────────────────
+   The headline numbers as one strip rather than five cards: a row of gauges
+   reads as a single instrument, and none of them has to fill a box. */
+
+/** "1m 49s" with the digits at full size and the units stepped down beside
+ *  them, so a duration scans as a number like its neighbours. */
+function UnitValue({ text }: { text: string }) {
+  if (!/\d/.test(text)) return <>{text}</>;
+  return (
+    <>
+      {text.split(/(\d+(?:\.\d+)?|<)/).filter(part => part.trim()).map((part, i) =>
+        /^[\d.<]+$/.test(part) ? <span key={i}>{part}</span> : <small key={i}>{part.trim()}</small>)}
+    </>
+  );
+}
+
+function Instrument({ label, value, note, tone = 'default', to, children }: {
+  label: string; value: ReactNode; note?: ReactNode;
+  tone?: 'default' | 'success' | 'danger' | 'running' | 'warning';
+  to?: string; children?: ReactNode;
+}) {
+  const body = (
+    <>
+      <span className="instrument-label"><i aria-hidden="true" />{label}</span>
+      <strong className="instrument-value">{typeof value === 'number' ? <CountUp value={value} /> : value}</strong>
+      {children}
+      {note && <span className="instrument-note">{note}</span>}
+    </>
+  );
+  const cls = clsx('instrument', `instrument-${tone}`);
+  return to ? <Link className={cls} to={to}>{body}</Link> : <div className={cls}>{body}</div>;
+}
+
+const METER_DOTS = 24;
+
+/** A ratio as a rail of dots: the frozen-comet idiom, used as a gauge. */
+function DotMeter({ ratio }: { ratio: number }) {
+  const lit = Math.round(Math.min(1, Math.max(0, ratio)) * METER_DOTS);
+  return (
+    <span className="dot-meter" aria-hidden="true">
+      {Array.from({ length: METER_DOTS }, (_, i) => <i key={i} className={i < lit ? 'on' : undefined} />)}
+    </span>
+  );
+}
+
+/** The hero's date line. Its own ticker, so a minute passing re-renders one
+ *  line and not the dashboard. */
+function HeroClock({ mood }: { mood: string }) {
+  const now = new Date(useNow(true, 15_000));
+  return (
+    <div className="dashboard-eyebrow">
+      <i className={`mood-orb mood-${mood}`} aria-hidden="true" />
+      <span>{now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</span>
+      <time>{now.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</time>
+    </div>
+  );
+}
+
 /* ─── Dashboard ───────────────────────────────────────── */
+/** How many of the newest runs the dashboard holds. Fewer than this coming
+ *  back means it holds all of them, which the rail needs to know. */
+const RECENT_LIMIT = 100;
+
 function Dashboard() {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [flows, setFlows] = useState<Workflow[] | null>(null);
@@ -781,11 +904,11 @@ function Dashboard() {
   // fetch; headline metrics come from the server-aggregated /stats/summary so
   // they don't under-count once a workflow overflows the fetch limit.
   const loadStats = () => {
-    void api<Run[]>('/runs?limit=100').then(setRuns).catch(() => {});
+    void api<Run[]>(`/runs?limit=${RECENT_LIMIT}`).then(setRuns).catch(() => {});
     void api<Summary>('/stats/summary').then(setSummary).catch(() => {});
   };
   const load = () => {
-    api<Run[]>('/runs?limit=100').then(setRuns).catch(() => setRuns([]));
+    api<Run[]>(`/runs?limit=${RECENT_LIMIT}`).then(setRuns).catch(() => setRuns([]));
     api<Workflow[]>('/workflows').then(setFlows).catch(() => setFlows([]));
     api<Summary>('/stats/summary').then(setSummary).catch(() => {});
   };
@@ -834,13 +957,36 @@ function Dashboard() {
     }
   };
 
+  const activeFlows = flows.filter(w => w.enabled).length;
+  // Only the states that have something in them: "0 running · 0 queued · 2
+  // waiting" spends two thirds of the line on nothing.
+  const liveNote = [
+    runningCount && `${runningCount} running`,
+    queuedCount && `${queuedCount} queued`,
+    parked && `${parked} waiting on you`,
+  ].filter(Boolean).join(' · ') || 'Nothing running or queued';
+  // One verdict, one colour, one next step — all three read from the same
+  // order of urgency, so the headline never points one way and the button
+  // another.
+  const mood = empty ? 'calm' : serviceCount.down ? 'down' : waitingRuns ? 'waiting' : failed24h ? 'failed' : 'calm';
+  const reviewApprovals = () => {
+    const waiting = [...new Set((approvals ?? []).map(row => row.run_id))];
+    if (waiting.length === 1) { navTo(`/runs/${waiting[0]}`); return; }
+    document.querySelector('.approval-inbox')?.scrollIntoView({ behavior: REDUCED_MOTION() ? 'auto' : 'smooth', block: 'center' });
+  };
+  const next = empty ? { label: 'Create a workflow', icon: <Plus size={14} />, go: () => navTo('/workflows') }
+    : mood === 'down' ? { label: 'Open services', icon: <Server size={14} />, go: () => navTo('/services') }
+    : mood === 'waiting' ? { label: waitingRuns === 1 ? 'Review the approval' : `Review ${waitingRuns} approvals`, icon: <ShieldAlert size={14} />, go: reviewApprovals }
+    : mood === 'failed' ? { label: 'Review failures', icon: <AlertTriangle size={14} />, go: () => navTo('/runs?status=failed') }
+    : { label: 'View workflows', icon: <GitBranch size={14} />, go: () => navTo('/workflows') };
+
   return (
     <>
-      <div className="dashboard-hero">
+      <div className={`dashboard-hero mood-${mood}`}>
         <div className="dashboard-hero-content">
-          <div className="dashboard-eyebrow">CONTROL PLANE</div>
+          <HeroClock mood={mood} />
           {/* The headline is the dashboard's verdict, so it has to agree with
-              the status line under it: what needs a person, in that order. */}
+              the action under it: what needs a person, in that order. */}
           <h1 className="dashboard-title">
             {empty ? 'Welcome to RunRail'
               : serviceCount.down ? `${serviceCount.down === 1 ? 'A service is' : `${serviceCount.down} services are`} down.`
@@ -851,54 +997,40 @@ function Dashboard() {
           <p className="dashboard-sub">
             {empty
               ? 'Schedules, retries, logs, and history for the scripts you already have.'
-              : `${flows.filter(w => w.enabled).length} active workflow${flows.filter(w => w.enabled).length === 1 ? '' : 's'} · ${runs24h} run${runs24h === 1 ? '' : 's'} in the last 24 hours`}
+              : (
+                <>
+                  {activeFlows} active workflow{activeFlows === 1 ? '' : 's'}
+                  <i aria-hidden="true">·</i>
+                  {runs24h.toLocaleString()} run{runs24h === 1 ? '' : 's'} in the last 24 hours
+                  {serviceCount.total > 0 && (
+                    <>
+                      <i aria-hidden="true">·</i>
+                      <Link to="/services" className={serviceCount.down ? 'is-down' : undefined}>
+                        {serviceCount.down
+                          ? `${serviceCount.down} service${serviceCount.down === 1 ? '' : 's'} down`
+                          : `${serviceCount.up} of ${serviceCount.total} service${serviceCount.total === 1 ? '' : 's'} up`}
+                      </Link>
+                    </>
+                  )}
+                </>
+              )}
           </p>
           <div className="dashboard-cta-row">
-            <Button onClick={() => navTo('/workflows')}><GitBranch size={14} /> {empty ? 'Create a workflow' : 'View workflows'}</Button>
-            {!empty && <Link className="text-link" to="/runs">Open run history →</Link>}
+            <Button onClick={next.go}>{next.icon} {next.label}</Button>
+            {!empty && mood !== 'calm' && <Link className="text-link" to="/workflows">Workflows <ArrowRight size={13} /></Link>}
+            {!empty && <Link className="text-link" to="/runs">Run history <ArrowRight size={13} /></Link>}
           </div>
-          {!empty && (
-            <div className="dash-status-bar">
-              <span className={`dash-stat${runningCount ? ' stat-running' : ''}`}>
-                <Activity size={12} /> {runningCount} running
-              </span>
-              <span className="dash-sep">·</span>
-              <span className={`dash-stat${queuedCount ? ' stat-queued' : ''}`}>
-                <Clock size={12} /> {queuedCount} queued
-              </span>
-              <span className="dash-sep">·</span>
-              <span className="dash-stat"><AlertTriangle size={12} /> {failed24h} failed today</span>
-              {waitingRuns > 0 && (
-                <>
-                  <span className="dash-sep">·</span>
-                  <span className="dash-stat stat-approval">
-                    <ShieldAlert size={12} /> {waitingRuns} run{waitingRuns === 1 ? '' : 's'} waiting for you
-                  </span>
-                </>
-              )}
-              {serviceCount.total > 0 && (
-                <>
-                  <span className="dash-sep">·</span>
-                  <Link to="/services" className={`dash-stat dash-stat-link${serviceCount.down ? ' stat-down' : serviceCount.up ? ' stat-up' : ''}`}>
-                    <Server size={12} />
-                    {serviceCount.down
-                      ? `${serviceCount.down} service${serviceCount.down === 1 ? '' : 's'} down`
-                      : `${serviceCount.up}/${serviceCount.total} service${serviceCount.total === 1 ? '' : 's'} up`}
-                  </Link>
-                </>
-              )}
-            </div>
-          )}
         </div>
         {!empty && (
           <div className="dashboard-hero-aside">
             <div className="dashboard-hero-aside-head">
               <span>Activity</span>
-              <Link className="panel-link" to="/wallboard">Wallboard →</Link>
+              <Link className="panel-link" to="/wallboard"><MonitorPlay size={12} /> Wallboard</Link>
             </div>
             <RunHeatmap selectable />
           </div>
         )}
+        {!empty && <PulseRail runs={runs} flows={flows} complete={runs.length < RECENT_LIMIT} />}
       </div>
 
       {empty ? (
@@ -909,17 +1041,31 @@ function Dashboard() {
         </>
       ) : (
         <>
-          <div className="metric-grid dashboard-metric-grid">
-            <MetricCard icon={<Activity size={18} />} label="Live runs" value={liveCount} tone={parked ? 'warning' : liveCount ? 'running' : 'default'} note={parked ? `${parked} waiting on a person` : 'Running and queued'} />
-            <MetricCard icon={<Zap size={18} />} label="Runs · 24h" value={runs24h} note={`${succeeded24h} succeeded`} />
-            <MetricCard icon={<CheckCircle2 size={18} />} label="Success rate · 7d" value={successRate != null ? `${successRate}%` : '—'} tone={successRate != null && successRate < 80 ? 'warning' : 'success'} note={`${done7d} completed runs`} />
-            <MetricCard icon={<AlertTriangle size={18} />} label="Failures · 24h" value={failed24h} tone={failed24h ? 'danger' : 'default'} note={failed24h ? 'Needs attention' : 'All clear'} />
-            <MetricCard icon={<Clock size={18} />} label="Avg duration · 24h" value={avgDuration != null ? formatDuration(avgDuration) : '—'} note="Completed runs" />
+          <div className="instruments">
+            <Instrument label="Live now" value={liveCount}
+                        tone={parked ? 'warning' : liveCount ? 'running' : 'default'}
+                        note={liveNote}>
+              {runningCount > 0 && <LoadingBar size="sm" className="instrument-live" />}
+            </Instrument>
+            <Instrument label="Runs · 24h" value={runs24h} note={`${succeeded24h.toLocaleString()} succeeded`} />
+            <Instrument label="Success · 7d"
+                        value={successRate != null ? <>{successRate}<small>%</small></> : '—'}
+                        tone={successRate == null ? 'default' : successRate < 80 ? 'warning' : 'success'}
+                        note={`${done7d.toLocaleString()} completed runs`}>
+              {successRate != null && <DotMeter ratio={successRate / 100} />}
+            </Instrument>
+            <Instrument label="Failures · 24h" value={failed24h}
+                        tone={failed24h ? 'danger' : 'default'}
+                        to={failed24h ? '/runs?status=failed' : undefined}
+                        note={failed24h ? 'Needs attention' : 'All clear'} />
+            <Instrument label="Avg duration · 24h"
+                        value={avgDuration != null ? <UnitValue text={formatDuration(avgDuration)} /> : '—'}
+                        note="Completed runs" />
           </div>
 
           <div className="dashboard-panels">
             <div>
-              <WeeklyChart />
+              <ActivityChart />
               <div className="panel dashboard-lead-panel">
                 <div className="panel-head">
                   <div><h2>Recent runs</h2><p>The latest executions across all workflows</p></div>
@@ -928,6 +1074,16 @@ function Dashboard() {
                 {runs.length > 0
                   ? <RunTable runs={runs.slice(0, 8)} flows={flows} onChanged={load} />
                   : <EmptyState icon={<History size={22} />} title="No runs yet" text="Trigger a workflow to see it here." />}
+              </div>
+              {/* What can be started and what will start on its own, side by
+                  side under the history. They used to sit at the bottom of the
+                  narrow column, which ran three times the length of this one. */}
+              <div className="dashboard-pair">
+                <WorkflowQuickList flows={flows} runs={runs} onRun={runNow} />
+                <div className="panel">
+                  <div className="panel-head"><div><h2>Upcoming</h2><p>Next scheduled executions</p></div></div>
+                  <UpcomingList flows={flows} />
+                </div>
               </div>
             </div>
             <div>
@@ -943,11 +1099,6 @@ function Dashboard() {
                 {liveRuns.length > 0
                   ? <div style={{ padding: '6px 0' }}>{liveRuns.map(r => <LiveRunRow key={r.id} run={r} flows={flows} />)}</div>
                   : <EmptyState icon={<Activity size={22} />} title="No runs live" text="Runs appear here the moment they queue or start." />}
-              </div>
-              <WorkflowQuickList flows={flows} runs={runs} onRun={runNow} />
-              <div className="panel" style={{ marginBottom: 16 }}>
-                <div className="panel-head"><div><h2>Upcoming</h2><p>Next scheduled executions</p></div></div>
-                <UpcomingList flows={flows} />
               </div>
               {failures.length > 0 && (
                 <div className="panel">
@@ -1153,6 +1304,9 @@ function Runs() {
   useEffect(() => {
     const linked = params.get('workflow');
     if (linked) setWorkflowId(linked);
+    // And a status, for the dashboard's "Review failures".
+    const linkedStatus = params.get('status');
+    if (linkedStatus) setStatus(linkedStatus);
   }, [params]);
   useEffect(() => {
     const u1 = rrws.on('run_created', loadStats);
@@ -1257,7 +1411,7 @@ function Runs() {
               </div>
             )}
           </div>
-          {runs.length > 0 && <WeeklyChart />}
+          {runs.length > 0 && <ActivityChart />}
         </div>
 
         <div>

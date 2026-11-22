@@ -31,6 +31,8 @@ type DayStat = { date: string; success: number; failed: number; other: number };
 const CELL = 12;
 const GAP = 3;
 const DAY_MS = 86_400_000;
+/** Share of a day's finished runs that must fail before the day reads as mixed. */
+const MIXED_RATE = 0.05;
 
 /** Selectable history ranges. 6m = 26 weeks = 182 days (API caps days at 366). */
 const RANGES = [
@@ -62,9 +64,12 @@ function cellColor(stat: DayStat | undefined): string {
     return 'var(--hm-empty, rgba(127,127,127,0.10))';
   }
   const total = stat.success + stat.failed;
-  if (stat.failed > 0) {
-    return stat.failed >= Math.max(1, total / 2) ? fade('var(--danger)', 0.85) : fade('var(--warning)', 0.85);
-  }
+  if (stat.failed >= Math.max(1, total / 2)) return fade('var(--danger)', 0.85);
+  // Amber is for a day that went noticeably wrong, not for any day with a
+  // failure in it: at a few hundred runs a day every day has one, and a grid
+  // that is amber edge to edge says nothing. One failure in twenty is the line
+  // — which a quiet workflow still crosses with a single failed run.
+  if (stat.failed > 0 && stat.failed / total >= MIXED_RATE) return fade('var(--warning)', 0.85);
   const intensity = stat.success >= 100 ? 1 : stat.success >= 25 ? 0.75 : stat.success >= 5 ? 0.5 : 0.3;
   return fade('var(--success)', intensity);
 }

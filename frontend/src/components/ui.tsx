@@ -47,7 +47,7 @@ function useCountUp(target: number, duration = 600): number {
   return value;
 }
 
-function CountUp({ value }: { value: number }) {
+export function CountUp({ value }: { value: number }) {
   return <>{useCountUp(value)}</>;
 }
 
