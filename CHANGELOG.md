@@ -4,6 +4,18 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 
 Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any release that is safe to upgrade into without doing anything: new features that are opt-in, fixes, migrations that only add. The middle one (0.**9**.0) moves only when upgrading asks something of you or changes results: a setting, CLI flag or API field renamed or removed, or behaviour that changes what a run produces. 1.0 is when RunRail declares that stable, after which these follow semver's usual meaning.
 
+## [Unreleased]
+
+### Fixed
+- **Retry attempts no longer overlap on a run's timeline.** A task that failed
+  in a fraction of a second and retried straight away had its attempts drawn
+  on top of each other, because each bar's minimum width ran over the next
+  attempt, and bars near the end of the axis were all held at the same spot.
+  A lane's bars are now placed together: each keeps its true start where it
+  can, is at least 10px wide, and moves only as far as it needs to so it
+  neither covers its neighbour nor leaves the track. Hovering still shows
+  the true times.
+
 ## [0.8.2] — 2026-10-20
 
 Secrets, run forms, and a comparison with the last good run. Everything here
