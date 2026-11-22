@@ -235,8 +235,11 @@ const REASON_LABEL: Record<string, string> = {
   snoozed: 'A snooze was set to pause runs, not just alerts',
 };
 
-export function ScheduleGapsPanel({ workflowId, days = DEFAULT_GAP_DAYS, state, className }: {
+export function ScheduleGapsPanel({ workflowId, days = DEFAULT_GAP_DAYS, state, className, chained = false }: {
   workflowId: number;
+  /** The workflow runs after other workflows: no clock owes it a run either,
+   *  but "on demand only" would be wrong. */
+  chained?: boolean;
   /** Scan window in days; ignored when `state` is supplied. */
   days?: number;
   /** Pass the result of useScheduleGaps when the host already owns the payload
@@ -297,7 +300,13 @@ export function ScheduleGapsPanel({ workflowId, days = DEFAULT_GAP_DAYS, state, 
   let headline = 'Every scheduled run happened';
   let subline = '';
 
-  if (!cron) {
+  if (!cron && chained) {
+    tone = 'muted';
+    Glyph = CalendarOff;
+    headline = 'Starts after other workflows';
+    subline = 'No clock owes this workflow a run, so none can be missed here. '
+      + 'If it has not started, the strip at the top says what it is waiting for.';
+  } else if (!cron) {
     tone = 'muted';
     Glyph = CalendarOff;
     headline = 'Runs on demand only';

@@ -18,7 +18,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session, selectinload
 
-from runrail import runtime_settings, variables
+from runrail import chaining, runtime_settings, variables
 from runrail.api.ws import manager as _ws_manager
 from runrail.config import get_settings
 from runrail.db import SessionLocal
@@ -707,6 +707,15 @@ def execute_workflow_run(db: Session, run: WorkflowRun) -> None:
     if landed in (RunStatus.success, RunStatus.failed):
         run.status = landed
         notify_run_outcome(db, run)
+    if landed == RunStatus.success:
+        # Whatever runs after this workflow starts now, not at the next minute
+        # check. That check (chaining.sweep) is also the safety net, so a
+        # failure here is logged and never fails the run that just succeeded.
+        try:
+            chaining.after_success(db, run)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            log.warning("Could not start workflows that run after run %s: %s", run.id, exc)
 
 
 def _building_environment(db: Session, run: WorkflowRun) -> Environment | None:
@@ -788,7 +797,8 @@ def _schedule_paused_since_queued(db: Session, run: WorkflowRun) -> bool:
     promising "scheduled runs are skipped outright" ran one anyway. Manual runs,
     retries and resumes are someone's explicit request and still go ahead.
     """
-    if run.trigger_type != TriggerType.schedule or run.resume_count:
+    # A chained run starts on its own just as a scheduled one does.
+    if run.trigger_type not in (TriggerType.schedule, TriggerType.upstream) or run.resume_count:
         return False
     workflow = db.get(Workflow, run.workflow_id)
     if workflow is None:

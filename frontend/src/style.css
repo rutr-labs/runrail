@@ -744,6 +744,11 @@ main {
 .checks label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); cursor: pointer; min-width: 0; }
 .checks label span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .checks input[type="checkbox"] { accent-color: var(--accent); }
+/* "Runs after": the workflow list under the Starts dropdown. */
+.checks.after-picks {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-card-r); max-height: 180px;
+}
 .toggle-field { flex-direction: row !important; align-items: center; justify-content: space-between; }
 .toggle { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
 .toggle input { opacity: 0; width: 0; height: 0; }
@@ -1191,6 +1196,30 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .summary-strip > div > span:first-child { font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
 .summary-strip .status-badge { align-self: flex-start; }
 .summary-strip > div > strong{ font-size: 14px; font-weight: 600; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Chain strip: what a workflow runs after, and what runs after it. */
+.chain-strip {
+  display: flex; flex-direction: column; gap: 8px; margin: -8px 0 20px;
+  padding: 12px 18px; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-xs);
+}
+.chain-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.chain-label {
+  font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase;
+  letter-spacing: 0.05em; min-width: 84px;
+}
+.chain-chips { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.chain-chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--bg-card-r);
+  font-size: 12.5px; color: var(--text-2); text-decoration: none; max-width: 240px;
+}
+.chain-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chain-chip:hover { color: var(--text-1); border-color: var(--border-strong); }
+.chain-chip.done { color: var(--success); border-color: var(--success-border); background: var(--success-soft); }
+.chain-chip.failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+.chain-chip.running { color: var(--running); }
+.chain-summary { font-size: 12px; color: var(--text-3); }
 
 /* Task Rail */
 .task-flow { padding: 20px; display: flex; flex-direction: column; }
