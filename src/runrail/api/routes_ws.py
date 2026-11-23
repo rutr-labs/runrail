@@ -25,8 +25,14 @@ async def global_ws(ws: WebSocket) -> None:
     """Global notification channel – broadcasts run, task-run, and environment events."""
     await manager.connect(ws)
     try:
+        # Says the channel is open for real. A page treats its events as
+        # trustworthy, and stops polling for what they cover, only from here.
+        await ws.send_json({"type": "hello"})
         while True:
-            await ws.receive_text()  # keeps the connection alive; client may send pings
+            # A ping gets a pong, so the page can tell a connection a proxy has
+            # silently dropped from one that is simply quiet.
+            if await ws.receive_text() == "ping":
+                await ws.send_json({"type": "pong"})
     except (WebSocketDisconnect, asyncio.CancelledError):
         # Client left or the server is shutting down — nothing to report.
         manager.disconnect(ws)

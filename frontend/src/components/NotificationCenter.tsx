@@ -10,6 +10,8 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { api } from '../api';
+import { SAFETY_POLL_MS, useLiveEvents } from '../live';
+import { rrws } from '../ws';
 import { timeAgo } from '../format';
 import { Button, EmptyState } from './ui';
 
@@ -249,6 +251,7 @@ export function useActivityFeed(options: ActivityFeedOptions = {}): ActivityFeed
   readRef.current = readAt;
   const aliveRef = useRef(true);
   const inflight = useRef(false);
+  const lastLoaded = useRef(0);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -260,6 +263,7 @@ export function useActivityFeed(options: ActivityFeedOptions = {}): ActivityFeed
     // keeps firing regardless of how long the API takes.
     if (inflight.current) return;
     inflight.current = true;
+    lastLoaded.current = Date.now();
     const params = new URLSearchParams({
       limit: String(limit), window_hours: String(windowHours),
     });
@@ -287,7 +291,13 @@ export function useActivityFeed(options: ActivityFeedOptions = {}): ActivityFeed
     let timer = 0;
     const start = () => {
       window.clearInterval(timer);
-      timer = window.setInterval(() => { if (!document.hidden) load(); }, pollMs);
+      timer = window.setInterval(() => {
+        if (document.hidden) return;
+        // While the socket is live its events reload the feed; the timer only
+        // re-reads once a minute in case something changed unannounced.
+        if (rrws.state === 'live' && Date.now() - lastLoaded.current < SAFETY_POLL_MS) return;
+        load();
+      }, pollMs);
     };
     // Wallboard-adjacent: a tab left open for a week must not burn a request a
     // minute behind someone's back, and must not come back showing Tuesday.
@@ -307,6 +317,11 @@ export function useActivityFeed(options: ActivityFeedOptions = {}): ActivityFeed
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [load, pollMs]);
+
+  // The feed is derived from runs, services and workflows, so it is re-read
+  // when any of them is announced; the poll above is the safety net. With the
+  // socket live that net is wide: the interval below skips its ticks.
+  useLiveEvents(['run_created', 'run_updated', 'service_updated', 'workflow_updated'], load, { settleMs: 1500 });
 
   // A new read stamp changes what `unread` means, so re-ask immediately — but
   // only when the stamp changes for a reason other than a poll landing.

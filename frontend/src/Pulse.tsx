@@ -2,7 +2,7 @@ import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useSt
 import { useLocation } from 'react-router-dom';
 import { api } from './api';
 import { rrws } from './ws';
-import { useVisibleInterval } from './hooks';
+import { useDataPoll } from './live';
 import { useOpenApprovals } from './components/ApprovalGate';
 import { serviceCounts, useServices } from './Services';
 import { failingFlows, moodOf, newestFirst, unjudgedFailures, type Failing, type Mood } from './pulseModel';
@@ -93,14 +93,14 @@ export function PulseProvider({ children }: { children: ReactNode }) {
       if (since > 900) { last.current = Date.now(); refresh(); }
       else pending.current = window.setTimeout(() => { last.current = Date.now(); refresh(); }, 900 - since);
     };
-    const offs = [rrws.on('run_created', onEvent), rrws.on('run_updated', onEvent), rrws.on('task_run_updated', onEvent)];
+    const offs = ['run_created', 'run_updated', 'task_run_updated', 'workflow_updated', 'resync'].map(type => rrws.on(type, onEvent));
     return () => { offs.forEach(off => off()); window.clearTimeout(pending.current); };
   }, []);
 
-  // The socket is the fast path; this is what keeps the picture honest when
-  // the API and the worker are separate processes and nothing is pushed.
+  // The socket is the fast path. This poll covers it being down, and steps
+  // back to a once-a-minute safety net while it is live.
   const live = Boolean(runs?.some(r => LIVE(r.status)));
-  useVisibleInterval(true, refresh, live ? (home ? 3000 : 10_000) : 30_000);
+  useDataPoll(true, refresh, live ? (home ? 3000 : 10_000) : 30_000);
 
   const serviceCount = useMemo(() => serviceCounts(services.items), [services.items]);
   const waitingRuns = useMemo(() => [...new Set((approvals ?? []).map(row => row.run_id))], [approvals]);

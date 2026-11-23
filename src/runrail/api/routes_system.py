@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from runrail import notify, runtime_settings, system
+from runrail.api.ws import manager as ws_manager
 from runrail.db import get_db
 from runrail.models import now
 
@@ -52,6 +53,7 @@ def update_settings(values: dict[str, Any], db: Session = Depends(get_db)):
     days = runtime_settings.current("retention_days")
     if "retention_days" in values and days:
         system.cleanup.start(days)
+    ws_manager.notify({"type": "system_updated"})
     return {"settings": saved, "event_kinds": list(runtime_settings.EVENT_KINDS)}
 
 
@@ -83,6 +85,7 @@ def set_paused(data: PauseIn, db: Session = Depends(get_db)):
         runtime_settings.save(db, {"paused": data.paused})
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
+    ws_manager.notify({"type": "system_updated"})
     return system.status(db)
 
 

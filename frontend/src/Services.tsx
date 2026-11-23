@@ -8,6 +8,7 @@ import clsx from 'clsx';
 import { ApiError, api, del, post, put } from './api';
 import { rrws } from './ws';
 import { useNow, useVisibleInterval } from './hooks';
+import { useDataPoll } from './live';
 import { formatBytes, formatDuration, timeAgo, viewerZone } from './format';
 import { Button, CancelButton, EmptyState, Modal, PageHeader, StatusBadge } from './components/ui';
 import { useToast } from './components/toast';
@@ -144,8 +145,10 @@ export function useServices({ supervisor = true, pollIdle = true } = {}) {
     });
     return () => { off(); window.clearTimeout(timer); };
   }, []);
-  // The socket carries every change; the poll covers a dropped connection.
-  useVisibleInterval(pollIdle || items === null || items.length > 0, load, 5000);
+  // The socket carries every change; the poll covers a dropped connection,
+  // and steps back to a safety net while the socket is live.
+  useEffect(() => rrws.on('resync', load), []);
+  useDataPoll(pollIdle || items === null || items.length > 0, load, 5000);
   return { items, supervised, load };
 }
 
@@ -336,9 +339,10 @@ export function ServiceDetail() {
       window.clearTimeout(timer);
       timer = window.setTimeout(load, 250);
     });
-    return () => { off(); window.clearTimeout(timer); };
+    const offResync = rrws.on('resync', load);
+    return () => { off(); offResync(); window.clearTimeout(timer); };
   }, [id]);
-  useVisibleInterval(true, load, 5000);
+  useDataPoll(true, load, 5000);
   const now = useNow(!!s && isLive(s));
   const { act, busy } = useServiceActions(load);
 

@@ -4,7 +4,8 @@ import { Link, useLocation } from 'react-router-dom';
 import { ArrowRight, RefreshCw, X } from 'lucide-react';
 import { api, post } from '../api';
 import { formatDate, formatDuration, timeAgo } from '../format';
-import { useNow, useVisibleInterval } from '../hooks';
+import { useNow } from '../hooks';
+import { useDataPoll, useLiveEvents } from '../live';
 import { groupAttempts } from '../attempts';
 import type { Run, TaskRun, Workflow } from '../types';
 import { Button, StatusBadge } from './ui';
@@ -79,7 +80,9 @@ function RunPeek({ runId, onClose }: { runId: number; onClose: () => void }) {
     api<Run>(`/runs/${runId}`).then(setRun).catch(() => setMissing(true));
   };
   useEffect(load, [runId]);
-  useVisibleInterval(live, load, 2000);
+  useLiveEvents(['run_updated', 'task_run_updated'], load,
+                { filter: e => Number(e.id) === runId || Number(e.run_id) === runId });
+  useDataPoll(live, load, 2000);
   useEffect(() => {
     if (run) api<Workflow>(`/workflows/${run.workflow_id}`).then(setFlow).catch(() => {});
   }, [run?.workflow_id]);

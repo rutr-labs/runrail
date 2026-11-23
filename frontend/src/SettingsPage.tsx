@@ -7,6 +7,7 @@ import {
 import clsx from 'clsx';
 import { ApiError, api, errorMessage, post, put } from './api';
 import { useNow, useVisibleInterval } from './hooks';
+import { useLive } from './live';
 import { formatDate, timeAgo, viewerZone } from './format';
 import { Button } from './components/ui';
 import { useToast } from './components/toast';
@@ -79,7 +80,9 @@ export function SettingsPage() {
   }, [applySettings, toast]);
 
   useEffect(() => { loadStatus(); loadSettings(); }, [loadStatus, loadSettings]);
-  useVisibleInterval(true, () => loadStatus(), STATUS_POLL_MS);
+  // Worker, services and the queue move with runs and services; pause and
+  // settings announce themselves.
+  useLive(['run_created', 'run_updated', 'service_updated', 'system_updated'], () => loadStatus(), { fallbackMs: STATUS_POLL_MS });
   // Storage sizes arrive from a background measurement; while one is
   // running, ask again sooner so the bar fills in.
   useVisibleInterval(status != null && (status.storage.measuring || status.retention.cleanup.running),
