@@ -30,6 +30,14 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
   install `jupyter_client>=8.10`, the first that can do this; an environment
   built before this picks it up the next time its packages are saved. macOS
   and Linux already used IPC sockets and are unchanged.
+- **Retry attempts no longer overlap on a run's timeline.** A task that failed
+  in a fraction of a second and retried straight away had its attempts drawn
+  on top of each other, because each bar's minimum width ran over the next
+  attempt, and bars near the end of the axis were all held at the same spot.
+  A lane's bars are now placed together: each keeps its true start where it
+  can, is at least 10px wide, and moves only as far as it needs to so it
+  neither covers its neighbour nor leaves the track. Hovering still shows
+  the true times.
 
 ### Security
 - **RunRail answers only to the host names it expects.** A request must name

@@ -41,6 +41,7 @@ import {
   ServiceDetail, ServicesPage, ServicesPanel, WallboardServices, serviceCounts, useServices,
 } from './Services';
 import { attemptLabel, attemptTag, groupAttempts } from './attempts';
+import { packLane } from './timeline';
 import { RunFormEditor, RunFormFields, runFormValue } from './components/RunForm';
 import { RunChanges } from './components/RunChanges';
 import { chainSummary, type ChainInfo } from './components/ChainStrip';
@@ -2045,7 +2046,24 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
     : startMs(t);
 
   const placeable = taskRuns.filter(t => t.started_at || (isGate(t) && t.created_at));
-  if (!placeable.length) return null;
+
+  /* The minimum bar width is in pixels (a bar must be wide enough to see and
+     hover), but the lane is laid out in percent, so the track is measured. */
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [trackPx, setTrackPx] = useState(0);
+  const hasBars = placeable.length > 0;
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const measure = () => setTrackPx(box.querySelector<HTMLElement>('.tl-track')?.clientWidth ?? 0);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [hasBars]);
+
+  if (!hasBars) return null;
 
   // A running task or an open gate has no duration yet: measure against the
   // wall clock so the bar grows every tick, and extend the axis to "now".
@@ -2065,18 +2083,32 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
     lanes.set(key, [...(lanes.get(key) ?? []), t]);
   }
   const ticks = [0.25, 0.5, 0.75];
+  // 10px wide and 2px apart at the least; 600px is a typical track until the
+  // real one has been measured.
+  const px = 100 / (trackPx || 600);
+  const BAR_MIN = 10 * px;
+  const BAR_GAP = 2 * px;
   // Bare on purpose: RunDetail owns the panel, because Graph and Timeline
   // share one.
   return (
     /* Scrolls sideways below its minimum width rather than squeezing: at phone
        width the track was ~180px, so bars shrank to slivers and the axis labels
        ran into each other. */
-    <div className="tl-scroll">
+    <div className="tl-scroll" ref={boxRef}>
     <div className="task-timeline">
         {[...lanes.entries()].map(([name, attempts], laneIndex) => {
           const executions = attempts.filter(t => !isGate(t) && t.started_at).sort(byAttemptOrder);
           const resumed = executions.some(t => (t.resume_index ?? 0) > 0);
           const labelled = executions.length > 1;
+          // The lane's bars in the order they happened, placed together so
+          // none covers another (see timeline.ts).
+          const bars = attempts.filter(t => t.started_at || (isGate(t) && t.created_at))
+            .sort((a, b) => startMs(a) - startMs(b) || byAttemptOrder(a, b));
+          const packed = packLane(bars.map(t => ({
+            left: (startMs(t) - origin) / totalMs * 100,
+            width: spanMs(t) / totalMs * 100,
+          })), BAR_MIN, BAR_GAP);
+          const placed = new Map(bars.map((t, i) => [t.id, packed[i]]));
           return (
           <div key={name} className="tl-row">
             <span className="tl-name" title={name}>{name}</span>
@@ -2088,8 +2120,9 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
                   chart having lost something. */}
               {executions.slice(1).map((next, i) => {
                 const prev = executions[i];
-                const from = (endMs(prev) - origin) / totalMs * 100;
-                const to = (startMs(next) - origin) / totalMs * 100;
+                const before = placed.get(prev.id)!;
+                const from = before.left + before.width;
+                const to = placed.get(next.id)!.left;
                 if (to - from < 0.5) return null;
                 const gap = formatDuration((startMs(next) - endMs(prev)) / 1000);
                 return (
@@ -2098,11 +2131,9 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
                         title={`${name} · waited ${gap} before ${attemptLabel(next, resumed).toLowerCase()}`} />
                 );
               })}
-              {attempts.filter(t => t.started_at || (isGate(t) && t.created_at)).map(t => {
+              {bars.map(t => {
                 const gate = isGate(t);
-                const start = (startMs(t) - origin) / totalMs * 100;
-                const width = Math.max(spanMs(t) / totalMs * 100, gate ? 0.8 : 1.2);
-                const left = Math.min(Math.max(start, 0), 98);
+                const { left, width } = placed.get(t.id)!;
                 const waited = formatDuration(spanMs(t) / 1000);
                 const tip = gate ? [
                   `${name} · approval gate · ${t.status.replace(/_/g, ' ')}`,
@@ -2117,7 +2148,7 @@ function TaskTimeline({ taskRuns, runStart, now }: { taskRuns: TaskRun[]; runSta
                 ].filter(Boolean).join('\n');
                 // A gate stops a few pixels short of where it ended, so the
                 // task that ran after it reads as its own bar, not its tip.
-                const span = `${Math.min(width, 100 - left)}%`;
+                const span = `${width}%`;
                 return (
                   <div key={t.id}
                        className={clsx('tl-bar', t.status, gate && 'tl-bar--gate',

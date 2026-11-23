@@ -814,9 +814,11 @@ tbody td { padding: 12px 16px; font-size: 13.5px; color: var(--text-1); vertical
 .tl-row { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; gap: 12px; }
 .tl-name { font-size: 12px; color: var(--text-2); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); }
 .tl-track { flex: 1; height: 20px; background: var(--bg-card-r); border-radius: var(--r-xs); position: relative; overflow: hidden; border: 1px solid var(--border); }
-/* 10px, not 3px: a half-second attempt beside a 60-second retry delay scales
-   to ~1% of the axis, which at 3px was a sliver nobody could see or hover. */
-.tl-bar { position: absolute; top: 0; height: 100%; border-radius: var(--r-xs); min-width: 10px; }
+/* No min-width here: the 10px minimum (a half-second attempt beside a 60-second
+   retry delay is ~1% of the axis, a sliver nobody could see or hover) is set
+   by packLane in timeline.ts, which also keeps a lane's bars from covering each
+   other. A CSS minimum made quick retries overlap. */
+.tl-bar { position: absolute; top: 0; height: 100%; border-radius: var(--r-xs); }
 .tl-scroll { overflow-x: auto; scrollbar-width: thin; }
 .tl-scroll .task-timeline { min-width: 540px; }
 /* The wait between attempts — a dashed rail, so the gap reads as deliberate. */
