@@ -7,18 +7,27 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
 ## [Unreleased]
 
 ### Security
-- **A website open in your browser can no longer reach RunRail by DNS
-  rebinding.** RunRail now answers only to loopback names, IP addresses, the
-  host in `RUNRAIL_PUBLIC_URL`, and names listed in the new
-  `RUNRAIL_ALLOWED_HOSTS` (comma-separated; `*` turns the check off). Before,
-  a page on a domain pointed at 127.0.0.1 passed the cross-site check and
-  could read the API and create and run workflows. If you reach RunRail by a
-  domain name, set one of those two; anything else gets a 403 that says so.
-- **WebSockets refuse other sites.** The live log and event streams accepted
-  a connection from any page, which could read your task logs and run events
-  as they happened. They now get the same Origin check as the rest of the API.
-- `docker compose` publishes port 8080 on 127.0.0.1 only. There are no
-  accounts, so publish it wider only behind a proxy that handles sign-in.
+- **RunRail answers only to the host names it expects.** A request must name
+  a loopback address, an IP address, the host in `RUNRAIL_PUBLIC_URL`, or one
+  listed in the new `RUNRAIL_ALLOWED_HOSTS` (comma-separated; `*` turns the
+  check off). This closes a way for a web page to reach a local RunRail
+  through a DNS name pointed at 127.0.0.1. **If you open RunRail by a domain
+  name, set one of those two**; any other name gets a 403 that says what to
+  set.
+- **Live streams check where a connection comes from.** The log and event
+  WebSockets now apply the same origin check as the rest of the API.
+- `docker compose` publishes port 8080 on 127.0.0.1 only. RunRail has no
+  accounts, so expose it more widely only behind a proxy that handles sign-in.
+- The API answers a read only to RunRail's own pages and to tools such as
+  curl and the CLI, not to another website's scripts. Report links opened
+  from a wiki or a chat work as before.
+- RunRail's pages ask browsers not to let other sites frame them.
+- Webhook URLs must be `http://` or `https://`, both when saved and when sent.
+- On macOS and Linux, RunRail's log, artifact, environment and backup
+  folders and its SQLite database are now readable only by the user who runs
+  it.
+- `runrail serve` and `runrail api` print a warning when listening on an
+  address other than 127.0.0.1.
 
 ## [0.8.2] — 2026-10-20
 

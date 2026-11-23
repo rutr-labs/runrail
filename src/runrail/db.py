@@ -64,6 +64,24 @@ def init_db() -> None:
     config.set_main_option("sqlalchemy.url", get_settings().database_url)
     _restore_point_before_upgrade(config)
     command.upgrade(config, "head")
+    _private_database_files()
+
+
+def _private_database_files() -> None:
+    """The SQLite file holds every command, plain variable and webhook URL, and
+    sqlite creates it readable by everyone; restrict it, and its journal, to
+    this user."""
+    from pathlib import Path
+
+    from runrail.config import private
+
+    url = get_settings().database_url
+    if not url.startswith("sqlite:///"):
+        return
+    database = Path(url.removeprefix("sqlite:///"))
+    for path in (database, database.with_name(database.name + "-wal"), database.with_name(database.name + "-shm")):
+        if path.exists():
+            private(path, 0o600)
 
 
 def _restore_point_before_upgrade(config) -> None:

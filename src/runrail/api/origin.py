@@ -11,6 +11,14 @@ check below has nothing to object to. Loopback names and IP addresses pass
 page served by whatever answers there); any other name must be the host of
 RUNRAIL_PUBLIC_URL, RUNRAIL_HOST, or listed in RUNRAIL_ALLOWED_HOSTS.
 
+A GET from another site is refused too, when the browser says that is what
+it is (Sec-Fetch-Site: cross-site, sent by every current browser). The
+response cannot be read across sites, but the request still runs: a page
+could make RunRail do work for it (a log search with a pathological pattern
+holds the process) or drop a backup with the secrets key into Downloads. The
+exception is a report page opened as a link from elsewhere, which is what the
+pinnable report URL is for.
+
 The Origin must not name another site. Browsers put the page's Origin on
 every cross-site POST, PUT, PATCH and DELETE, and on every WebSocket
 handshake, which the same-origin policy does not otherwise restrict: a
@@ -21,6 +29,7 @@ Vite dev proxy looks like from here.
 """
 
 import ipaddress
+import re
 from urllib.parse import urlsplit
 
 from starlette.datastructures import Headers
@@ -34,6 +43,21 @@ _LOOPBACK = {"localhost", "127.0.0.1", "::1", "[::1]"}
 _UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 #: Addresses a server listens on, not names a browser asks for.
 _WILDCARDS = {"0.0.0.0", "::", "[::]", ""}
+_SAFE = {"GET", "HEAD"}
+#: API pages meant to be linked from a wiki or a chat: a rendered report,
+#: which carries its own sandboxing headers (see reports.REPORT_CSP).
+_LINKABLE = re.compile(r"/api/(runs/\d+/report|workflows/[^/]+/latest-report/html)")
+
+#: On every response that does not set its own. RunRail's pages must not be
+#: framed by another site, where a click on Approve or Run now could be
+#: steered (an approval gate is the one human check in a run); report pages
+#: keep their own, stricter policy.
+SECURITY_HEADERS = {
+    b"x-frame-options": b"SAMEORIGIN",
+    b"content-security-policy": b"frame-ancestors 'self'",
+    b"x-content-type-options": b"nosniff",
+    b"referrer-policy": b"same-origin",
+}
 
 
 def _host_of(netloc: str) -> str:
@@ -51,6 +75,16 @@ def cross_site(origin: str | None, host: str | None) -> bool:
     if origin_netloc == host:
         return False
     return not (_host_of(origin_netloc) in _LOOPBACK and _host_of(host) in _LOOPBACK)
+
+
+def cross_site_read(method: str, path: str, headers: Headers) -> bool:
+    """A GET or HEAD to the API that the browser says another site made, other
+    than following a link to a report page."""
+    if method not in _SAFE or not path.startswith("/api/"):
+        return False
+    if headers.get("sec-fetch-site") != "cross-site":
+        return False
+    return not (headers.get("sec-fetch-mode") == "navigate" and _LINKABLE.fullmatch(path))
 
 
 def _is_ip(name: str) -> bool:
@@ -97,10 +131,24 @@ class SameOriginMiddleware:
                       "how you reach it, set RUNRAIL_PUBLIC_URL or add it to RUNRAIL_ALLOWED_HOSTS")
         elif (scope["type"] == "websocket" or scope["method"] in _UNSAFE) and cross_site(origin, host):
             detail = "Cross-site requests are not accepted"
+        elif scope["type"] == "http" and cross_site_read(scope["method"], scope["path"], headers):
+            detail = "Cross-site requests are not accepted"
         else:
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, _with_security_headers(send) if scope["type"] == "http" else send)
             return
         if scope["type"] == "websocket":
             await WebSocketClose(code=1008, reason=detail[:120])(scope, receive, send)
         else:
-            await JSONResponse({"detail": detail}, status_code=403)(scope, receive, send)
+            await JSONResponse({"detail": detail}, status_code=403)(scope, receive, _with_security_headers(send))
+
+
+def _with_security_headers(send: Send) -> Send:
+    """Add SECURITY_HEADERS to a response, leaving any it already sets."""
+    async def wrapped(message):
+        if message["type"] == "http.response.start":
+            present = {name.lower() for name, _ in message.get("headers", [])}
+            extra = [(name, value) for name, value in SECURITY_HEADERS.items() if name not in present]
+            if extra:
+                message = {**message, "headers": [*message.get("headers", []), *extra]}
+        await send(message)
+    return wrapped

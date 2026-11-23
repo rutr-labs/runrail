@@ -69,6 +69,10 @@ def _payload_for(url: str, text: str, fields: dict) -> dict:
 
 def deliver(url: str, text: str, **fields) -> str | None:
     """POST one message now; return None on success or the error as text."""
+    # Only http(s). urllib would otherwise open a file:// URL saved before
+    # webhook URLs were checked, and report back whether the file exists.
+    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+        return "Not sent: a webhook must be an http(s) URL"
     payload = _payload_for(url, text, fields)
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode(), method="POST",

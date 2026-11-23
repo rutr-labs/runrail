@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -84,9 +85,25 @@ class Settings(BaseSettings):
 
     def ensure_directories(self) -> None:
         self.home.mkdir(parents=True, exist_ok=True)
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
-        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
-        self.environments_dir.mkdir(parents=True, exist_ok=True)
+        # What RunRail keeps (task logs, notebook outputs, environments,
+        # restore points) is readable by this user only. The home folder itself
+        # is left alone: RUNRAIL_HOME can be a folder the person also uses.
+        for folder in (self.logs_dir, self.artifacts_dir, self.environments_dir, self.home / "backups"):
+            folder.mkdir(parents=True, exist_ok=True)
+            private(folder, 0o700)
+
+
+def private(path: Path, mode: int) -> None:
+    """Restrict a file or folder RunRail owns to its own user. Not on Windows,
+    where these bits mean nothing and the profile folder is already private,
+    and not for a path another user owns (a shared mount)."""
+    if os.name == "nt":
+        return
+    try:
+        if path.stat().st_uid == os.getuid() and path.stat().st_mode & 0o077:
+            path.chmod(mode)
+    except OSError:
+        pass
 
 
 @lru_cache
