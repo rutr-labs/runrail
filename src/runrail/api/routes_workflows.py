@@ -101,7 +101,9 @@ def create_workflow(data: WorkflowIn, db: Session = Depends(get_db)):
     workflow = Workflow(**data.model_dump(exclude={"after"}))
     _set_after_or_422(db, workflow, data.after)
     _schedulable_or_422(workflow)
-    return save(db, workflow)
+    saved = save(db, workflow)
+    ws_manager.notify({"type": "workflow_updated", "id": saved.id})
+    return saved
 
 
 def _set_after_or_422(db: Session, workflow: Workflow, after: list[int] | None) -> None:
@@ -158,7 +160,9 @@ def update_workflow(object_id: int, data: WorkflowIn, db: Session = Depends(get_
     except ParameterError as exc:
         db.rollback()
         raise HTTPException(422, str(exc)) from None
-    return save(db, workflow)
+    saved = save(db, workflow)
+    ws_manager.notify({"type": "workflow_updated", "id": saved.id})
+    return saved
 
 
 def mark_enabled(workflow: Workflow) -> None:
@@ -192,6 +196,7 @@ def delete_workflow(object_id: int, db: Session = Depends(get_db)):
     # SQLite connection having foreign keys switched on.
     db.execute(delete(WorkflowUpstream).where(WorkflowUpstream.upstream_id == object_id))
     db.delete(workflow); db.commit()
+    ws_manager.notify({"type": "workflow_updated", "id": object_id})
     return Response(status_code=204)
 
 
@@ -238,7 +243,9 @@ def create_task(workflow_id: int, data: TaskIn, db: Session = Depends(get_db)):
     get_or_404(db, Workflow, workflow_id)
     ensure_environment_ready(db, data.environment_id)
     _validate_dependencies(db, workflow_id, data.name, data.depends_on_json)
-    return save(db, Task(workflow_id=workflow_id, **data.model_dump()))
+    saved = save(db, Task(workflow_id=workflow_id, **data.model_dump()))
+    ws_manager.notify({"type": "workflow_updated", "id": workflow_id})
+    return saved
 
 
 @router.get("/tasks/{object_id}", response_model=TaskOut)
@@ -262,7 +269,10 @@ def update_task(object_id: int, data: TaskIn, db: Session = Depends(get_db)):
                     sibling.depends_on_json = [
                         data.name if dep == old_name else dep for dep in sibling.depends_on_json
                     ]
-    return save(db, apply_update(task, data.model_dump(exclude_unset=True)))
+    saved = save(db, apply_update(task, data.model_dump(exclude_unset=True)))
+    if saved.workflow_id is not None:
+        ws_manager.notify({"type": "workflow_updated", "id": saved.workflow_id})
+    return saved
 
 
 @router.delete("/tasks/{object_id}", status_code=204)
@@ -307,4 +317,6 @@ def delete_task(object_id: int, db: Session = Depends(get_db)):
     db.delete(task); db.commit()
     for run in parked:
         ws_manager.notify({"type": "run_updated", "id": run.id})
+    if task.workflow_id is not None:
+        ws_manager.notify({"type": "workflow_updated", "id": task.workflow_id})
     return Response(status_code=204)

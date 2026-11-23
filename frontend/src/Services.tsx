@@ -8,6 +8,7 @@ import clsx from 'clsx';
 import { ApiError, api, del, post, put } from './api';
 import { rrws } from './ws';
 import { useNow, useVisibleInterval } from './hooks';
+import { useDataPoll } from './live';
 import { formatBytes, formatDuration, timeAgo, viewerZone } from './format';
 import { Button, CancelButton, EmptyState, Modal, PageHeader, StatusBadge } from './components/ui';
 import { useToast } from './components/toast';
@@ -16,7 +17,8 @@ import { zoneOptions } from './components/ScheduleBuilder';
 import { zoneTag } from './cron';
 import { TodayBar, WeekEditor, WeekStrip } from './components/WeekEditor';
 import {
-  isActive, isKnownZone, scheduleSummary, untilLabel, windowLabel, type ServiceWindow,
+  DAYS, DAY_SHORT, isActive, isKnownZone, scheduleSummary, untilLabel, weekMinute, weekSegments, windowLabel,
+  type ServiceWindow,
 } from './serviceWindows';
 import {
   STATE_WORD, byAttention, cpuLabel, handovers, heldBy, isLive, resumeLabel, serviceCounts, stoppingDetail, toneOf, treeLabel,
@@ -54,6 +56,9 @@ const REASON_LABEL: Record<string, string> = {
 const TIMEOUT_PRESETS = [10, 30, 60, 180, 600];
 
 const zoneOf = (s: Service) => s.timezone || 'UTC';
+
+/** A service's tone as the detail page's header colour. */
+const HERO_TONE: Record<string, string> = { live: 'is-success', down: 'is-failed', busy: 'is-waiting_approval' };
 
 function formatAt(iso: string, zone: string): string {
   try {
@@ -140,8 +145,10 @@ export function useServices({ supervisor = true, pollIdle = true } = {}) {
     });
     return () => { off(); window.clearTimeout(timer); };
   }, []);
-  // The socket carries every change; the poll covers a dropped connection.
-  useVisibleInterval(pollIdle || items === null || items.length > 0, load, 5000);
+  // The socket carries every change; the poll covers a dropped connection,
+  // and steps back to a safety net while the socket is live.
+  useEffect(() => rrws.on('resync', load), []);
+  useDataPoll(pollIdle || items === null || items.length > 0, load, 5000);
   return { items, supervised, load };
 }
 
@@ -176,20 +183,57 @@ function PrimaryAction({ s, act, busy, size = 'sm' }: {
     : <Button size={size} disabled={!!busy} onClick={() => act(s, 'start')}><Play size={12} /> Start</Button>;
 }
 
-/* ─── List ──────────────────────────────────────────────── */
+/* ─── List ──────────────────────────────────────────────────
+   The week, as one sheet: a line per service from Monday to Sunday, a bar
+   wherever it is meant to be up, and a mark for this moment. Two services
+   that take turns on one GPU show it as bars that never overlap — which a
+   grid of separate cards could not. */
+
+/** What colour a service's line takes: live, needing a person, or neither. */
+const TONE_CLASS: Record<string, string> = { live: 'is-ok', down: 'is-failing', busy: 'is-waiting', idle: 'is-idle' };
+
+const WEEK_MINUTES = 7 * 1440;
+const pct = (minutes: number) => `${(minutes / WEEK_MINUTES) * 100}%`;
+
+function WeekLane({ s, now }: { s: Service; now: number }) {
+  const at = weekMinute(zoneOf(s), now);
+  const rows = s.start_mode === 'schedule' ? weekSegments(s.windows) : [];
+  const live = isLive(s);
+  return (
+    <div className={clsx('sw-lane', `sw-lane--${s.start_mode}`)} aria-hidden="true">
+      {s.start_mode === 'startup' && <span className={clsx('sw-span sw-span--always', live && 'is-on')} />}
+      {rows.flatMap((segments, day) => segments.map((segment, i) => {
+        const from = day * 1440 + segment.from;
+        const to = day * 1440 + segment.to;
+        const open = at >= from && at < to;
+        return (
+          <span key={`${day}-${i}`} className={clsx('sw-span', open && (live ? 'is-on' : 'is-due'))}
+                style={{ left: pct(from), width: pct(to - from) }} />
+        );
+      }))}
+      {s.start_mode === 'manual' && <span className={clsx('sw-note', live && 'is-on')}>{live ? 'running until you stop it' : 'starts when you press Start'}</span>}
+      <i className="sw-now" style={{ left: pct(at) }} />
+    </div>
+  );
+}
 
 export function ServicesPage() {
   const { items, supervised, load } = useServices();
   const [creating, setCreating] = useState(false);
   const live = (items ?? []).some(isLive);
-  const now = useNow(live);
+  // The now-mark moves with the minute even when nothing is running.
+  const now = useNow(true, live ? 1000 : 30_000);
   const { act, busy } = useServiceActions(load);
+  const counts = serviceCounts(items);
   const running = (items ?? []).filter(s => s.state === 'running').length;
+  // Each line is drawn in its service's own timezone. When they all share
+  // one — the usual case — the axis can say which day it is there.
+  const zones = [...new Set((items ?? []).map(zoneOf))];
+  const today = zones.length === 1 ? Math.floor(weekMinute(zones[0], now) / 1440) : -1;
 
   return (
     <>
       <PageHeader
-        eyebrow="PROCESSES"
         title="Services"
         subtitle="Long-running processes RunRail keeps up — model servers, folder syncs — on startup, on a schedule, or on demand."
         action={<Button onClick={() => setCreating(true)}><Server size={14} /> New service</Button>}
@@ -200,11 +244,6 @@ export function ServicesPage() {
           managed by <code>runrail serve</code> or <code>runrail worker</code>; <code>runrail api</code> alone does not.
         </div>
       )}
-      {items && items.length > 0 && (
-        <p className="services-summary">
-          {running} of {items.length} running
-        </p>
-      )}
       {items && items.length === 0 && (
         <EmptyState
           icon={<Server size={24} />}
@@ -213,47 +252,62 @@ export function ServicesPage() {
           action={<Button onClick={() => setCreating(true)}>Add a service</Button>}
         />
       )}
-      <div className="service-grid">
-        {(items ?? []).map(s => {
-          const line = describe(s, now);
-          return (
-            <article key={s.id} className={clsx('service-card', `service-card--${s.state}`)}>
-              <div className="service-card-head">
-                <span className={clsx('service-glyph', isLive(s) && 'is-live')}><Server size={16} /></span>
-                <div className="service-card-title">
-                  <Link to={`/services/${s.id}`}><h3 title={s.name}>{s.name}</h3></Link>
-                  <div className="service-chips">
-                    <span className="type-chip">{MODE_LABEL[s.start_mode]}</span>
-                    {s.lock_resource && (
-                      <span className="type-chip lock-chip" title={`${s.lock_mode === 'exclusive' ? 'Exclusive' : 'Shared'} lock on ${s.lock_resource}`}>
-                        {s.lock_mode === 'exclusive' ? <Lock size={10} /> : <Users size={10} />} {s.lock_resource}
-                      </span>
-                    )}
+      {items && items.length > 0 && (
+        <section className="sw-board" aria-label="Services this week">
+          <div className="sw-row sw-row--axis">
+            <p className={clsx('services-summary', counts.down > 0 && 'is-down')}>
+              <i aria-hidden="true" />{running} of {items.length} running
+              {counts.down > 0 && <b> · {counts.down} down</b>}
+            </p>
+            <div className="sw-axis" aria-hidden="true">
+              {DAYS.map((day, i) => <span key={day} className={i === today ? 'is-today' : undefined}>{DAY_SHORT[day]}</span>)}
+            </div>
+            <span className="sw-zone">{zones.length === 1 ? `Times in ${zones[0]}` : 'Each line in its own timezone'}</span>
+          </div>
+          {items.map((s, index) => {
+            const line = describe(s, now);
+            return (
+              <article key={s.id} className={clsx('service-card sw-row', `service-card--${s.state}`, TONE_CLASS[toneOf(s)])}
+                       style={{ '--i': Math.min(index, 16) } as React.CSSProperties}>
+                <div className="sw-ident">
+                  <i className="lane-signal" aria-hidden="true" />
+                  <div>
+                    <h3>
+                      <Link to={`/services/${s.id}`} title={s.name}>{s.name}</Link>
+                      <StatusBadge value={s.state} />
+                    </h3>
+                    <p className="service-line" title={line.text}>{line.text || ' '}</p>
+                    <div className="service-chips">
+                      <span className="type-chip">{MODE_LABEL[s.start_mode]}</span>
+                      {s.lock_resource && (
+                        <span className="type-chip lock-chip" title={`${s.lock_mode === 'exclusive' ? 'Exclusive' : 'Shared'} lock on ${s.lock_resource}`}>
+                          {s.lock_mode === 'exclusive' ? <Lock size={10} /> : <Users size={10} />} {s.lock_resource}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <StatusBadge value={s.state} />
-              </div>
-              <p className="service-line">{line.text || ' '}</p>
-              {s.start_mode === 'schedule' && <WeekStrip windows={s.windows} zone={zoneOf(s)} compact />}
-              <div className="service-card-actions">
-                <PrimaryAction s={s} act={act} busy={busy} />
-                {isLive(s) && (
-                  <Button variant="ghost" size="sm" disabled={!!busy} onClick={() => act(s, 'restart')}>
-                    <RotateCcw size={12} /> Restart
-                  </Button>
-                )}
-                {line.resumable && (
-                  <Button variant="ghost" size="sm" disabled={!!busy} onClick={() => act(s, 'resume')}
-                          title="Drop your Start/Stop and follow the service's own mode again">
-                    <Undo2 size={12} /> {resumeLabel(s)}
-                  </Button>
-                )}
-                <Link className="service-open" to={`/services/${s.id}`}>Logs & history →</Link>
-              </div>
-            </article>
-          );
-        })}
-      </div>
+                <WeekLane s={s} now={now} />
+                <div className="service-card-actions">
+                  <PrimaryAction s={s} act={act} busy={busy} />
+                  {isLive(s) && (
+                    <Button variant="ghost" size="sm" disabled={!!busy} onClick={() => act(s, 'restart')}>
+                      <RotateCcw size={12} /> Restart
+                    </Button>
+                  )}
+                  {line.resumable && (
+                    <Button variant="ghost" size="sm" disabled={!!busy} onClick={() => act(s, 'resume')}
+                            title="Drop your Start/Stop and follow the service's own mode again">
+                      <Undo2 size={12} /> {resumeLabel(s)}
+                    </Button>
+                  )}
+                  <Link className="service-open" to={`/services/${s.id}`}>Logs & history →</Link>
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      )}
       {creating && <ServiceModal onClose={() => setCreating(false)} done={() => { setCreating(false); load(); }} />}
     </>
   );
@@ -285,9 +339,10 @@ export function ServiceDetail() {
       window.clearTimeout(timer);
       timer = window.setTimeout(load, 250);
     });
-    return () => { off(); window.clearTimeout(timer); };
+    const offResync = rrws.on('resync', load);
+    return () => { off(); offResync(); window.clearTimeout(timer); };
   }, [id]);
-  useVisibleInterval(true, load, 5000);
+  useDataPoll(true, load, 5000);
   const now = useNow(!!s && isLive(s));
   const { act, busy } = useServiceActions(load);
 
@@ -311,53 +366,34 @@ export function ServiceDetail() {
 
   return (
     <>
-      <div className="detail-head">
-        <Link to="/services"><ArrowLeft size={14} /> Services</Link>
-        <div className="detail-head-row">
-          <div className={clsx('workflow-glyph large service-glyph', isLive(s) && 'is-live')}><Server size={22} /></div>
-          <div className="detail-head-text">
-            <span className="eyebrow">SERVICE · {MODE_LABEL[s.start_mode].toUpperCase()}</span>
-            <h1>{s.name}</h1>
-            <p>{s.description || line.text}</p>
-          </div>
-          <div className="detail-actions">
-            <PrimaryAction s={s} act={act} busy={busy} size="md" />
-            {isLive(s) && <Button variant="ghost" disabled={!!busy} onClick={() => act(s, 'restart')}><RotateCcw size={13} /> Restart</Button>}
-            {line.resumable && <Button variant="ghost" disabled={!!busy} onClick={() => act(s, 'resume')}><Undo2 size={13} /> {resumeLabel(s)}</Button>}
-            <Button variant="ghost" onClick={() => setEditing(true)}><Pencil size={13} /> Edit</Button>
-            {/* The API answers 409 while the process is alive: a delete never kills anything. */}
-            <Button variant="danger" onClick={remove} disabled={isLive(s)}
-                    title={isLive(s) ? 'Stop the service before deleting it' : 'Delete service'}><Trash2 size={13} /></Button>
-          </div>
+      <header className={`hero-head ${HERO_TONE[toneOf(s)] ?? ''}`}>
+        <Link className="back-link" to="/services"><ArrowLeft size={14} /> Services</Link>
+        <p className="hero-eyebrow">
+          Service<i>·</i>{MODE_LABEL[s.start_mode]}
+          {s.lock_resource && <><i>·</i>{s.lock_mode === 'exclusive' ? 'alone on' : 'shares'} {s.lock_resource}</>}
+        </p>
+        <h1>{s.name}</h1>
+        {/* What the supervisor last decided, as the page's verdict. */}
+        <p className="hero-status"><i aria-hidden="true" />{line.text || STATE_WORD[s.state] || s.state}</p>
+        {s.description && <p className="hero-desc">{s.description}</p>}
+        <div className="detail-actions">
+          <PrimaryAction s={s} act={act} busy={busy} size="md" />
+          {isLive(s) && <Button variant="ghost" disabled={!!busy} onClick={() => act(s, 'restart')}><RotateCcw size={13} /> Restart</Button>}
+          {line.resumable && <Button variant="ghost" disabled={!!busy} onClick={() => act(s, 'resume')}><Undo2 size={13} /> {resumeLabel(s)}</Button>}
+          <span className="detail-actions-rule" aria-hidden="true" />
+          <Button variant="ghost" onClick={() => setEditing(true)}><Pencil size={13} /> Edit</Button>
+          {/* The API answers 409 while the process is alive: a delete never kills anything. */}
+          <Button variant="danger" onClick={remove} disabled={isLive(s)}
+                  title={isLive(s) ? 'Stop the service before deleting it' : 'Delete service'}><Trash2 size={13} /></Button>
         </div>
-      </div>
+      </header>
 
-      <div className="service-detail-grid">
-        <section className="panel service-status">
-          <div className="panel-head">
-            <div className="service-status-head">
-              <StatusBadge value={s.state} />
-              <span className="service-line">{line.text}</span>
-            </div>
-          </div>
-          <dl className="service-facts panel-pad">
-            <dt>Command</dt><dd><code className="code-inline">{s.command}</code></dd>
-            {s.cwd && <><dt>Folder</dt><dd><code className="code-inline">{s.cwd}</code></dd></>}
-            <dt>Restarts</dt><dd>{POLICY_LABEL[s.restart_policy]}</dd>
-            <dt>Stop timeout</dt><dd>{timeoutLabel(s.stop_timeout_seconds)} before a forced stop</dd>
-            {s.lock_resource && (
-              <><dt>Lock</dt><dd>{s.lock_mode === 'exclusive' ? 'Runs alone on' : 'Shares'} <code className="code-inline">{s.lock_resource}</code></dd></>
-            )}
-            {s.current_session?.pid && <><dt>Process</dt><dd>pid {s.current_session.pid}</dd></>}
-            {s.cpu_percent != null && s.rss_bytes != null && (
-              <><dt>Using</dt><dd>{cpuLabel(s, true)} · {formatBytes(s.rss_bytes)} memory{treeLabel(s) && ` · ${treeLabel(s)}`}</dd></>
-            )}
-          </dl>
-        </section>
+      <div className="detail-cols">
+      <div className="detail-main">
         {s.start_mode === 'schedule' && (
           <section className="panel service-schedule">
             <div className="panel-head">
-              <div><h2><CalendarClock size={14} /> Schedule</h2>
+              <div><h2>Schedule</h2>
                 <p>{zoneKnown ? `${zoneOf(s)} · ${scheduleSummary(s.windows, zoneOf(s), now)}`
                   : <span className="window-error">Unknown timezone "{zoneOf(s)}" — edit the service to fix it.</span>}</p></div>
             </div>
@@ -369,7 +405,6 @@ export function ServiceDetail() {
             </div>
           </section>
         )}
-      </div>
 
       <ServiceLog service={s} sessions={sessions} />
 
@@ -394,6 +429,33 @@ export function ServiceDetail() {
           </div>
         )}
       </section>
+      </div>
+
+      {/* The facts, beside the story rather than above it. */}
+      <aside className="detail-aside">
+        <section className="panel facts service-status">
+          <h2>Details</h2>
+          <dl>
+            <div><dt>Status</dt><dd><StatusBadge value={s.state} /></dd></div>
+            <div><dt>Starts</dt><dd>{MODE_LABEL[s.start_mode]}</dd></div>
+            <div><dt>Restarts</dt><dd>{POLICY_LABEL[s.restart_policy]}</dd></div>
+            <div><dt>Stop timeout</dt><dd title="How long it gets to exit before a forced stop">{timeoutLabel(s.stop_timeout_seconds)}</dd></div>
+            {s.lock_resource && (
+              <div><dt>Lock</dt><dd>{s.lock_mode === 'exclusive' ? 'Runs alone on' : 'Shares'} <code className="code-inline">{s.lock_resource}</code></dd></div>
+            )}
+            {s.current_session?.pid && <div><dt>Process</dt><dd className="facts-mono">pid {s.current_session.pid}</dd></div>}
+            {s.cpu_percent != null && s.rss_bytes != null && (
+              <div><dt>Using</dt><dd title={treeLabel(s) || undefined}>{cpuLabel(s, true)} · {formatBytes(s.rss_bytes)}</dd></div>
+            )}
+          </dl>
+          <div className="facts-extra">
+            <h3>Command</h3>
+            <pre className="facts-code">{s.command}</pre>
+            {s.cwd && <><h3>Folder</h3><pre className="facts-code">{s.cwd}</pre></>}
+          </div>
+        </section>
+      </aside>
+      </div>
       {editing && <ServiceModal service={s} onClose={() => setEditing(false)} done={() => { setEditing(false); load(); }} />}
     </>
   );

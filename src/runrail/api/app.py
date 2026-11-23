@@ -28,7 +28,13 @@ async def lifespan(app: FastAPI):
     import asyncio
     ws_manager.set_loop(asyncio.get_running_loop())
     init_db()
-    yield
+    # Events from a worker or scheduler running as its own process arrive
+    # through the database; see runrail.api.ws.
+    relay = asyncio.create_task(ws_manager.tail_relayed())
+    try:
+        yield
+    finally:
+        relay.cancel()
 
 
 def create_app() -> FastAPI:

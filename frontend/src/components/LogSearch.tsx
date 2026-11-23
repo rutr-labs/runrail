@@ -218,30 +218,31 @@ export function LogSearch() {
   return (
     <>
       <PageHeader
-        eyebrow="OBSERVABILITY"
         title="Log search"
-        subtitle="Grep every log your runs have already written — and see exactly how much of it was read."
+        subtitle="Grep every log your runs have already written, newest first. Nothing is indexed, so each search is a bounded scan — and it says exactly how much it read."
       />
 
-      <form className="panel logsearch-form" onSubmit={runSearch}>
-        <div className="panel-head">
-          <div>
-            <h2>Search</h2>
-            <p>Newest logs first. Nothing is indexed, so each search is a bounded scan.</p>
-          </div>
-          <button type="button" className="edit-link" onClick={() => setAdvanced(a => !a)}>
-            <SlidersHorizontal size={12} /> {advanced ? 'Hide limits' : 'Limits & matching'}
-          </button>
+      {/* The question first, as large as the page: a search page is its
+          field. What narrows it sits underneath, out of the way. */}
+      <form className="logsearch-form" onSubmit={runSearch}>
+        <div className="logsearch-bar">
+          <Search size={20} aria-hidden="true" />
+          <input value={filters.q} autoFocus
+                 placeholder={filters.regex ? 'A regular expression to find in your logs' : 'Text to find in your logs'}
+                 aria-label="Search logs"
+                 onChange={e => set('q', e.target.value)} />
+          {(scoped || filters.q) && (
+            <button type="button" className="edit-link"
+                    onClick={() => { setFilters(BLANK); setResult(null); setRan(null); setError(null); }}>
+              Clear
+            </button>
+          )}
+          <Button type="submit" disabled={tooShort || searching}>
+            {searching ? 'Searching…' : 'Search'}
+          </Button>
         </div>
 
-        <div className="filterbar logsearch-filters">
-          <div className="filterbar-search logsearch-query">
-            <Search size={14} color="var(--text-3)" />
-            <input value={filters.q} autoFocus
-                   placeholder={filters.regex ? 'Regular expression…' : 'Text to find in logs…'}
-                   aria-label="Search logs"
-                   onChange={e => set('q', e.target.value)} />
-          </div>
+        <div className="logsearch-scope">
           <select value={filters.workflowId} aria-label="Workflow filter"
                   onChange={e => set('workflowId', e.target.value)}>
             <option value="">All workflows</option>
@@ -284,17 +285,9 @@ export function LogSearch() {
                    aria-label="Runs created before"
                    onChange={e => set('until', e.target.value)} />
           </label>
-          <div className="logsearch-actions">
-            {(scoped || filters.q) && (
-              <button type="button" className="edit-link"
-                      onClick={() => { setFilters(BLANK); setResult(null); setRan(null); setError(null); }}>
-                Clear
-              </button>
-            )}
-            <Button type="submit" size="sm" disabled={tooShort || searching}>
-              <Search size={13} /> {searching ? 'Searching…' : 'Search'}
-            </Button>
-          </div>
+          <button type="button" className="edit-link logsearch-more" onClick={() => setAdvanced(a => !a)}>
+            <SlidersHorizontal size={12} /> {advanced ? 'Hide limits' : 'Limits & matching'}
+          </button>
         </div>
 
         <p className="logsearch-hint">

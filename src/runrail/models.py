@@ -508,6 +508,28 @@ class WorkerBeat(Base):
     heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class LiveEvent(Base):
+    """A live-update event on its way from a process with no browsers attached
+    to the one that has them.
+
+    `runrail serve` runs the worker, scheduler and API in one process, and an
+    event goes straight to the open WebSockets. Started separately (`runrail
+    api` beside `runrail worker` and `runrail scheduler`, possibly on other
+    hosts sharing a PostgreSQL database), the worker's events used to go
+    nowhere, and every page had to poll to stay current. Now a process without
+    sockets writes them here and the API process tails the table and
+    broadcasts each row once; see runrail.api.ws. Rows live for minutes.
+
+    AUTOINCREMENT on SQLite: the tailer remembers the last id it sent, so ids
+    must never be reused, even after pruning empties the table."""
+
+    __tablename__ = "live_events"
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
 class CleanupPass(Base):
     """One retention cleanup, so the Settings page can say what the last one
     did after a restart, and a pass the scheduler ran overnight is on record."""

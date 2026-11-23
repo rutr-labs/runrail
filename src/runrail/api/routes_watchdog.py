@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from runrail.api.crud import get_or_404, save
+from runrail.api.ws import manager as ws_manager
 from runrail.db import get_db
 from runrail.models import Workflow, now
 from runrail.schemas import SnoozeIn, WorkflowOut
@@ -44,7 +45,9 @@ def snooze_workflow(
     # hours wrong (PostgreSQL would convert it and the two backends disagree).
     workflow.snooze_until = data.until.astimezone(timezone.utc)
     workflow.snooze_pauses_runs = data.pause_runs
-    return save(db, workflow)
+    saved = save(db, workflow)
+    ws_manager.notify({"type": "workflow_updated", "id": saved.id})
+    return saved
 
 
 @router.delete("/workflows/{workflow_id}/snooze", response_model=WorkflowOut)
@@ -54,4 +57,6 @@ def unsnooze_workflow(workflow_id: int, db: Session = Depends(get_db)):
     # workflow still silent when the mute lifts should alert, not stay quiet.
     workflow.snooze_until = None
     workflow.snooze_pauses_runs = False
-    return save(db, workflow)
+    saved = save(db, workflow)
+    ws_manager.notify({"type": "workflow_updated", "id": saved.id})
+    return saved

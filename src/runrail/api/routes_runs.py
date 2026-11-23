@@ -1,9 +1,9 @@
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from runrail import rundiff, variables
@@ -34,14 +34,24 @@ router = APIRouter(prefix="/api")
 @router.get("/runs", response_model=list[WorkflowRunOut])
 def list_runs(status: RunStatus | None = None, workflow_id: int | None = None,
               day: date | None = None, tz: str | None = None,
-              limit: int = Query(100, ge=1, le=1000), db: Session = Depends(get_db)):
+              since: datetime | None = None, until: datetime | None = None,
+              limit: int = Query(100, ge=1, le=5000), db: Session = Depends(get_db)):
     """Recent runs, newest first.
 
     `day` narrows to one calendar day in `tz` (the viewer's IANA zone, UTC when
     unset) — the same buckets /stats/daily counts by, because a heatmap square
     and the list it opens have to contain the same runs.
+
+    `since` and `until` narrow to the runs that overlap that stretch of time —
+    created before `until` and not finished before `since` — which is what the
+    timeline draws: a run that started before the window and was still going
+    inside it belongs on it. An instant without an offset is UTC.
     """
     stmt = select(WorkflowRun).order_by(WorkflowRun.created_at.desc()).limit(limit)
+    if until:
+        stmt = stmt.where(WorkflowRun.created_at < _utc(until))
+    if since:
+        stmt = stmt.where(or_(WorkflowRun.finished_at.is_(None), WorkflowRun.finished_at >= _utc(since)))
     if status: stmt = stmt.where(WorkflowRun.status == status)
     if workflow_id: stmt = stmt.where(WorkflowRun.workflow_id == workflow_id)
     if day:
@@ -51,6 +61,10 @@ def list_runs(status: RunStatus | None = None, workflow_id: int | None = None,
             raise HTTPException(422, str(exc)) from exc
         stmt = stmt.where(WorkflowRun.created_at >= start, WorkflowRun.created_at < end)
     return db.scalars(stmt).all()
+
+
+def _utc(instant: datetime) -> datetime:
+    return instant.replace(tzinfo=UTC) if instant.tzinfo is None else instant.astimezone(UTC)
 
 
 @router.get("/runs/{object_id}", response_model=WorkflowRunDetail)

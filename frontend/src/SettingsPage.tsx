@@ -1,21 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react';
 import {
-  Archive, Bell, BellOff, CalendarClock, Check, Copy, Cpu, Database, Download, ExternalLink, Eye, EyeOff, FileArchive,
-  FileCode2, HardDrive, KeyRound, Lock, Minus, Moon, Pause, Pencil, Play, Plus, RefreshCw, Server, ShieldCheck, Sun, Trash2, Upload,
+  Archive, Bell, BellOff, CalendarClock, Check, Copy, Cpu, Database, Download, ExternalLink, Eye,
+  EyeOff, FileArchive, FileCode2, HardDrive, KeyRound, Lock, Minus, Moon, Pause, Pencil, Play, Plus,
+  RefreshCw, Server, ShieldCheck, Sun, Trash2, Upload,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { ApiError, api, errorMessage, post, put } from './api';
 import { useNow, useVisibleInterval } from './hooks';
+import { useLive } from './live';
 import { formatDate, timeAgo, viewerZone } from './format';
-import { Button, PageHeader } from './components/ui';
+import { Button } from './components/ui';
 import { useToast } from './components/toast';
 import {
-  CODE_TRACKING_OPTIONS, MASK, RETENTION_PRESETS, basename, cleanupLine, eventLabel, keyLine, lastCleanupLine, formatCountdown, formatSize, formatUptime, groupEvents,
-  lockedNote, overrideLine, parseCount, parseDays, pausedBanner, provenance, quietSpans, restoreSummaryLine,
-  retentionSentence, sameValue, secretValueProblem, settledSentence, storageSegments, systemHeadline, variableNameProblem,
-  type CodeTracking, type VariableRow, type VariablesResponse,
-  type BackupPreview, type CleanupState, type LastCleanup, type NotifyTestResult, type QuietHours, type RestorePoint,
-  type RestoreSummary, type RetentionPreview, type Setting, type SettingKey,
+  CODE_TRACKING_OPTIONS, MASK, RETENTION_PRESETS, basename, cleanupLine, eventLabel, keyLine,
+  lastCleanupLine, formatCountdown, formatSize, formatUptime, groupEvents, lockedNote, overrideLine,
+  parseCount, parseDays, pausedBanner, provenance, quietSpans, restoreSummaryLine,
+  retentionSentence, sameValue, secretValueProblem, settledSentence, storageSegments,
+  systemHeadline, variableNameProblem, type CodeTracking, type VariableRow, type VariablesResponse,
+  type BackupPreview, type CleanupState, type LastCleanup, type NotifyTestResult, type QuietHours,
+  type RestorePoint, type RestoreSummary, type RetentionPreview, type Setting, type SettingKey,
   type SettingValues, type SettingsResponse, type SystemStatus,
 } from './settingsModel';
 
@@ -77,7 +80,9 @@ export function SettingsPage() {
   }, [applySettings, toast]);
 
   useEffect(() => { loadStatus(); loadSettings(); }, [loadStatus, loadSettings]);
-  useVisibleInterval(true, () => loadStatus(), STATUS_POLL_MS);
+  // Worker, services and the queue move with runs and services; pause and
+  // settings announce themselves.
+  useLive(['run_created', 'run_updated', 'service_updated', 'system_updated'], () => loadStatus(), { fallbackMs: STATUS_POLL_MS });
   // Storage sizes arrive from a background measurement; while one is
   // running, ask again sooner so the bar fills in.
   useVisibleInterval(status != null && (status.storage.measuring || status.retention.cleanup.running),
@@ -88,8 +93,6 @@ export function SettingsPage() {
 
   return (
     <div className="settings-page">
-      <PageHeader eyebrow="SYSTEM" title="Settings"
-                  subtitle="What this RunRail is doing, and the settings that apply without a restart." />
       {statusError && !status && (
         <div className="callout callout--warning" role="alert">Could not read the system status: {statusError}</div>
       )}
@@ -97,21 +100,41 @@ export function SettingsPage() {
                   onChanged={next => { setStatus(next); loadSettings(); }} />
       <StatusTiles status={status} now={now} onRefresh={() => loadStatus(true)} />
 
-      {settings && (
-        <div className="settings-grid">
-          <WorkersGroup settings={settings} now={now} onSaved={onSaved} />
-          <RetentionGroup settings={settings} now={now} onSaved={onSaved} cleanup={status?.retention.cleanup}
-                          last={status?.retention.last} />
-          <NotificationsGroup settings={settings} eventKinds={eventKinds} now={now} onSaved={onSaved} />
-          <CodeTrackingGroup settings={settings} now={now} onSaved={onSaved} />
+      {/* One column of sections with a way to jump between them, instead of
+          two columns of unequal cards: settings are read top to bottom. */}
+      <div className="settings-cols">
+        <nav className="settings-nav" aria-label="Sections">
+          {SECTIONS.map(label => (
+            <button key={label} type="button" onClick={() => jumpTo(label)}>{label.replace(/ and .*/, '')}</button>
+          ))}
+        </nav>
+        <div className="settings-stack">
+          {settings && (
+            <>
+              <WorkersGroup settings={settings} now={now} onSaved={onSaved} />
+              <RetentionGroup settings={settings} now={now} onSaved={onSaved} cleanup={status?.retention.cleanup}
+                              last={status?.retention.last} />
+              <NotificationsGroup settings={settings} eventKinds={eventKinds} now={now} onSaved={onSaved} />
+              <CodeTrackingGroup settings={settings} now={now} onSaved={onSaved} />
+            </>
+          )}
+          <VariablesSection />
+          <BackupSection home={status?.home ?? null} />
+          <AppearanceSection />
         </div>
-      )}
-      <VariablesSection />
-      <BackupSection home={status?.home ?? null} />
-      <AppearanceSection />
+      </div>
       {status && <SettingsFooter status={status} />}
     </div>
   );
+}
+
+/** The sections, by the label each one carries, in page order. */
+const SECTIONS = ['Workers', 'Retention', 'Notifications', 'Code tracking', 'Variables and secrets', 'Backup and restore', 'Appearance'];
+
+function jumpTo(label: string) {
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  document.querySelector(`.settings-stack section[aria-label="${label}"]`)
+    ?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
 }
 
 /* ─── Shared pieces ───────────────────────────────────────── */
@@ -165,30 +188,31 @@ function SystemHero({ status, now, help, onChanged }: {
     finally { setBusy(false); }
   };
   if (!status) {
-    return <section className="settings-hero is-loading" aria-busy="true"><div className="settings-hero-orb" /><p className="muted">Reading the system status…</p></section>;
+    return (
+      <section className="hero-head settings-hero is-loading" aria-busy="true">
+        <p className="hero-eyebrow">This RunRail</p>
+        <h1>Settings</h1>
+        <p className="hero-status"><i aria-hidden="true" />Reading the system status…</p>
+      </section>
+    );
   }
   const headline = systemHeadline(status);
   const paused = status.worker.paused;
   return (
-    <section className={clsx('settings-hero', `is-${headline.tone}`)} aria-label="System">
-      <div className="settings-hero-main">
-        <span className="settings-hero-orb" aria-hidden="true"><span /></span>
-        <div className="settings-hero-text">
-          <span className="settings-hero-eyebrow">System</span>
-          <h2>{headline.title}</h2>
-          <p className="settings-hero-meta">
-            <span>Up {formatUptime(status.started_at, now)}</span>
-            <span>{headline.detail}</span>
-          </p>
-        </div>
-      </div>
+    <section className={clsx('hero-head settings-hero', `is-${headline.tone}`)} aria-label="System">
+      <p className="hero-eyebrow">This RunRail<i>·</i>settings apply without a restart</p>
+      <h1>Settings</h1>
+      {/* What the system is doing, as the page's verdict. */}
+      <p className="hero-status">
+        <i aria-hidden="true" />{headline.title}<span>·</span>Up {formatUptime(status.started_at, now)}<span>·</span>{headline.detail}
+      </p>
       {paused ? (
         <div className="settings-pause-banner" role="status">
           <span>{pausedBanner(status.worker.running)}</span>
           <Button onClick={() => set(false)} disabled={busy}><Play size={13} /> Resume</Button>
         </div>
       ) : (
-        <div className="settings-hero-action">
+        <div className="detail-actions settings-hero-action">
           <Button variant="ghost" className="settings-pause-btn" onClick={() => set(true)} disabled={busy}
                   title={help ?? undefined}>
             <Pause size={13} /> Pause everything new
