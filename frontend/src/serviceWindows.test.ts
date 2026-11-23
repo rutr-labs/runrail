@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
-  daysLabel, isActive, isKnownZone, nextChange, scheduleSummary, weekSegments, weeklyHours, windowLabel,
+  daysLabel, isActive, isKnownZone, nextChange, scheduleSummary, weekMinute, weekSegments, weeklyHours, windowLabel,
   type ServiceWindow,
 } from './serviceWindows';
 
@@ -109,5 +109,27 @@ describe('the schedule in words', () => {
     expect(scheduleSummary(w, 'UTC', at('2026-10-23T18:00').getTime()))
       .toBe('Next window opens Mon 08:00 (in 2d 14h)');
     expect(scheduleSummary([], 'UTC')).toBe('No windows yet — it will never start on its own.');
+  });
+});
+
+describe('weekMinute', () => {
+  // 2026-11-23 is a Monday.
+  test('counts minutes from Monday midnight in the named zone', () => {
+    expect(weekMinute('UTC', Date.UTC(2026, 10, 23, 0, 0))).toBe(0);
+    expect(weekMinute('UTC', Date.UTC(2026, 10, 23, 8, 30))).toBe(510);
+    expect(weekMinute('UTC', Date.UTC(2026, 10, 25, 12, 0))).toBe(2 * 1440 + 720);
+    expect(weekMinute('UTC', Date.UTC(2026, 10, 29, 23, 59))).toBe(7 * 1440 - 1);
+  });
+
+  test('places the same instant on different days in different zones', () => {
+    const instant = Date.UTC(2026, 10, 23, 2, 0);            // Monday 02:00 UTC
+    expect(weekMinute('America/Toronto', instant)).toBe(6 * 1440 + 21 * 60);   // Sunday 21:00
+    expect(weekMinute('Asia/Kolkata', instant)).toBe(7 * 60 + 30);             // Monday 07:30
+  });
+
+  test('falls back to the viewer clock for a zone it does not know', () => {
+    const minute = weekMinute('Not/AZone', Date.UTC(2026, 10, 23, 8, 30));
+    expect(minute).toBeGreaterThanOrEqual(0);
+    expect(minute).toBeLessThan(7 * 1440);
   });
 });

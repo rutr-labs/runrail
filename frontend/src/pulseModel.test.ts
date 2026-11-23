@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { failingFlows, moodOf, signalLabel, verdictLine } from './pulseModel';
+import { failingFlows, moodOf, newestFirst, signalLabel, unjudgedFailures, verdictLine } from './pulseModel';
 
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
@@ -74,5 +74,37 @@ describe('the words', () => {
   it('keeps the dock label to the leading problem', () => {
     expect(signalLabel({ down: 2, waiting: 4, failing: 1 })).toBe('2 down');
     expect(signalLabel({ down: 0, waiting: 4, failing: 1 })).toBe('4 waiting');
+  });
+});
+
+describe('a failure the newest page cannot see', () => {
+  it('asks about a workflow that failed recently and has not run since', () => {
+    const recent = [run(90, 2, 'success', 1), run(89, 3, 'running', 2)];
+    const failed = [run(40, 1, 'failed', 120), run(12, 2, 'failed', 300)];
+    // Workflow 1 is absent from the page; workflow 2 has a verdict there.
+    expect(unjudgedFailures(recent, failed, NOW)).toEqual([1]);
+  });
+
+  it('does not count a run still in flight as a verdict', () => {
+    const recent = [run(90, 1, 'running', 1)];
+    expect(unjudgedFailures(recent, [run(40, 1, 'failed', 120)], NOW)).toEqual([1]);
+  });
+
+  it('lets old failures go, and caps how many it asks about', () => {
+    expect(unjudgedFailures([], [run(1, 1, 'failed', 25 * 60)], NOW)).toEqual([]);
+    const many = Array.from({ length: 30 }, (_, i) => run(i + 1, i + 1, 'failed', 10));
+    expect(unjudgedFailures([], many, NOW)).toHaveLength(12);
+  });
+
+  it('judges on the merged evidence', () => {
+    const recent = [run(90, 2, 'success', 1)];
+    const older = [run(41, 1, 'cancelled', 100), run(40, 1, 'failed', 120), run(39, 1, 'success', 200)];
+    const failing = failingFlows(newestFirst(recent, older), flows, NOW);
+    expect(failing.map(f => f.flow.name)).toEqual(['ingest']);
+  });
+
+  it('merges newest first without repeating a run', () => {
+    const merged = newestFirst([run(5, 1, 'success', 1), run(3, 1, 'failed', 3)], [run(4, 2, 'success', 2), run(3, 1, 'failed', 3)]);
+    expect(merged.map(r => r.id)).toEqual([5, 4, 3]);
   });
 });

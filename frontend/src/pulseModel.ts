@@ -49,6 +49,31 @@ export function failingFlows<F extends VerdictFlow, R extends VerdictRun>(
   return failing;
 }
 
+const settled = (run: VerdictRun) => run.status === 'success' || run.status === 'failed';
+
+/** Workflows that failed within `within` but have no settled run in the
+ *  newest page — so the page alone cannot say whether they recovered. Capped,
+ *  because each one costs a request. */
+export function unjudgedFailures(
+  recent: VerdictRun[], failed: VerdictRun[], now: number, within = DAY, cap = 12,
+): number[] {
+  const judged = new Set(recent.filter(settled).map(run => run.workflow_id));
+  const ask = new Set<number>();
+  for (const run of failed) {
+    const at = new Date(run.finished_at || run.started_at || run.created_at).getTime();
+    if (now - at <= within && !judged.has(run.workflow_id)) ask.add(run.workflow_id);
+  }
+  return [...ask].slice(0, cap);
+}
+
+/** Several lists of runs as one, newest first, each run once. Run ids only
+ *  grow, so the id is the order. */
+export function newestFirst<R extends VerdictRun>(...lists: R[][]): R[] {
+  const byId = new Map<number, R>();
+  for (const list of lists) for (const run of list) if (!byId.has(run.id)) byId.set(run.id, run);
+  return [...byId.values()].sort((a, b) => b.id - a.id);
+}
+
 /** What needs a person, in the order they should hear about it. */
 export function moodOf(state: { down: number; waiting: number; failing: number }): Mood {
   if (state.down) return 'down';

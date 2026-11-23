@@ -5,7 +5,7 @@ import { rrws } from './ws';
 import { useVisibleInterval } from './hooks';
 import { useOpenApprovals } from './components/ApprovalGate';
 import { serviceCounts, useServices } from './Services';
-import { failingFlows, moodOf, type Failing, type Mood } from './pulseModel';
+import { failingFlows, moodOf, newestFirst, unjudgedFailures, type Failing, type Mood } from './pulseModel';
 import type { Run, Summary, Workflow } from './types';
 
 /* ─── The pulse ────────────────────────────────────────────
@@ -50,14 +50,35 @@ export function PulseProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [flows, setFlows] = useState<Workflow[] | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
+  // Runs from before the newest page, fetched only for workflows that failed
+  // recently and have not run since — see `refresh`.
+  const [older, setOlder] = useState<Run[]>([]);
   const approvals = useOpenApprovals();
   const services = useServices({ supervisor: false, pollIdle: false });
   const home = useLocation().pathname === '/';
 
   const refresh = () => {
-    api<Run[]>(`/runs?limit=${PULSE_RUNS}`).then(setRuns).catch(() => setRuns(prev => prev ?? []));
     api<Workflow[]>('/workflows').then(setFlows).catch(() => setFlows(prev => prev ?? []));
     api<Summary>('/stats/summary').then(setSummary).catch(() => {});
+    void (async () => {
+      try {
+        const [recent, failed] = await Promise.all([
+          api<Run[]>(`/runs?limit=${PULSE_RUNS}`),
+          api<Run[]>('/runs?status=failed&limit=40').catch(() => [] as Run[]),
+        ]);
+        setRuns(recent);
+        // The verdict must not depend on how busy the install is. A workflow
+        // that failed and then stopped running (auto-paused, or just rare)
+        // scrolls out of the newest page within minutes on a busy one, and
+        // the home screen would call that "on track". So any workflow with a
+        // recent failure that the newest page cannot judge is asked about
+        // directly — normally none, and never more than a handful.
+        const ask = unjudgedFailures(recent, failed, Date.now());
+        const lists = await Promise.all(ask.map(id =>
+          api<Run[]>(`/runs?workflow_id=${id}&limit=10`).catch(() => [] as Run[])));
+        setOlder(lists.flat());
+      } catch { setRuns(prev => prev ?? []); }
+    })();
   };
   useEffect(refresh, []);
 
@@ -84,8 +105,8 @@ export function PulseProvider({ children }: { children: ReactNode }) {
   const serviceCount = useMemo(() => serviceCounts(services.items), [services.items]);
   const waitingRuns = useMemo(() => [...new Set((approvals ?? []).map(row => row.run_id))], [approvals]);
   const failing = useMemo(
-    () => (runs && flows ? failingFlows(runs, flows, Date.now()) : []),
-    [runs, flows]);
+    () => (runs && flows ? failingFlows(newestFirst(runs, older), flows, Date.now()) : []),
+    [runs, flows, older]);
   const mood = moodOf({ down: serviceCount.down, waiting: waitingRuns.length, failing: failing.length });
 
   // The light behind every page: style.css reads these off <html>.

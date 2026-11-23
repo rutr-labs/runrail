@@ -44,7 +44,8 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
   complete: boolean;
   /** Workflows whose latest verdict is a failure. */
   failing: Set<number>;
-  onRun: (id: number) => void;
+  /** Start a workflow from its line. Left out where nobody is at a keyboard. */
+  onRun?: (id: number) => void;
   /** Where "now" falls, in px from the board's left edge — so the page around
    *  the board can line itself up on the same instant. */
   onNowX?: (x: number) => void;
@@ -177,10 +178,12 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
               <div className="lane-name">
                 <i className="lane-signal" aria-hidden="true" />
                 <Link to={`/workflows/${lane.flow.id}`} title={lane.flow.name}>{lane.flow.name}</Link>
-                <button type="button" className="lane-run" onClick={() => onRun(lane.flow.id)}
-                        title={`Run ${lane.flow.name} now`} aria-label={`Run ${lane.flow.name} now`}>
-                  <Play size={11} />
-                </button>
+                {onRun && (
+                  <button type="button" className="lane-run" onClick={() => onRun(lane.flow.id)}
+                          title={`Run ${lane.flow.name} now`} aria-label={`Run ${lane.flow.name} now`}>
+                    <Play size={11} />
+                  </button>
+                )}
               </div>
               {/* Decorative for assistive tech: the feed under the board says
                   the same things in a form that can be read in order. */}

@@ -164,6 +164,21 @@ export function nextChange(windows: ServiceWindow[], zone: string, at: Date): Da
   return null;
 }
 
+/** Where an instant falls in the week, in minutes from Monday 00:00 in
+ *  `zone` — the horizontal position of "now" on a Monday-to-Sunday axis. An
+ *  unknown zone falls back to the viewer's own clock rather than throwing. */
+export function weekMinute(zone: string, at: number): number {
+  const read = (timeZone?: string) => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(new Date(at));
+    const get = (type: string) => parts.find(part => part.type === type)?.value ?? '';
+    const day = Math.max(0, DAYS.indexOf(get('weekday').toLowerCase().slice(0, 3) as Day));
+    return day * 1440 + Number(get('hour')) * 60 + Number(get('minute'));
+  };
+  try { return read(zone); } catch { return read(); }
+}
+
 /** Per weekday row of the week view (Monday first), the [from, to) minute
  *  spans each window paints, with overnight windows continuing on the next
  *  row. `index` is the window's position, so a row can be traced back to it. */

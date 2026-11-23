@@ -20,7 +20,9 @@
 @property --mood-a { syntax: '<color>'; inherits: true; initial-value: #14b8c4; }
 @property --mood-b { syntax: '<color>'; inherits: true; initial-value: #5b5bf0; }
 
-:root {
+/* .wallboard: the TV board is dark whatever the theme, so it takes the dark
+   set directly rather than inheriting whichever one <html> has. */
+:root, .wallboard {
   --font-display: "Bricolage Grotesque Variable", "Inter Variable", Inter, system-ui, sans-serif;
   font-feature-settings: "calt", "cv11", "ss01";
   font-optical-sizing: auto;
@@ -92,9 +94,11 @@
   --sky-b: 0.24;
   transition: --mood-a 1.8s ease, --mood-b 1.8s ease;
 }
-:root[data-mood="waiting"] { --mood-a: #f7a928; --mood-b: #e2507f; }
-:root[data-mood="failing"] { --mood-a: #ff4f4f; --mood-b: #b833d6; }
-:root[data-mood="down"]    { --mood-a: #ff3d3d; --mood-b: #ff7b1c; --sky-a: 0.36; }
+/* Each mood names the wallboard too: it re-declares the dark tokens above,
+   calm sky included, and would otherwise stay calm whatever happened. */
+:root[data-mood="waiting"], :root[data-mood="waiting"] .wallboard { --mood-a: #f7a928; --mood-b: #e2507f; }
+:root[data-mood="failing"], :root[data-mood="failing"] .wallboard { --mood-a: #ff4f4f; --mood-b: #b833d6; }
+:root[data-mood="down"], :root[data-mood="down"] .wallboard { --mood-a: #ff3d3d; --mood-b: #ff7b1c; --sky-a: 0.36; }
 
 [data-theme="light"] {
   --ink: 16, 20, 32;
@@ -991,7 +995,8 @@ thead th:first-child, tbody td:first-child { padding-left: 24px; }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
 @keyframes beam-draw { from { opacity: 0; transform: scaleY(0); } }
 @media (prefers-reduced-motion: no-preference) {
-  .now-lead > *, .hero-head > *, .departures, .board-head, .instruments, .now-grid, .lane, .run-row, .flow-row:not(.flow-row--head), .detail-cols {
+  .now-lead > *, .hero-head > *, .departures, .board-head, .instruments, .now-grid, .lane, .run-row, .flow-row:not(.flow-row--head), .detail-cols,
+  .service-card.sw-row, .list-row {
     /* backwards, not both: once landed, nothing is left holding a transform. */
     animation: rise 0.7s var(--ease-out) backwards;
   }
@@ -1004,11 +1009,245 @@ thead th:first-child, tbody td:first-child { padding-left: 24px; }
   .lane { animation-duration: 0.5s; animation-delay: calc(200ms + var(--i, 0) * 22ms); }
   .instruments { animation-delay: 360ms; }
   .now-grid, .detail-cols { animation-delay: 180ms; }
-  .run-row, .flow-row:not(.flow-row--head) { animation-duration: 0.45s; animation-delay: calc(var(--i, 0) * 24ms); }
+  .run-row, .flow-row:not(.flow-row--head), .service-card.sw-row, .list-row { animation-duration: 0.45s; animation-delay: calc(var(--i, 0) * 24ms); }
   .has-beam .now-beam { transform-origin: top; animation: beam-draw 0.9s 0.15s var(--ease-out) backwards; }
 }
 .cmdk-foot-tip { margin-left: auto; }
 @media (max-width: 720px) { .cmdk-foot-tip { display: none; } }
+
+/* ─── Services: the week ──────────────────────────────────
+   One line per service from Monday to Sunday. Like the timetable, the lines
+   sit straight on the page. */
+.sw-board { --ident-w: 330px; margin-bottom: 24px; border-top: 1px solid var(--hairline); }
+.sw-row, .service-card.sw-row {
+  /* A fixed third column: every line's week must be the same width, or the
+     days stop lining up from one service to the next. */
+  display: grid; grid-template-columns: var(--ident-w) minmax(0, 1fr) 300px; align-items: center; gap: 0 28px;
+  margin: 0 -12px; padding: 16px 12px;
+  border: 0; border-top: 1px solid var(--hairline); border-radius: 0;
+  background: none; box-shadow: none;
+  transition: background 0.15s;
+}
+.service-card.sw-row:hover { background: var(--bg-hover); transform: none; }
+.sw-row--axis { padding-block: 16px 10px; border-top: 0; }
+.services-summary { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 13px; font-weight: 550; color: var(--text-2); }
+.services-summary i { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 22%, transparent); }
+.services-summary.is-down i { background: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 22%, transparent); }
+.services-summary b { font-weight: 600; color: var(--danger-ink); }
+.sw-axis { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.sw-axis span {
+  padding-left: 8px; border-left: 1px solid var(--hairline);
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-3);
+}
+.sw-axis span.is-today { color: var(--text-1); }
+.sw-ident { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.sw-ident > .lane-signal { margin-top: 8px; }
+.sw-ident > div { min-width: 0; }
+.sw-ident h3 { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.012em; }
+.sw-ident h3 a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-ident h3 a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.sw-ident h3 .status-badge { flex: none; }
+.sw-ident .service-line { margin-top: 3px; min-height: 0; font-size: 12.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-ident .service-chips { margin-top: 8px; }
+.service-card.is-ok .lane-signal { --sig: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 20%, transparent); }
+
+/* The week itself: seven days ruled off, a bar wherever the service is due. */
+.sw-lane {
+  position: relative; height: 34px;
+  border-radius: 8px;
+  background:
+    repeating-linear-gradient(90deg, var(--hairline) 0 1px, transparent 1px calc(100% / 7)),
+    rgba(var(--ink), 0.025);
+  box-shadow: inset -1px 0 0 var(--hairline);
+}
+.sw-span {
+  position: absolute; top: 9px; bottom: 9px; min-width: 3px;
+  border-radius: 5px;
+  background: rgba(var(--ink), 0.22);
+}
+.sw-span.is-due { background: color-mix(in srgb, var(--warning) 70%, transparent); }
+.sw-span.is-on { background: var(--success); box-shadow: 0 0 14px color-mix(in srgb, var(--success) 55%, transparent); }
+.sw-span--always { left: 0; right: 0; top: 14px; bottom: 14px; border-radius: 3px; background: rgba(var(--ink), 0.14); }
+.sw-span--always.is-on { background: color-mix(in srgb, var(--success) 60%, transparent); box-shadow: none; }
+.sw-note { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11.5px; color: var(--text-3); }
+.sw-note.is-on { color: var(--success-ink); }
+.sw-now {
+  position: absolute; top: -5px; bottom: -5px; width: 1px;
+  background: var(--text-1);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--text-1) 60%, transparent);
+}
+.sw-board .service-card-actions { justify-content: flex-end; margin: 0; }
+.sw-zone { text-align: right; font-size: 12px; color: var(--text-3); }
+.sw-board .service-open { margin-left: 8px; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+@media (max-width: 1180px) {
+  .sw-board { --ident-w: 260px; }
+  .sw-row, .service-card.sw-row { grid-template-columns: var(--ident-w) minmax(0, 1fr); row-gap: 14px; }
+  .sw-row > :nth-child(3) { grid-column: 1 / -1; }
+  .sw-board .service-card-actions { justify-content: flex-start; }
+  .sw-zone { text-align: left; }
+}
+@media (max-width: 720px) {
+  .sw-row, .service-card.sw-row { grid-template-columns: minmax(0, 1fr); margin: 0; padding-inline: 0; }
+  .sw-row--axis .sw-axis { display: none; }
+}
+
+/* The service page's facts. */
+.facts-code {
+  margin: 8px 0 14px; padding: 10px 12px;
+  border-radius: var(--r-sm); border: 1px solid var(--hairline); background: var(--bg-code);
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+.facts-code:last-child { margin-bottom: 0; }
+.facts dd .code-inline { font-size: 11.5px; }
+
+/* ─── Lists: projects, environments, artifacts ────────────
+   The same ruled rows as workflows and runs, so every collection in the app
+   is read the same way. */
+.list-row {
+  display: grid; align-items: center; gap: 20px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--hairline);
+  transition: background 0.15s;
+}
+.list-row:not(.list-row--head):hover { background: var(--bg-hover); }
+.list-row--head {
+  padding-block: 16px 12px; border-top: 0;
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-3);
+}
+.list--projects .list-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) 150px auto; }
+.list--envs .list-row { grid-template-columns: 7px minmax(0, 1fr) 110px 90px 100px auto; }
+.list--artifacts .list-row { grid-template-columns: 34px minmax(0, 1fr) 96px 86px auto; }
+.list-main { min-width: 0; }
+.list-main h3 { font-size: 14.5px; font-weight: 600; letter-spacing: -0.012em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-main p { margin-top: 1px; font-size: 12.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-path {
+  justify-self: start; max-width: 100%; padding: 5px 10px;
+  border-radius: 8px; background: rgba(var(--ink), 0.055);
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+}
+.list-meta { font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-mono { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.list-state { text-transform: capitalize; }
+.is-failing > .list-state { color: var(--danger-ink); }
+.is-waiting > .list-state { color: var(--warning-ink); }
+.is-running > .list-state { color: var(--running-ink); }
+.list-building { display: grid; gap: 5px; max-width: 260px; margin-top: 6px; }
+.list-building small { font-size: 12px; color: var(--text-3); }
+.list-error { display: block; margin-top: 3px; font-size: 12px; color: var(--danger-ink); overflow-wrap: anywhere; }
+.list-glyph { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: rgba(var(--ink), 0.06); color: var(--text-2); }
+.list .row-actions { justify-content: flex-end; }
+.list--artifacts .run-day { padding-top: 20px; }
+.list--artifacts .run-day + .list-row { border-top-color: transparent; }
+@media (max-width: 900px) {
+  .list--projects .list-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .list--projects .list-row > .list-path { grid-column: 1 / -1; grid-row: 2; }
+  .list--projects .list-row > .list-meta, .list-row--head { display: none; }
+  .list--envs .list-row { grid-template-columns: 7px minmax(0, 1fr) auto; }
+  .list--envs .list-row > .list-meta { display: none; }
+  .list--artifacts .list-row { grid-template-columns: minmax(0, 1fr) auto; padding-inline: 16px; }
+  .list--artifacts .list-row > .list-meta, .list-glyph { display: none; }
+  .list-row { padding-inline: 16px; }
+}
+
+/* ─── Log search: the page is its field ───────────────── */
+.logsearch-form { margin-bottom: 26px; }
+.logsearch-bar {
+  display: flex; align-items: center; gap: 14px;
+  height: 68px; padding: 0 11px 0 24px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--glass);
+  box-shadow: var(--float-shadow);
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
+          backdrop-filter: blur(26px) saturate(170%);
+  color: var(--text-3);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.logsearch-bar:focus-within { border-color: var(--border-focus); box-shadow: var(--float-shadow), 0 0 0 5px var(--accent-glow); }
+.logsearch-bar input {
+  flex: 1; min-width: 0; height: 100%;
+  border: 0; outline: 0; background: none;
+  font-family: var(--font-display); font-size: 21px; font-weight: 500; letter-spacing: -0.02em; color: var(--text-1);
+}
+.logsearch-bar input::placeholder { color: var(--text-3); }
+.logsearch-bar .btn { height: 46px; padding: 0 24px; font-size: 14.5px; }
+.logsearch-scope { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 14px; padding: 0 6px; }
+.logsearch-scope select, .logsearch-scope .logsearch-taskname, .logsearch-scope .logsearch-date input {
+  height: 36px; padding: 0 14px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background-color: var(--bg-input);
+  font-size: 13px; color: var(--text-2);
+}
+.logsearch-scope select { max-width: 190px; }
+.logsearch-scope .segmented { height: 36px; }
+.logsearch-scope .logsearch-date { flex-direction: row; align-items: center; gap: 8px; }
+.logsearch-more { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; height: 36px; }
+.logsearch-form .logsearch-hint { padding: 12px 6px 0; }
+.logsearch-form .logsearch-advanced {
+  margin-top: 16px;
+  border: 1px solid var(--border); border-radius: var(--r-lg);
+  background: var(--bg-card);
+}
+@media (max-width: 720px) {
+  .logsearch-bar { height: 56px; padding-left: 18px; }
+  .logsearch-bar input { font-size: 17px; }
+  .logsearch-bar .btn { height: 40px; padding: 0 16px; }
+  .logsearch-more { margin-left: 0; }
+}
+
+/* ─── Settings ────────────────────────────────────────────
+   The system's own verdict on top, its gauges in a strip, then one column of
+   sections with a rail to jump between them. */
+.settings-page { gap: 0; }
+.settings-hero.hero-head {
+  --lamp: var(--success);
+  display: block; overflow: visible; isolation: auto;
+  padding: 30px 0 30px; border: 0; border-radius: 0;
+  background: none; box-shadow: none;
+}
+.settings-hero.hero-head::before {
+  inset: auto; left: -14%; top: -120px; width: 70%; height: 420px; opacity: 1;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--lamp) 13%, transparent), transparent);
+}
+.settings-hero.hero-head::after { content: none; }
+.settings-hero.is-ok { --tone: var(--success-ink); }
+.settings-hero.is-paused, .settings-hero.is-warning { --lamp: var(--warning); --tone: var(--warning-ink); }
+.settings-hero.is-loading { --lamp: var(--text-3); --tone: var(--text-2); min-height: 0; }
+.settings-hero .hero-status { flex-wrap: wrap; }
+.settings-hero .hero-status span { margin: 0 -2px; color: var(--text-3); }
+.settings-hero .settings-hero-action { flex-direction: row; align-items: center; gap: 14px; text-align: left; }
+.settings-hero .settings-hero-action small { max-width: none; font-size: 12.5px; }
+.settings-hero .settings-pause-banner { margin-top: 26px; border-radius: var(--r-lg); }
+
+.sys-grid { gap: 0; margin-bottom: 30px; overflow: hidden; border-bottom: 1px solid var(--hairline); }
+.sys-card, .sys-card:hover {
+  margin: -1px 0 0 -1px; padding: 20px 22px 22px;
+  border: solid var(--hairline); border-width: 1px 0 0 1px; border-radius: 0;
+  background: none; box-shadow: none; transform: none;
+}
+.sys-card-label { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-3); }
+.sys-card-value { font-family: var(--font-display); font-size: 26px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.15; }
+.sys-card-icon { background: none; border: 0; box-shadow: none; color: var(--text-3); width: auto; height: auto; }
+
+.settings-cols { display: grid; grid-template-columns: 188px minmax(0, 820px); gap: 44px; align-items: start; }
+.settings-nav { position: sticky; top: calc(var(--dock-h) + 12px); display: grid; gap: 2px; }
+.settings-nav button {
+  height: 36px; padding: 0 14px;
+  border: 0; border-radius: 10px; background: none;
+  font-size: 13.5px; font-weight: 500; text-align: left; color: var(--text-2);
+}
+.settings-nav button:hover { background: var(--bg-hover); color: var(--text-1); }
+.settings-stack { display: grid; gap: 20px; min-width: 0; }
+.settings-stack .settings-section { margin: 0; scroll-margin-top: calc(var(--dock-h) + 12px); }
+.settings-head h3 { font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: -0.025em; }
+.settings-footer { margin-top: 28px; }
+@media (max-width: 1080px) {
+  .settings-cols { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .settings-nav { position: static; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .settings-nav button { flex: none; height: 34px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-card); }
+}
 
 /* ─── Run peek ────────────────────────────────────────────
    A run read beside the page it was opened from. */
@@ -1085,11 +1324,28 @@ thead th:first-child, tbody td:first-child { padding-left: 24px; }
 }
 .peek-empty { font-size: 13px; color: var(--text-3); }
 
-/* ─── Wallboard: the same sky, on a TV ────────────────── */
-.wallboard { position: relative; background: #06070a; }
+/* ─── Wallboard: the same scene, read from across a room ─ */
+.wallboard { position: relative; gap: 28px; padding: 26px 44px 44px; background: #06070a; color: var(--text-1); }
 .wallboard > :not(.atmosphere) { position: relative; z-index: 1; }
-.wallboard-brand { font-family: var(--font-display); font-weight: 650; letter-spacing: -0.03em; }
-.wallboard-clock { font-family: var(--font-display); font-size: 34px; font-weight: 500; letter-spacing: -0.03em; }
+.wallboard-head { justify-content: space-between; }
+.wallboard-brand { gap: 10px; font-family: var(--font-display); font-size: 19px; font-weight: 650; letter-spacing: -0.03em; }
+.wallboard-exit { border-radius: 50%; border-color: var(--border); }
+.wall-hero { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 24px 56px; padding: 18px 0 8px; }
+.wall-lead { min-width: 0; flex: 1 1 520px; }
+.wall-hero .now-verdict { font-size: clamp(48px, 6.6vw, 112px); margin-bottom: 18px; }
+.wall-hero .now-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 22px; font-size: 17px; }
+.wallboard-clock {
+  margin: 0 0 0.1em;
+  font-family: var(--font-display); font-size: clamp(64px, 9vw, 150px); font-weight: 450; line-height: 0.9; letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums; color: var(--text-1); white-space: nowrap;
+}
+.wallboard-clock small { font-size: 0.34em; font-weight: 500; letter-spacing: -0.02em; color: var(--text-3); }
+.wallboard .board { --lane-h: 46px; --name-w: 280px; }
+.wallboard .lane-name a { font-size: 15.5px; }
+.wallboard .board-title h2 { font-size: 22px; }
+.wallboard .lane-next, .wallboard .board-mark { font-size: 12.5px; }
+.wallboard .bar { height: 12px; margin-top: -6px; border-radius: 6px; }
+@media (max-width: 720px) { .wallboard { padding: 18px 16px 28px; } .wallboard .board { --name-w: 116px; } }
 
 /* ─── Motion preferences ──────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {

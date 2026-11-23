@@ -2106,26 +2106,30 @@ function Projects() {
         </div>
       )}
       {items.length > 0 ? (
-        <div className="card-grid">
-          {items.map(x => (
-            <article className="resource-card" key={x.id}>
-              <div className="resource-top">
-                <div className="resource-icon folder"><FolderOpen size={18} /></div>
+        <section className="panel list list--projects">
+          <div className="list-row list-row--head" aria-hidden="true">
+            <span>Project</span><span>Folder</span><span>Used by</span><span />
+          </div>
+          {items.map((x, index) => {
+            const used = (flows ?? []).filter(w => w.project_id === x.id).length;
+            return (
+              <article className="list-row" key={x.id} style={{ '--i': Math.min(index, 16) } as CSSProperties}>
+                <div className="list-main">
+                  <h3 title={x.name}>{x.name}</h3>
+                  <p>{x.description || 'No description yet'}</p>
+                </div>
+                <code className="list-path" title={x.root_path}>{x.root_path}</code>
+                <span className="list-meta">
+                  {used ? `${used} workflow${used === 1 ? '' : 's'}` : <Link className="edit-link" to="/workflows">Build a workflow</Link>}
+                </span>
                 <div className="row-actions">
                   <button className="edit-link" onClick={() => setEditing(x)}>Edit</button>
                   <button className="delete-link" onClick={() => removeProject(x)}>Remove</button>
                 </div>
-              </div>
-              <h3 title={x.name}>{x.name}</h3>
-              <p>{x.description || 'No description yet'}</p>
-              <div className="path-chip"><span>⌁</span>{x.root_path}</div>
-              <div className="resource-actions">
-                <Link className="resource-open" to="/workflows"><GitBranch size={12} /> New workflow</Link>
-                <span>Ready to use</span>
-              </div>
-            </article>
-          ))}
-        </div>
+              </article>
+            );
+          })}
+        </section>
       ) : (
         <EmptyState
           icon={<FolderOpen size={24} />}
@@ -2243,30 +2247,38 @@ function Environments() {
         action={<Button onClick={() => setOpen(true)}><Plus size={15} /> New environment</Button>}
       />
       {items.length > 0 ? (
-        <div className="list-panel">
-          {items.map(x => (
-            <div className="list-item" key={x.id}>
-              <div className="resource-icon terminal"><Terminal size={16} /></div>
-              <div className="list-copy">
-                <h3 title={x.name}>{x.name}</h3>
-                {x.status === 'creating' || x.status === 'building'
-                  ? <div style={{ marginTop: 6, maxWidth: 260 }}>
-                      <LoadingBar size="sm" />
-                      <small style={{ display: 'block', marginTop: 5, color: 'var(--text-3)' }}>
-                        {x.status === 'building' ? 'Installing packages…' : 'Preparing environment…'}
-                      </small>
-                    </div>
-                  : <p>{x.description || (x.managed ? `${x.active_packages_json.length} active managed libraries` : x.executable) || 'External runtime'}</p>}
-                {x.last_error && <small style={{ color: 'var(--danger)' }}>{x.last_error}</small>}
-              </div>
-              <span className="type-chip">{x.managed ? 'managed' : x.env_type} · {x.status}{x.python_version ? ` · py ${x.python_version}` : ''}</span>
-              <div className="row-actions">
-                <button className="edit-link" disabled={x.status === 'creating' || x.status === 'building'} onClick={() => setEditing(x)}>Edit</button>
-                <button className="delete-link" disabled={x.status === 'creating' || x.status === 'building'} onClick={() => removeEnv(x)}>Remove</button>
-              </div>
-            </div>
-          ))}
-        </div>
+        <section className="panel list list--envs">
+          <div className="list-row list-row--head" aria-hidden="true">
+            <span /><span>Environment</span><span>Kind</span><span>Python</span><span>State</span><span />
+          </div>
+          {items.map((x, index) => {
+            const building = x.status === 'creating' || x.status === 'building';
+            const tone = building ? 'is-running' : x.last_error || x.status === 'failed' ? 'is-failing'
+              : x.status === 'degraded' ? 'is-waiting' : x.status === 'ready' ? 'is-ok' : 'is-idle';
+            return (
+              <article className={clsx('list-row', tone)} key={x.id} style={{ '--i': Math.min(index, 16) } as CSSProperties}>
+                <i className="lane-signal" aria-hidden="true" />
+                <div className="list-main">
+                  <h3 title={x.name}>{x.name}</h3>
+                  {building
+                    ? <div className="list-building">
+                        <LoadingBar size="sm" />
+                        <small>{x.status === 'building' ? 'Installing packages…' : 'Preparing environment…'}</small>
+                      </div>
+                    : <p>{x.description || (x.managed ? `${x.active_packages_json.length} active managed libraries` : x.executable) || 'External runtime'}</p>}
+                  {x.last_error && <small className="list-error">{x.last_error}</small>}
+                </div>
+                <span className="list-meta">{x.managed ? 'Managed' : x.env_type}</span>
+                <span className="list-meta list-mono">{x.python_version ?? '—'}</span>
+                <span className="list-meta list-state">{x.status}</span>
+                <div className="row-actions">
+                  <button className="edit-link" disabled={building} onClick={() => setEditing(x)}>Edit</button>
+                  <button className="delete-link" disabled={building} onClick={() => removeEnv(x)}>Remove</button>
+                </div>
+              </article>
+            );
+          })}
+        </section>
       ) : (
         <EmptyState
           icon={<Cpu size={24} />}
@@ -2413,6 +2425,10 @@ function Workflows() {
   // Half a minute is fine for "which fire is next"; the countdowns tick on
   // their own.
   const tick = Math.floor(useNow(true, 30_000) / 30_000);
+  // The same verdict the home screen and the dock give, not a second opinion
+  // worked out from this page's own slice of history.
+  const { failing: failingNow } = usePulse();
+  const failing = useMemo(() => new Set(failingNow.map(f => f.flow.id)), [failingNow]);
   const load = () => {
     api<Workflow[]>('/workflows').then(setItems).catch(() => setItems(prev => prev ?? []));
     api<Run[]>('/runs?limit=500').then(setRuns).catch(() => {});
@@ -2442,7 +2458,6 @@ function Workflows() {
       const list = history.get(run.workflow_id);
       if (list) { if (list.length < HISTORY_TICKS) list.push(run); } else history.set(run.workflow_id, [run]);
     }
-    const failing = new Set(failingFlows(runs, flows, Date.now()).map(f => f.flow.id));
     const owed = upcomingFires(flows, Date.now(), 14 * DAY, 1);
     return flows.map(flow => {
       const recent = history.get(flow.id) ?? [];
@@ -2457,7 +2472,7 @@ function Workflows() {
         || a.flow.name.localeCompare(b.flow.name, undefined, { numeric: true });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, runs, tick]);
+  }, [items, runs, tick, failing]);
 
   const FILTERS: { key: FlowFilter; label: string; match: (row: typeof rows[number]) => boolean }[] = [
     { key: 'all',       label: 'All',       match: () => true },
@@ -3410,31 +3425,91 @@ type ArtifactItem = {
   created_at: string;
 };
 
+/** How many artifacts the page draws before asking for a narrower filter. */
+const ARTIFACT_CAP = 200;
+
 function Artifacts() {
-  const [items, setItems] = useState<ArtifactItem[]>([]);
-  useEffect(() => { api<ArtifactItem[]>('/artifacts').then(setItems).catch(() => {}); }, []);
+  const [items, setItems] = useState<ArtifactItem[] | null>(null);
+  const [query, setQuery] = useState('');
+  const [kind, setKind] = useState('');
+  useEffect(() => { api<ArtifactItem[]>('/artifacts').then(setItems).catch(() => setItems([])); }, []);
+
+  if (items === null) {
+    return <div><div style={{ height: 40, width: 200, marginBottom: 24 }} className="skeleton-line" /><SkeletonCard /></div>;
+  }
+
+  const needle = query.trim().toLowerCase();
+  const named = needle ? items.filter(x => x.name.toLowerCase().includes(needle) || String(x.workflow_run_id ?? '') === needle) : items;
+  const kinds = [...new Set(items.map(x => x.artifact_type))].sort();
+  const shown = kind ? named.filter(x => x.artifact_type === kind) : named;
+  const bytes = items.reduce((sum, x) => sum + (x.size_bytes ?? 0), 0);
+  const today = localDateKey(new Date());
+  let lastDay = '';
 
   return (
     <>
-      <PageHeader eyebrow="OUTPUTS" title="Artifacts" subtitle="Browse notebooks, reports, and files produced by your workflows." />
+      <PageHeader
+        title="Artifacts"
+        subtitle={items.length
+          ? `${items.length.toLocaleString()} file${items.length === 1 ? '' : 's'} your runs have produced${bytes ? ` · ${formatBytes(bytes)} in all` : ''}.`
+          : 'Browse notebooks, reports, and files produced by your workflows.'}
+      />
       {items.length > 0 ? (
-        <div className="list-panel">
-          {items.map(x => (
-            <div className="list-item" key={x.id}>
-              <div className="resource-icon artifact"><Package size={16} /></div>
-              <div className="list-copy">
-                <h3 title={x.name}>{x.name}</h3>
-                <p>
-                  {x.artifact_type} · {x.size_bytes ? formatBytes(x.size_bytes) : 'Size unavailable'} · {timeAgo(x.created_at)}
-                  {x.workflow_run_id && <> · <Link to={`/runs/${x.workflow_run_id}`} style={{ color: 'var(--accent)' }}>run #{x.workflow_run_id}</Link></>}
-                </p>
-              </div>
-              <a className="btn btn-ghost btn-sm" href={`/api/artifacts/${x.id}/download`}>
-                <Download size={13} /> Download
-              </a>
+        <>
+          <div className="toolbar">
+            <div className="tabs" role="tablist" aria-label="Kind">
+              <button type="button" role="tab" aria-selected={kind === ''} className={clsx('tab-pill', kind === '' && 'active')}
+                      onClick={() => setKind('')}>All<small>{named.length}</small></button>
+              {kinds.map(k => (
+                <button key={k} type="button" role="tab" aria-selected={kind === k} className={clsx('tab-pill', kind === k && 'active')}
+                        onClick={() => setKind(k)}>{k}<small>{named.filter(x => x.artifact_type === k).length}</small></button>
+              ))}
             </div>
-          ))}
-        </div>
+            <div className="toolbar-fields">
+              <div className="filterbar-search">
+                <Search size={14} />
+                <input placeholder="File name or run id" value={query} onChange={e => setQuery(e.target.value)} aria-label="Find an artifact" />
+              </div>
+            </div>
+          </div>
+          <section className="panel list list--artifacts">
+            {shown.slice(0, ARTIFACT_CAP).map((x, index) => {
+              const day = localDateKey(new Date(x.created_at));
+              const newDay = day !== lastDay;
+              lastDay = day;
+              return (
+                <Fragment key={x.id}>
+                  {newDay && (
+                    <div className="run-day">
+                      {day === today ? 'Today' : new Date(x.created_at).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+                    </div>
+                  )}
+                  <article className="list-row" style={{ '--i': Math.min(index, 16) } as CSSProperties}>
+                    <span className="list-glyph" aria-hidden="true"><Package size={15} /></span>
+                    <div className="list-main">
+                      <h3 title={x.name}>{x.name}</h3>
+                      <p>
+                        {x.artifact_type}
+                        {x.workflow_run_id && <> · from <Link className="edit-link" to={`/runs/${x.workflow_run_id}`}>run #{x.workflow_run_id}</Link></>}
+                      </p>
+                    </div>
+                    <span className="list-meta list-mono">{x.size_bytes ? formatBytes(x.size_bytes) : '—'}</span>
+                    <span className="list-meta" title={formatDate(x.created_at)}>
+                      {new Date(x.created_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                    </span>
+                    <a className="btn btn-ghost btn-sm" href={`/api/artifacts/${x.id}/download`}>
+                      <Download size={13} /> Download
+                    </a>
+                  </article>
+                </Fragment>
+              );
+            })}
+            {shown.length === 0 && <p className="flow-empty">No artifact matches{needle ? ` “${query.trim()}”` : ' this filter'}.</p>}
+            {shown.length > ARTIFACT_CAP && (
+              <p className="ledger-foot">Showing the newest {ARTIFACT_CAP} of {shown.length.toLocaleString()}. Search to narrow them down.</p>
+            )}
+          </section>
+        </>
       ) : (
         <EmptyState
           icon={<Package size={24} />}
@@ -3563,30 +3638,61 @@ function Wallboard() {
     : runningCount ? `${runningCount} running`
     : 'All systems nominal';
   const nextUp = tiles.filter(t => t.next).sort((a, b) => a.next!.getTime() - b.next!.getTime())[0];
+  const many = (n: number, one: string, more: string) => (n === 1 ? one : `${n} ${more}`);
+  // The headline is the same verdict the home screen and the sky give, so a
+  // TV and a laptop in the same room never disagree. Overdue is the one thing
+  // only this board works out, so it speaks when nothing else does.
+  const pulse = usePulse();
+  const pulseState = { down: pulse.serviceCount.down, waiting: pulse.waitingRuns.length, failing: pulse.failing.length };
+  const wallSentence = pulse.mood === 'calm' && overdueCount
+    ? `${many(overdueCount, 'A workflow is', 'workflows are')} overdue.`
+    : verdictLine(pulseState);
+  const failingIds = new Set(tiles.filter(t => t.status === 'failed').map(t => t.flow.id));
+  const clockParts = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).formatToParts(clock);
 
   return (
     <div className={`wallboard wallboard--${mood}`}>
       <div className="atmosphere" aria-hidden="true"><i /><i /><i /></div>
       <header className="wallboard-head">
         <span className="wallboard-brand">
-          <span className="sidebar-logo"><RunRailMark size={30} title="" /></span>
+          <RunRailMark size={24} title="" />
           RunRail
         </span>
-        <span className={`wallboard-health wallboard-health--${mood}`}>
-          <span className="wallboard-health-dot" />{verdict}
-        </span>
-        {nextUp && (
-          <span className="wallboard-next" title={`${nextUp.flow.name} · ${nextUp.next!.toLocaleString()}`}>
-            <Clock size={13} /> Next: <span className="wallboard-next-name">{nextUp.flow.name}</span> in {formatEta(nextUp.next!.getTime() - clock.getTime())}
-          </span>
-        )}
-        <span className="wallboard-clock">
-          {clock.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-        </span>
-        <Link to="/" className="wallboard-exit" title="Back to the app"><X size={16} /></Link>
+        <Link to="/" className="wallboard-exit" title="Back to the app" aria-label="Back to the app"><X size={16} /></Link>
       </header>
 
+      {/* Read from across a room: the verdict, and the time it was true. */}
+      <section className={`wall-hero wall-hero--${mood}`}>
+        <div className="wall-lead">
+          <p className="now-date">
+            <span>{clock.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+          </p>
+          <h1 className="now-verdict">{wallSentence}</h1>
+          <p className="now-sub">
+            <span className={`wallboard-health wallboard-health--${mood}`}>
+              <span className="wallboard-health-dot" />{verdict}
+            </span>
+            {nextUp && (
+              <span className="wallboard-next" title={`${nextUp.flow.name} · ${nextUp.next!.toLocaleString()}`}>
+                Next: <span className="wallboard-next-name">{nextUp.flow.name}</span> in {formatEta(nextUp.next!.getTime() - clock.getTime())}
+              </span>
+            )}
+          </p>
+        </div>
+        <span className="wallboard-clock">
+          {clockParts.map((part, i) =>
+            part.type === 'second' || part.type === 'dayPeriod' || (part.type === 'literal' && clockParts[i + 1]?.type !== 'minute')
+              ? <small key={i}>{part.value}</small> : part.value)}
+        </span>
+      </section>
+
       <WallboardServices items={services.items ?? []} now={clock.getTime()} />
+
+      {/* The same timetable as the home screen: what ran, what is running,
+          what is due, on one clock. */}
+      {flows.length > 0 && (
+        <Board runs={runs} flows={flows} complete={runs.length < 300} failing={failingIds} max={10} />
+      )}
 
       <section className="wb-section" aria-label="Workflows">
         <div className="wb-section-head">
