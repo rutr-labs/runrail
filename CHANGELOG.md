@@ -31,6 +31,19 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
   built before this picks it up the next time its packages are saved. macOS
   and Linux already used IPC sockets and are unchanged.
 
+### Security
+- **RunRail answers only to the host names it expects.** A request must name
+  a loopback address, an IP address, the host in `RUNRAIL_PUBLIC_URL`, or one
+  listed in the new `RUNRAIL_ALLOWED_HOSTS` (comma-separated; `*` turns the
+  check off). This closes a way for a web page to reach a local RunRail
+  through a DNS name pointed at 127.0.0.1. **If you open RunRail by a domain
+  name, set one of those two**; any other name gets a 403 that says what to
+  set.
+- **Live streams check where a connection comes from.** The log and event
+  WebSockets now apply the same origin check as the rest of the API.
+- `docker compose` publishes port 8080 on 127.0.0.1 only. RunRail has no
+  accounts, so expose it more widely only behind a proxy that handles sign-in.
+
 ## [0.8.2] — 2026-10-20
 
 Secrets, run forms, and a comparison with the last good run. Everything here

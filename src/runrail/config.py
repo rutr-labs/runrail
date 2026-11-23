@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # exported run file, a report permalink. Set it when RunRail sits behind a
     # proxy; the fallback only resolves inside the same network.
     public_url: str | None = None
+    # Names besides loopback, IP addresses and public_url's host that browsers
+    # may reach RunRail by, comma-separated; "*" turns the check off. Anything
+    # else is refused, which is what stops DNS rebinding (runrail.api.origin).
+    allowed_hosts: str | None = None
     # The key secrets are encrypted with, when it should not sit in the home
     # folder: a Fernet key (`runrail secrets-key` prints the current one).
     # Unset, RunRail keeps one in <home>/secrets.key. Never passed to tasks.
@@ -56,6 +60,11 @@ class Settings(BaseSettings):
     @property
     def base_url(self) -> str:
         return (self.public_url or f"http://{self.host}:{self.port}").rstrip("/")
+
+    @property
+    def allowed_host_names(self) -> set[str]:
+        return {name.strip().lower().rstrip(".") for name in (self.allowed_hosts or "").split(",")
+                if name.strip()}
 
     @property
     def database_url(self) -> str:
