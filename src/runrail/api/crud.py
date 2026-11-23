@@ -77,12 +77,15 @@ def create_run(db: Session, workflow: Workflow, trigger: TriggerType, params=Non
     ))
 
 
-def check_schedulable(workflow: Workflow) -> None:
-    """A scheduled run has nobody to ask for a value, so every required
-    parameter of a scheduled workflow needs a default."""
-    missing = needs_value(workflow.run_parameters_json) if workflow.schedule_cron else []
+def check_schedulable(workflow) -> None:
+    """A run that starts on its own (scheduled, or after other workflows) has
+    nobody to ask for a value, so every required parameter needs a default.
+    Takes the row or a WorkflowIn; both carry `after`."""
+    chained = bool(getattr(workflow, "after", None))
+    missing = needs_value(workflow.run_parameters_json) if workflow.schedule_cron or chained else []
     if missing:
-        raise ParameterError(f"Scheduled runs start without anyone to ask: give {', '.join(missing)} "
+        start = "Scheduled runs" if workflow.schedule_cron else "Runs that start after other workflows"
+        raise ParameterError(f"{start} start without anyone to ask: give {', '.join(missing)} "
                              "a default, or make it optional")
 
 

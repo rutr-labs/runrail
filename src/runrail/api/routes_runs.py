@@ -58,6 +58,11 @@ def get_run(object_id: int, db: Session = Depends(get_db)):
     obj = db.scalar(select(WorkflowRun).where(WorkflowRun.id == object_id).options(
         selectinload(WorkflowRun.task_runs).selectinload(TaskRun.task)))
     if not obj: raise HTTPException(404, "WorkflowRun not found")
+    cause = db.get(WorkflowRun, obj.triggered_by_run_id) if obj.triggered_by_run_id else None
+    if cause is not None:
+        upstream = db.get(Workflow, cause.workflow_id)
+        obj.triggered_by = {"run_id": cause.id, "workflow_id": cause.workflow_id,
+                            "workflow_name": upstream.name if upstream else None}
     return obj
 
 

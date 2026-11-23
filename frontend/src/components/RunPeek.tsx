@@ -147,7 +147,11 @@ function RunPeek({ runId, onClose }: { runId: number; onClose: () => void }) {
               <h2><Link to={`/workflows/${run.workflow_id}`} title={name}>{name}</Link></h2>
               <p className="hero-status"><i aria-hidden="true" />{sentence(run, now)}</p>
               <div className="peek-actions">
-                <Link className="btn btn-primary btn-md" to={`/runs/${run.id}`}>Open the full run <ArrowRight size={14} /></Link>
+                {/* A run waiting on a person: the next step is the decision, and
+                    that is made on its page, with the command in view. */}
+                <Link className="btn btn-primary btn-md" to={`/runs/${run.id}`}>
+                  {run.status === 'waiting_approval' ? 'Review and decide' : 'Open the full run'} <ArrowRight size={14} />
+                </Link>
                 {live
                   ? <Button variant="ghost" disabled={busy} onClick={() => act(`/runs/${run.id}/cancel`, 'Cancelling the run')}>Cancel</Button>
                   : <Button variant="ghost" disabled={busy} onClick={() => act(`/runs/${run.id}/retry`, 'A new run is queued')}

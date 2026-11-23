@@ -127,6 +127,10 @@ class WorkflowIn(BaseModel):
     lock_mode: LockMode = LockMode.shared
     # Configuration: the run form ("Run with…"), see runrail.run_parameters.
     run_parameters_json: list[dict[str, Any]] | None = None
+    # Configuration: ids of the workflows this one runs after, instead of a
+    # schedule (runrail.chaining). Empty is none. Not a column: the routes
+    # store it as links, so it is popped before the row is written.
+    after: list[int] = Field(default_factory=list)
 
     @field_validator("run_parameters_json")
     @classmethod
@@ -298,6 +302,7 @@ class WorkflowRunOut(ORMModel):
     created_at: UTCDateTime
     resume_count: int = 0
     sla_breached_at: UTCDateTime | None = None
+    triggered_by_run_id: int | None = None
 
 
 class ResumeIn(BaseModel):
@@ -338,6 +343,9 @@ class WorkflowRunDetail(WorkflowRunOut):
     # Lazy-loaded from the relationship while the request session is open; the
     # run page reads them here instead of making a second round trip.
     notes: list[RunNoteOut] = Field(default_factory=list)
+    # For a chained run: the upstream run that started it, named, so the page
+    # can say "after ingest-sales #812". None when that run is gone.
+    triggered_by: dict[str, Any] | None = None
 
 
 # ─── Services ─────────────────────────────────────────────────────────────

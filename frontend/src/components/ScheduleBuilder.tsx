@@ -8,7 +8,11 @@ import { cronLabel, cronProblem, nextCronOccurrence, viewerZone, zoneTag } from 
    flow stays untouched. Parsing an existing cron back into a mode is
    best-effort — anything the dropdowns can't express opens as Advanced. */
 
-export type Mode = 'none' | 'minutes' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'custom';
+/* 'after' is not a schedule: the workflow starts once the workflows it runs
+   after have all succeeded since it last started (src/runrail/chaining.py).
+   It lives in this dropdown on purpose — a workflow starts in exactly one
+   way, and one control makes that impossible to get wrong. */
+export type Mode = 'none' | 'after' | 'minutes' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'custom';
 
 export interface State {
   mode: Mode;
@@ -66,6 +70,7 @@ export function toCron(s: State): string | null {
   const [h, m] = s.time.split(':').map(Number);
   switch (s.mode) {
     case 'none': return null;
+    case 'after': return null;
     case 'minutes': return s.everyMinutes <= 1 ? '* * * * *' : `*/${s.everyMinutes} * * * *`;
     case 'hourly': return `${s.atMinute} * * * *`;
     case 'daily': return `${m} ${h} * * *`;
@@ -87,12 +92,53 @@ export function zoneOptions(current: string): string[] {
   return [...pinned, ...all.filter(z => !pinned.includes(z))];
 }
 
-export function ScheduleBuilder({ initialCron, initialTimezone }: {
+/** The workflows "After other workflows" can pick from. Without it the
+ *  option is not offered (a host form that cannot save `after`). */
+export interface ChainChoice {
+  workflows: { id: number; name: string; after?: number[] }[];
+  /** The workflow being edited, left out of its own list. */
+  selfId?: number;
+  initialAfter?: number[];
+}
+
+/** Ids of every workflow that runs after `selfId`, directly or through
+ *  others. Offering one of them would only earn a "that makes a loop" refusal
+ *  on save, so the picker leaves them out. */
+export function runsAfter(workflows: { id: number; after?: number[] }[], selfId: number | undefined): Set<number> {
+  const found = new Set<number>();
+  if (selfId == null) return found;
+  let frontier = [selfId];
+  while (frontier.length) {
+    const next = workflows.filter(w => !found.has(w.id) && (w.after ?? []).some(id => frontier.includes(id)));
+    next.forEach(w => found.add(w.id));
+    frontier = next.map(w => w.id);
+  }
+  return found;
+}
+
+/** The sentence under the picker: what the choice means, in one line. */
+export function afterSummary(names: string[]): string {
+  if (!names.length) return 'Pick the workflows this one runs after.';
+  if (names.length === 1) return `Runs each time ${names[0]} succeeds.`;
+  const list = `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  return `Runs once ${list} have all succeeded since it last started.`;
+}
+
+export function ScheduleBuilder({ initialCron, initialTimezone, chain }: {
   initialCron: string | null;
   initialTimezone: string | null;
+  chain?: ChainChoice;
 }) {
   const [state, setState] = useState<State>(() =>
-    initialCron ? parseCron(initialCron) : { mode: 'none', ...DEFAULTS });
+    initialCron ? parseCron(initialCron)
+    : chain?.initialAfter?.length ? { mode: 'after', ...DEFAULTS }
+    : { mode: 'none', ...DEFAULTS });
+  const [after, setAfter] = useState<number[]>(() => chain?.initialAfter ?? []);
+  const downstream = runsAfter(chain?.workflows ?? [], chain?.selfId);
+  const choices = (chain?.workflows ?? []).filter(w => w.id !== chain?.selfId && !downstream.has(w.id));
+  const picked = choices.filter(w => after.includes(w.id));
+  const toggle = (id: number) =>
+    setAfter(list => list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
   // Existing UTC schedules stay UTC; brand-new ones default to the author's zone.
   const [tz, setTz] = useState<string>(() =>
     initialTimezone ?? (initialCron ? 'UTC' : viewerZone()));
@@ -118,12 +164,16 @@ export function ScheduleBuilder({ initialCron, initialTimezone }: {
     <div className="sched-builder">
       <input type="hidden" name="cron" value={cron ?? ''} />
       <input type="hidden" name="schedule_timezone" value={cron ? tz : ''} />
+      {chain && (
+        <input type="hidden" name="after" value={JSON.stringify(state.mode === 'after' ? after : [])} />
+      )}
 
       <div className="sched-row-main">
         <label className="field">
-          <span>Schedule</span>
+          <span>Starts</span>
           <select value={state.mode} onChange={e => set({ mode: e.target.value as Mode })}>
             <option value="none">Manual runs only</option>
+            {chain && <option value="after">After other workflows</option>}
             <option value="minutes">Every few minutes</option>
             <option value="hourly">Hourly</option>
             <option value="daily">Daily</option>
@@ -133,7 +183,7 @@ export function ScheduleBuilder({ initialCron, initialTimezone }: {
           </select>
         </label>
 
-        {state.mode !== 'none' && (
+        {state.mode !== 'none' && state.mode !== 'after' && (
           <label className="field">
             <span>Timezone</span>
             <select value={tz} onChange={e => setTz(e.target.value)}>
@@ -224,7 +274,24 @@ export function ScheduleBuilder({ initialCron, initialTimezone }: {
         </label>
       )}
 
-      {state.mode !== 'none' && (
+      {state.mode === 'after' && (
+        <div className="field">
+          <span>Runs after</span>
+          {choices.length ? (
+            <div className="checks after-picks" role="group" aria-label="Workflows this one runs after">
+              {choices.map(w => (
+                <label key={w.id}>
+                  <input type="checkbox" checked={after.includes(w.id)} onChange={() => toggle(w.id)} />
+                  <span>{w.name}</span>
+                </label>
+              ))}
+            </div>
+          ) : <small className="sched-warn">There are no other workflows to run after yet.</small>}
+          <small className={picked.length ? undefined : 'sched-warn'}>{afterSummary(picked.map(w => w.name))}</small>
+        </div>
+      )}
+
+      {state.mode !== 'none' && state.mode !== 'after' && (
         <small className="sched-preview">
           {cron ? <>
             <b>{cronLabel(cron, tz)}</b>

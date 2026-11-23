@@ -19,6 +19,10 @@ export type Run = {
   notes?: RunNote[];
   resume_count?: number;
   sla_breached_at?: string | null;
+  /** A chained run: the upstream run whose success started it. The run page
+   *  also gets that run's workflow, named. */
+  triggered_by_run_id?: number | null;
+  triggered_by?: { run_id: number; workflow_id: number; workflow_name: string | null } | null;
 };
 
 export type TaskRun = {
@@ -71,6 +75,9 @@ export type Workflow = {
   lock_mode?: 'shared' | 'exclusive';
   /** The run form: typed parameters "Run with…" asks for. A WorkflowIn key. */
   run_parameters_json?: RunParameter[] | null;
+  /** Ids of the workflows this one runs after, instead of a schedule. Empty
+   *  when it does not. A WorkflowIn key, so both modals send it. */
+  after?: number[];
 };
 
 export type Project = {

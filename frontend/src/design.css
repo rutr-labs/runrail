@@ -130,10 +130,12 @@
   --accent-glow:   rgba(16, 20, 32, 0.1);
   --link:          #0b68b0;
 
-  --success: #12a66a;
-  --danger:  #e23b3b;
-  --warning: #d98a0a;
-  --running: #0b8fd6;
+  /* Deep enough to be read as text on a tinted chip, not only seen as a fill:
+     the brighter set scored under 3:1 wherever a label used it. */
+  --success: #0c8f58;
+  --danger:  #d42a2a;
+  --warning: #b26a00;
+  --running: #0878b8;
   --queued:  #6d7382;
   --success-ink: #0a7a4c;
   --danger-ink:  #c92a2a;
@@ -417,6 +419,14 @@ a.text-link, .text-link { display: inline-flex; align-items: center; gap: 6px; f
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4), 0 16px 36px -10px color-mix(in srgb, var(--mood-a) 90%, transparent);
 }
 .btn-primary::before, .btn-primary::after { content: none; }
+/* Approving is the one primary action that keeps its own colour, in both
+   themes: green means go. Named for both themes so neither theme's
+   .btn-primary rule can repaint it — in light mode it was dark ink on ink. */
+.btn.approval-approve.btn-primary, [data-theme="light"] .btn.approval-approve.btn-primary,
+.btn.approval-approve.btn-primary:hover:not(:disabled), [data-theme="light"] .btn.approval-approve.btn-primary:hover:not(:disabled) {
+  background: var(--success); border-color: transparent; color: #04221a;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 10px 28px -10px var(--success);
+}
 .btn-ghost, .btn-secondary {
   background: rgba(var(--ink), 0.055); color: var(--text-1);
   border-color: var(--border);
@@ -438,6 +448,14 @@ a.text-link, .text-link { display: inline-flex; align-items: center; gap: 6px; f
 .status-warning { color: var(--warning-ink); }
 .status-running { color: var(--running-ink); }
 .status-muted, .status-queued { color: var(--text-2); background: rgba(var(--ink), 0.075); }
+
+/* Task kinds: one quiet tile, the kind told by its glyph rather than by four
+   more colours competing with the status ones. */
+.task-type-badge, .type-shell, .type-python, .type-notebook, .type-sql {
+  border: 1px solid var(--border); border-radius: 9px;
+  background: rgba(var(--ink), 0.06); color: var(--text-2);
+  font-family: var(--font-mono); font-weight: 600;
+}
 
 /* ─── Fields ──────────────────────────────────────────── */
 .field input, .field select, .field textarea, .filterbar-search, .toolbar select, .filterbar select {
@@ -967,6 +985,127 @@ thead th:first-child, tbody td:first-child { padding-left: 24px; }
 .metric-value { font-family: var(--font-display); font-weight: 550; letter-spacing: -0.035em; }
 .skeleton-line { border-radius: 14px; }
 
+/* ─── Pipeline ────────────────────────────────────────────
+   The workflow, drawn: what starts it, its tasks handing off, what follows. */
+.pipeline-panel { margin-bottom: 20px; }
+.pipeline-panel .panel-head p .edit-link { font: inherit; padding: 0; background: none; border: 0; }
+.pipe-scroll {
+  overflow-x: auto; padding: 14px 24px 26px;
+  scrollbar-width: thin;
+  background:
+    radial-gradient(rgba(var(--ink), 0.07) 1px, transparent 1.4px) 0 0 / 22px 22px;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 20px, #000 calc(100% - 20px), transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 20px, #000 calc(100% - 20px), transparent);
+}
+.pipe { position: relative; margin: 0 auto; }
+.pipe-edges { position: absolute; inset: 0; overflow: visible; }
+.pipe-edge {
+  fill: none; stroke: rgba(var(--ink), 0.2); stroke-width: 1.5; stroke-linecap: round;
+  stroke-dasharray: 2 6;
+}
+.pipe.is-lit .pipe-edge.is-done { stroke: color-mix(in srgb, var(--success) 70%, transparent); stroke-dasharray: none; stroke-width: 2; }
+.pipe-edge.is-live {
+  stroke: var(--running); stroke-width: 2; stroke-dasharray: 6 8;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--running) 70%, transparent));
+  animation: pipe-flow 0.7s linear infinite;
+}
+@keyframes pipe-flow { to { stroke-dashoffset: -14; } }
+.pipe-spark { fill: var(--running); filter: drop-shadow(0 0 6px var(--running)); }
+
+.pipe-node {
+  --tone: rgba(var(--ink), 0.3);
+  position: absolute;
+  display: flex; flex-direction: column; justify-content: center; gap: 4px;
+  padding: 11px 14px 10px;
+  border: 1px solid var(--border); border-radius: 16px;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-inner), 0 14px 28px -20px rgba(0, 0, 0, 0.7);
+  text-align: left; color: var(--text-1);
+  overflow: hidden;
+  transition: border-color 0.15s, transform 0.2s var(--ease-out), box-shadow 0.2s;
+}
+[data-theme="light"] .pipe-node { box-shadow: 0 1px 2px rgba(16, 20, 32, 0.06), 0 14px 28px -20px rgba(16, 20, 32, 0.35); }
+.pipe-node.is-clickable { cursor: pointer; }
+.pipe-node.is-clickable:hover { transform: translateY(-2px); border-color: var(--border-strong); }
+.pipe-node.is-selected { border-color: var(--text-1); box-shadow: 0 0 0 3px var(--accent-glow), 0 14px 28px -20px rgba(0, 0, 0, 0.7); }
+/* The status is a line of colour down the node's leading edge and its lamp. */
+.pipe-node::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 0 3px 3px 0; background: var(--tone); }
+.pipe-node.is-success, .pipe-node.is-approved { --tone: var(--success); }
+.pipe-node.is-failed, .pipe-node.is-rejected { --tone: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.pipe-node.is-running { --tone: var(--running); border-color: color-mix(in srgb, var(--running) 50%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--running) 22%, transparent), 0 0 34px -10px var(--running); }
+.pipe-node.is-awaiting_approval { --tone: var(--warning); border-color: color-mix(in srgb, var(--warning) 50%, transparent); }
+.pipe-node.is-queued { --tone: var(--queued); }
+.pipe.is-lit .pipe-node.is-idle { opacity: 0.62; }
+.pipe-node-top { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.pipe-node-top .task-type-badge { width: 26px; height: 24px; border-radius: 7px; font-size: 10.5px; }
+.pipe-node-top b { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.012em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pipe-gate { flex: none; color: var(--warning-ink); }
+.pipe-lamp { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--tone); }
+.pipe-node.is-running .pipe-lamp, .pipe-node.is-awaiting_approval .pipe-lamp { animation: lamp-beat 1.8s ease-in-out infinite; --lamp: var(--tone); }
+.pipe-node-detail { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pipe-node-foot { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
+.pipe-node.is-failed .pipe-node-foot span:first-child { color: var(--danger-ink); }
+.pipe-node.is-running .pipe-node-foot span:first-child { color: var(--running-ink); }
+.pipe-node.is-awaiting_approval .pipe-node-foot span:first-child { color: var(--warning-ink); }
+.pipe-node-foot span + span { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.pipe-node-comet { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; max-width: none; border-radius: 0; }
+
+/* What starts it and what follows: lighter than a task, and round — they are
+   not work this workflow does. */
+.pipe-end {
+  --tone: var(--text-3);
+  position: absolute;
+  display: flex; align-items: center; gap: 11px;
+  padding: 0 16px 0 12px;
+  border: 1px dashed var(--border-strong); border-radius: 999px;
+  background: rgba(var(--ink), 0.035);
+  color: var(--text-1);
+  transition: border-color 0.15s, background 0.15s;
+}
+a.pipe-end:hover { background: var(--bg-hover); border-color: var(--text-2); }
+.pipe-end-icon { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in srgb, var(--tone) 16%, transparent); color: var(--tone); }
+.pipe-end-text { display: grid; min-width: 0; }
+.pipe-end-text b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pipe-end-text small { font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pipe-end.is-success { --tone: var(--success); border-style: solid; border-color: color-mix(in srgb, var(--success) 40%, transparent); }
+.pipe-end.is-failed { --tone: var(--danger); border-style: solid; border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.pipe-end.is-running { --tone: var(--running); border-style: solid; border-color: color-mix(in srgb, var(--running) 45%, transparent); }
+.pipe-end.is-waiting { --tone: var(--warning); }
+.pipe-end--clock { --tone: var(--text-2); }
+
+/* The selected task, opened under the drawing. */
+.task-inspector { padding: 18px 24px 22px; border-top: 1px solid var(--hairline); animation: rise 0.3s var(--ease-out) backwards; }
+.task-inspector-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; }
+.task-inspector-head h3 { min-width: 0; font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: -0.025em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-inspector-head .task-card-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.task-inspector .task-inspector-close { position: static; width: 28px; height: 28px; }
+.task-inspector-cmd {
+  margin: 14px 0 12px; padding: 12px 14px;
+  border-radius: var(--r-md); border: 1px solid var(--hairline); background: var(--bg-code);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--text-1);
+}
+.task-inspector .task-card-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--text-2); }
+.task-inspector .task-card-meta span { display: inline-flex; align-items: center; gap: 6px; }
+.task-inspector .task-card-meta .is-gate { color: var(--warning-ink); }
+
+/* Missed runs, folded to a line. */
+.gaps-fold { margin-bottom: 20px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--bg-card); overflow: hidden; }
+.gaps-fold summary {
+  display: flex; align-items: center; gap: 12px;
+  min-height: 48px; padding: 0 18px;
+  font-size: 13.5px; font-weight: 500; cursor: pointer; list-style: none;
+}
+.gaps-fold summary::-webkit-details-marker { display: none; }
+.gaps-fold summary:hover { background: var(--bg-hover); }
+.gaps-fold summary i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+.gaps-fold.is-warning summary i { background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 22%, transparent); }
+.gaps-fold summary small { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--text-3); }
+.gaps-fold[open] summary small svg { transform: rotate(180deg); }
+.gaps-fold[open] summary { border-bottom: 1px solid var(--hairline); }
+.gaps-fold .schedule-gaps { margin: 0; border: 0; border-radius: 0; box-shadow: none; background: none; }
+.run-shape-pick + * .pipe-scroll, .panel > .pipe-scroll { border-radius: 0 0 var(--r-xl) var(--r-xl); }
+
 /* ─── Run history (workflow page) ─────────────────────── */
 .detail-pair { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px; align-items: stretch; }
 .detail-pair > .panel { margin-bottom: 20px; }
@@ -1349,7 +1488,8 @@ thead th:first-child, tbody td:first-child { padding-left: 24px; }
 
 /* ─── Motion preferences ──────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
-  .atmosphere i, .signal i, .lane-signal, .tick.is-running { animation: none !important; }
+  .atmosphere i, .signal i, .lane-signal, .tick.is-running, .pipe-edge.is-live, .pipe-lamp { animation: none !important; }
+  .pipe-spark { display: none; }
   .lane-stage, .bar.is-live { transition: none; }
   :root { transition: none; }
 }

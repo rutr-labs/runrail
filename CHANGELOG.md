@@ -4,6 +4,21 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 
 Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any release that is safe to upgrade into without doing anything: new features that are opt-in, fixes, migrations that only add. The middle one (0.**9**.0) moves only when upgrading asks something of you or changes results: a setting, CLI flag or API field renamed or removed, or behaviour that changes what a run produces. 1.0 is when RunRail declares that stable, after which these follow semver's usual meaning.
 
+## [Unreleased]
+
+### Added
+- **Run a workflow after other workflows.** Under **Starts**, a workflow can
+  now run *after other workflows* instead of on a schedule (or `after:` in
+  YAML, by name). It starts once every workflow it runs after has succeeded
+  since it last started: after each success of a single upstream, or once all
+  of several have succeeded. While a run of it is queued, further upstream
+  successes add nothing, so a fast upstream never piles up runs behind a slow
+  downstream. A failure starts nothing. A schedule and a chain are one or the
+  other, and loops are refused when saving. Chained runs show the run that
+  started them ("after ingest-sales #812"), the workflow page shows each
+  upstream's last result and what runs next, and the runs list can filter on
+  the new `after` trigger. One migration adds a table and a nullable column.
+
 ## [0.8.2] — 2026-10-20
 
 Secrets, run forms, and a comparison with the last good run. Everything here
