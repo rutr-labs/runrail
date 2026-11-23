@@ -1,9 +1,9 @@
-/* ─── The rail: layout arithmetic ──────────────────────────
-   The dashboard's timeline draws recent runs to the left of "now" and the
-   schedule's next fires to the right of it, on one continuous time axis. This
-   file holds the decisions that are easy to get subtly wrong and awkward to
-   check by eye: how much history the strip may claim to show, where the clock
-   labels fall, and how runs that started together share a column. */
+/* ─── The timetable's clock ────────────────────────────────
+   The home screen draws recent runs to the left of "now" and the schedule's
+   next fires to the right of it, on one continuous time axis. This file holds
+   the decisions about that axis that are easy to get subtly wrong and awkward
+   to check by eye: how much history it may claim to show, and where the clock
+   labels fall. Which workflows get a line is in board.ts. */
 
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
@@ -16,8 +16,6 @@ export type RailRun = {
   started_at?: string | null;
   duration_seconds?: number | null;
 };
-
-export type RailFire = { at: number; workflowId: number; name: string };
 
 /** How far back the strip can look. The future half is always half of this,
  *  so both sides share one scale. */
@@ -74,26 +72,6 @@ export function railAxis(start: number, end: number, step: number, tzOffsetMinut
   for (let t = Math.ceil((start - shift) / step) * step + shift; t <= end; t += step) marks.push(t);
   return marks;
 }
-
-/** Group by time bucket. Buckets are absolute (floor(t / size)), not relative
- *  to now, so a run stays in its column as the strip scrolls instead of
- *  hopping to the neighbour on some ticks. */
-export function bucketize<T>(items: T[], at: (item: T) => number, size: number): Map<number, T[]> {
-  const columns = new Map<number, T[]>();
-  for (const item of items) {
-    const key = Math.floor(at(item) / size);
-    const column = columns.get(key);
-    if (column) column.push(item); else columns.set(key, [item]);
-  }
-  return columns;
-}
-
-/** Stacking order from the rail upward. What needs a person sits lowest, where
- *  a tall column's overflow can never hide it. */
-const WEIGHT: Record<string, number> = {
-  failed: 0, waiting_approval: 1, running: 2, queued: 3, cancelled: 5, skipped: 5,
-};
-export const railWeight = (status: string): number => WEIGHT[status] ?? 4;
 
 export function railWindowLabel(window: number): string {
   return window === HOUR ? 'Last hour' : `Last ${window / HOUR} hours`;

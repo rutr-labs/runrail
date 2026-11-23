@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  RAIL_WINDOWS, bucketize, railAxis, railHorizonLabel, railWeight, railWindow,
+  RAIL_WINDOWS, railAxis, railHorizonLabel, railWindow,
   railWindowLabel, untilLabel, type RailRun,
 } from './pulseRail';
 
@@ -84,22 +84,6 @@ describe('railAxis', () => {
   });
 });
 
-describe('bucketize', () => {
-  it('keeps runs that started together in one column', () => {
-    const at = [0, 10, 59, 60, 61, 200].map(s => s * 1000);
-    const columns = bucketize(at, t => t, MINUTE);
-    expect([...columns.keys()]).toEqual([0, 1, 3]);
-    expect(columns.get(0)).toHaveLength(3);
-    expect(columns.get(1)).toHaveLength(2);
-  });
-
-  it('gives a run the same column whatever "now" is', () => {
-    const run = NOW - 7 * MINUTE;
-    const key = [...bucketize([run], t => t, 48_000).keys()][0];
-    expect(key).toBe(Math.floor(run / 48_000));
-  });
-});
-
 describe('labels', () => {
   it('names the window', () => {
     expect(railWindowLabel(HOUR)).toBe('Last hour');
@@ -117,13 +101,5 @@ describe('labels', () => {
     expect(untilLabel(12 * MINUTE)).toBe('in 12m');
     expect(untilLabel(2 * HOUR)).toBe('in 2h');
     expect(untilLabel(185 * MINUTE)).toBe('in 3h 5m');
-  });
-});
-
-describe('railWeight', () => {
-  it('stacks what needs a person closest to the rail', () => {
-    const order = ['success', 'failed', 'queued', 'waiting_approval', 'running']
-      .sort((a, b) => railWeight(a) - railWeight(b));
-    expect(order).toEqual(['failed', 'waiting_approval', 'running', 'queued', 'success']);
   });
 });

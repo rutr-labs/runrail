@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, FormEvent, Fragment, ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import clsx from 'clsx';
@@ -10,7 +10,7 @@ import {
   ArrowLeft, Terminal, Download, Settings, ChevronsRight,
   Ban, Menu, X, SlidersHorizontal,
   ShieldAlert, ShieldCheck, CircleSlash, Share2, BookOpen, Lock,
-  Sun, Moon, ArrowRight, MonitorPlay,
+  Sun, Moon, ArrowRight, MonitorPlay, Radio, Ellipsis, ChevronDown,
 } from 'lucide-react';
 import { api, del, post, put } from './api';
 import { rrws } from './ws';
@@ -21,8 +21,11 @@ import { RunHeatmap } from './components/Heatmap';
 import { cronLabel, nextCronOccurrence } from './cron';
 import { ScheduleBuilder } from './components/ScheduleBuilder';
 import { Button, CancelButton, StatusBadge, CountUp, EmptyState, Modal, PageHeader, TaskTypeBadge, SkeletonCard, HealthChip, LoadingBar, CometCanvas } from './components/ui';
-import { PulseRail } from './components/PulseRail';
+import { Board } from './components/Board';
 import { untilLabel } from './pulseRail';
+import { countdown, laneState, upcomingFires } from './board';
+import { failingFlows, signalLabel, verdictLine, type Failing } from './pulseModel';
+import { PulseProvider, usePulse } from './Pulse';
 import { LogViewer } from './components/LogViewer';
 import { useToast } from './components/toast';
 import { ApprovalGate, ApprovalInbox, useOpenApprovals } from './components/ApprovalGate';
@@ -53,124 +56,8 @@ import type { RunNote } from './components/RunNotes';
 import { TrendSpark, useTaskDurations } from './components/TrendSpark';
 import type { TaskDurationSeries } from './components/TrendSpark';
 
-/* ─── Types ───────────────────────────────────────────── */
-type Run = {
-  id: number;
-  workflow_id: number;
-  status: string;
-  created_at: string;
-  started_at?: string | null;
-  finished_at?: string | null;
-  duration_seconds?: number | null;
-  trigger_type: string;
-  run_key?: string | null;
-  parameters_json?: Record<string, unknown> | null;
-  task_runs?: TaskRun[];
-  // v0.5: GET /runs/{id} answers WorkflowRunDetail, which embeds the note
-  // thread and the resume/SLA bookkeeping.
-  notes?: RunNote[];
-  resume_count?: number;
-  sla_breached_at?: string | null;
-};
+import type { Run, TaskRun, Workflow, Project, Env, Task, DailyStat, Summary } from './types';
 
-type TaskRun = {
-  id: number;
-  workflow_run_id: number;
-  task_id: number;
-  task_name?: string | null;
-  task_type?: string | null;
-  status: string;
-  attempt: number;
-  started_at?: string | null;
-  finished_at?: string | null;
-  duration_seconds?: number | null;
-  exit_code?: number | null;
-  error_message?: string | null;
-  rendered_command?: string | null;
-  // v0.5: an approval gate is a TaskRun with no logs. created_at is when the
-  // gate opened, which is what the card counts up from.
-  created_at?: string;
-  resume_index?: number;
-  approval_note?: string | null;
-  approved_at?: string | null;
-};
-
-type Workflow = {
-  id: number;
-  name: string;
-  description?: string | null;
-  schedule_cron?: string | null;
-  schedule_timezone?: string | null;
-  enabled: boolean;
-  max_concurrent_runs: number;
-  project_id?: number | null;
-  default_environment_id?: number | null;
-  notify_webhook_url?: string | null;
-  webhook_error?: string | null;
-  webhook_error_at?: string | null;
-  auto_pause_failures?: number | null;
-  // v0.5 operator state — written by the snooze endpoints, never by WorkflowIn.
-  snooze_until?: string | null;
-  snooze_pauses_runs?: boolean;
-  snoozed?: boolean;
-  // v0.5 configuration — part of WorkflowIn, so both modals must round-trip it.
-  missed_run_grace_minutes?: number | null;
-  sla_minutes?: number | null;
-  /** The named resource this workflow serialises on. NULL is no locking, and
-   *  the mode is inert without it — see LockField. Also WorkflowIn keys, so the
-   *  same round-trip rule applies. */
-  lock_resource?: string | null;
-  lock_mode?: 'shared' | 'exclusive';
-  /** The run form: typed parameters "Run with…" asks for. A WorkflowIn key. */
-  run_parameters_json?: RunParameter[] | null;
-};
-
-type Project = {
-  id: number;
-  name: string;
-  description?: string | null;
-  root_path: string;
-  default_environment_id?: number | null;
-};
-
-type Env = {
-  id: number;
-  name: string;
-  env_type: string;
-  executable?: string | null;
-  conda_env?: string | null;
-  env_vars_json?: Record<string, unknown> | null;
-  description?: string | null;
-  managed: boolean;
-  status: string;
-  base_executable?: string | null;
-  packages_json: string[];
-  active_packages_json: string[];
-  python_version?: string | null;
-  build_log?: string | null;
-  last_error?: string | null;
-};
-
-type Task = {
-  id: number;
-  workflow_id?: number | null;
-  project_id?: number | null;
-  environment_id?: number | null;
-  name: string;
-  task_type: string;
-  command?: string | null;
-  script_path?: string | null;
-  notebook_path?: string | null;
-  sql_path?: string | null;
-  cwd?: string | null;
-  depends_on_json: string[];
-  parameters_json?: Record<string, unknown> | null;
-  retries: number;
-  retry_delay_seconds: number;
-  timeout_seconds?: number | null;
-  requires_approval?: boolean;
-  approval_prompt?: string | null;
-};
 
 /* ─── Helpers ─────────────────────────────────────────── */
 const DAY = 86_400_000;
@@ -276,23 +163,25 @@ function useLiveRefresh(hasLive: boolean, refresh: () => void, intervalMs = 3000
 }
 
 /* ─── Shell ───────────────────────────────────────────── */
-const NAV: { href: string; icon: typeof LayoutDashboard; label: string; section: string }[] = [
-  { href: '/',             icon: LayoutDashboard, label: 'Dashboard',    section: 'Overview' },
-  { href: '/runs',         icon: History,         label: 'Runs',         section: 'Overview' },
-  { href: '/workflows',    icon: GitBranch,       label: 'Workflows',    section: 'Build' },
-  { href: '/services',     icon: Server,          label: 'Services',     section: 'Build' },
-  { href: '/projects',     icon: FolderOpen,      label: 'Projects',     section: 'Build' },
-  { href: '/environments', icon: Cpu,             label: 'Environments', section: 'Build' },
-  { href: '/logs',         icon: Search,          label: 'Log search',   section: 'Observe' },
-  { href: '/artifacts',    icon: Package,         label: 'Artifacts',    section: 'Observe' },
-  { href: '/settings',     icon: Settings,        label: 'Settings',     section: 'System' },
+/* Four places a person goes every day, and the rest behind "More": projects
+   and environments are set up once, logs and artifacts are looked up when
+   something sends you there. */
+const NAV: { href: string; icon: typeof Radio; label: string; primary?: boolean }[] = [
+  { href: '/',             icon: Radio,      label: 'Now',          primary: true },
+  { href: '/workflows',    icon: GitBranch,  label: 'Workflows',    primary: true },
+  { href: '/runs',         icon: History,    label: 'Runs',         primary: true },
+  { href: '/services',     icon: Server,     label: 'Services',     primary: true },
+  { href: '/projects',     icon: FolderOpen, label: 'Projects' },
+  { href: '/environments', icon: Cpu,        label: 'Environments' },
+  { href: '/logs',         icon: Search,     label: 'Log search' },
+  { href: '/artifacts',    icon: Package,    label: 'Artifacts' },
+  { href: '/settings',     icon: Settings,   label: 'Settings' },
 ];
+const PRIMARY = NAV.filter(n => n.primary);
+const SECONDARY = NAV.filter(n => !n.primary);
 
-/** Destinations that are reached from a workflow or a run rather than the
- *  sidebar — they still need a breadcrumb label. */
-const OFF_NAV: { prefix: string; label: string }[] = [
-  { prefix: '/reports', label: 'Reports' },
-];
+/** Anything on the page can ask for the command palette. */
+const openPalette = () => window.dispatchEvent(new Event('runrail:palette'));
 
 function useApiHealth(): 'online' | 'offline' | 'unknown' {
   const [health, setHealth] = useState<'online' | 'offline' | 'unknown'>('unknown');
@@ -305,12 +194,18 @@ function useApiHealth(): 'online' | 'offline' | 'unknown' {
 }
 
 function Shell() {
-  const [mobileOpen, setMobileOpen] = useState(false);
+  return (
+    <PulseProvider>
+      <ShellFrame />
+    </PulseProvider>
+  );
+}
+
+function ShellFrame() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const location = useLocation();
   const health = useApiHealth();
   const navRef = useRef<HTMLElement>(null);
-  useEffect(() => setMobileOpen(false), [location.pathname]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -318,122 +213,179 @@ function Shell() {
         setPaletteOpen(v => !v);
       }
     };
+    const onAsk = () => setPaletteOpen(true);
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('runrail:palette', onAsk);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('runrail:palette', onAsk);
+    };
   }, []);
-  // The sliding indicator is positioned from measurements so it tracks any
-  // item height; routes outside the nav (e.g. /settings) collapse it to 0.
+  // The pill behind the current page is placed from measurements, so it tracks
+  // any label width and glides between them.
   useLayoutEffect(() => {
     const nav = navRef.current;
     if (!nav) return;
     const measure = () => {
-      const active = nav.querySelector<HTMLElement>('.sidebar-nav-item.active');
-      nav.style.setProperty('--nav-ind-y', `${active?.offsetTop ?? 0}px`);
-      nav.style.setProperty('--nav-ind-h', `${active?.offsetHeight ?? 0}px`);
+      const active = nav.querySelector<HTMLElement>('.dock-link.active');
+      nav.style.setProperty('--ind-x', `${active?.offsetLeft ?? 0}px`);
+      nav.style.setProperty('--ind-w', `${active?.offsetWidth ?? 0}px`);
+      nav.classList.toggle('has-active', Boolean(active));
     };
     measure();
+    void document.fonts?.ready.then(measure);
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
   }, [location.pathname]);
 
-  const page = NAV.find(n => n.href !== '/' && location.pathname.startsWith(n.href))
-    ?? OFF_NAV.find(n => location.pathname.startsWith(n.prefix))
-    ?? (location.pathname.startsWith('/runs') ? NAV[1] : NAV[0]);
+  const isActive = (href: string) =>
+    href === '/' ? location.pathname === '/' : location.pathname.startsWith(href);
 
-  const sections = ['Overview', 'Build', 'Observe'];
   return (
-    <div className="app-shell">
-      <button className="mobile-nav-btn" onClick={() => setMobileOpen(v => !v)} aria-label="Toggle navigation">
-        {mobileOpen ? <X size={17} /> : <Menu size={17} />}
-      </button>
-      {mobileOpen && <div className="sidebar-overlay" onClick={() => setMobileOpen(false)} />}
-      <aside className={`sidebar${mobileOpen ? ' open' : ''}`}>
-        <Link to="/" className="sidebar-brand">
-          <span className="sidebar-logo"><RunRailMark size={30} title="" /></span>
-          <span className="sidebar-wordmark"><b>RunRail</b><span>Control plane</span></span>
+    <div className="shell">
+      <div className="atmosphere" aria-hidden="true"><i /><i /><i /></div>
+
+      <header className="dock">
+        <Link to="/" className="dock-brand" aria-label="RunRail, home">
+          <RunRailMark size={22} title="" />
+          <b>RunRail</b>
         </Link>
-        <nav className="sidebar-nav" ref={navRef}>
-          <span className="nav-indicator" aria-hidden="true" />
-          {sections.map(section => (
-            <div key={section}>
-              <div className="sidebar-section-label">{section}</div>
-              {NAV.filter(n => n.section === section).map(({ href, icon: Icon, label }) => (
-                <NavLink key={href} to={href} end={href === '/'}
-                  className={({ isActive }) => `sidebar-nav-item${isActive ? ' active' : ''}`}>
-                  <span className="nav-icon"><Icon size={15} /></span>{label}
-                </NavLink>
-              ))}
-            </div>
+
+        <nav className="dock-nav" ref={navRef} aria-label="Main">
+          <span className="dock-ind" aria-hidden="true" />
+          {PRIMARY.map(({ href, label }) => (
+            <Link key={href} to={href} className={clsx('dock-link', isActive(href) && 'active')}
+                  aria-current={isActive(href) ? 'page' : undefined}>{label}</Link>
           ))}
+          <MoreMenu variant="dock" />
         </nav>
-        <div className="sidebar-footer">
-          <NavLink to="/settings" className={({ isActive }) => `sidebar-nav-item${isActive ? ' active' : ''}`}>
-            <span className="nav-icon"><Settings size={15} /></span>Settings
-          </NavLink>
+
+        <div className="dock-tools">
+          <Signal health={health} />
+          <button type="button" className="dock-search" onClick={() => setPaletteOpen(true)} aria-label="Open command palette">
+            <Search size={14} /> <span>Search</span>
+            <kbd>{navigator.platform?.includes('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
+          </button>
+          <NotificationBell />
+          <ThemeToggle />
+          <Link to="/settings" className={clsx('dock-btn', isActive('/settings') && 'active')} aria-label="Settings" title="Settings">
+            <Settings size={15} />
+          </Link>
         </div>
-      </aside>
-      <div className="workspace">
-        <div className="topbar">
-          <div className="topbar-breadcrumb">
-            <span className="bc-root">RunRail</span>
-            <span className="bc-sep">›</span>
-            <span className="bc-page" key={page.label}>{page.label}</span>
-          </div>
-          {/* Search → notifications → health → theme: a command, then the
-              history behind it, then status, then a preference. The label and
-              the shortcut hint are wrapped so the button can collapse to its
-              icon on a phone and leave the bell room. */}
-          <div className="topbar-actions">
-            <button className="cmd-k-btn" onClick={() => setPaletteOpen(true)} aria-label="Open command palette">
-              <Search size={13} /> <span className="cmd-k-label">Search or jump to…</span>
-              <kbd>{navigator.platform?.includes('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
-            </button>
-            <NotificationBell />
-            <HealthChip label={health === 'online' ? 'Healthy' : health === 'offline' ? 'Offline' : 'Checking'} status={health} />
-            <ThemeToggle />
-          </div>
+      </header>
+
+      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
+
+      <main key={location.pathname}>
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/projects" element={<Projects />} />
+          <Route path="/environments" element={<Environments />} />
+          <Route path="/services" element={<ServicesPage />} />
+          <Route path="/services/:id" element={<ServiceDetail />} />
+          <Route path="/workflows" element={<Workflows />} />
+          <Route path="/workflows/:id" element={<WorkflowDetail />} />
+          <Route path="/runs" element={<Runs />} />
+          <Route path="/runs/:id" element={<RunDetail />} />
+          {/* Per-run report permalink: run ids are never reused, so this URL
+              survives a workflow rename. */}
+          <Route path="/runs/:id/report" element={<RunReportPage />} />
+          {/* Pinnable per-workflow link; :workflow is an id or an exact name. */}
+          <Route path="/reports/:workflow/latest" element={<LatestReport />} />
+          <Route path="/logs" element={<LogSearch />} />
+          <Route path="/artifacts" element={<Artifacts />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Routes>
+      </main>
+
+      {/* On a phone the same four places sit under the thumb. */}
+      <nav className="tabbar" aria-label="Main">
+        {PRIMARY.map(({ href, icon: Icon, label }) => (
+          <Link key={href} to={href} className={clsx('tab', isActive(href) && 'active')}
+                aria-current={isActive(href) ? 'page' : undefined}>
+            <Icon size={18} /><span>{label}</span>
+          </Link>
+        ))}
+        <MoreMenu variant="tab" />
+      </nav>
+    </div>
+  );
+}
+
+/** The verdict, in the dock: the one thing visible from every page. */
+function Signal({ health }: { health: 'online' | 'offline' | 'unknown' }) {
+  const { mood, serviceCount, waitingRuns, failing } = usePulse();
+  if (health === 'offline') {
+    return <span className="signal is-offline" title="The RunRail API is not answering"><i />Offline</span>;
+  }
+  const state = { down: serviceCount.down, waiting: waitingRuns.length, failing: failing.length };
+  const to = mood === 'down' ? '/services'
+    : mood === 'waiting' ? (waitingRuns.length === 1 ? `/runs/${waitingRuns[0]}` : '/')
+    : mood === 'failing' ? (failing.length === 1 ? `/runs/${failing[0].run.id}` : '/runs?status=failed')
+    : '/';
+  return (
+    <Link to={to} className={`signal is-${mood}`} title={verdictLine(state)}>
+      <i />{signalLabel(state)}
+    </Link>
+  );
+}
+
+function MoreMenu({ variant }: { variant: 'dock' | 'tab' }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const location = useLocation();
+  useEffect(() => setOpen(false), [location.pathname]);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); setOpen(false); } };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  // Settings has its own button in the dock; on a phone it lives here.
+  const items = variant === 'dock' ? SECONDARY.filter(n => n.href !== '/settings') : SECONDARY;
+  const current = items.find(n => location.pathname.startsWith(n.href));
+  return (
+    <div className={clsx('more', `more--${variant}`)} ref={ref}>
+      <button type="button" className={clsx(variant === 'dock' ? 'dock-link' : 'tab', current && 'active')}
+              aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}>
+        {variant === 'tab'
+          ? <><Ellipsis size={18} /><span>More</span></>
+          : <>{current?.label ?? 'More'} <ChevronDown size={13} /></>}
+      </button>
+      {open && (
+        <div className="more-menu" role="menu">
+          {items.map(({ href, icon: Icon, label }) => (
+            <Link key={href} to={href} role="menuitem"
+                  className={clsx('more-item', location.pathname.startsWith(href) && 'active')}>
+              <Icon size={15} />{label}
+            </Link>
+          ))}
+          <span className="more-rule" />
+          <Link to="/wallboard" role="menuitem" className="more-item"><MonitorPlay size={15} />Wallboard<small>TV mode</small></Link>
         </div>
-        {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
-        <main key={location.pathname}>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/projects" element={<Projects />} />
-            <Route path="/environments" element={<Environments />} />
-            <Route path="/services" element={<ServicesPage />} />
-            <Route path="/services/:id" element={<ServiceDetail />} />
-            <Route path="/workflows" element={<Workflows />} />
-            <Route path="/workflows/:id" element={<WorkflowDetail />} />
-            <Route path="/runs" element={<Runs />} />
-            <Route path="/runs/:id" element={<RunDetail />} />
-            {/* Per-run report permalink: run ids are never reused, so this URL
-                survives a workflow rename. */}
-            <Route path="/runs/:id/report" element={<RunReportPage />} />
-            {/* Pinnable per-workflow link; :workflow is an id or an exact name. */}
-            <Route path="/reports/:workflow/latest" element={<LatestReport />} />
-            <Route path="/logs" element={<LogSearch />} />
-            <Route path="/artifacts" element={<Artifacts />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
-        </main>
-      </div>
+      )}
     </div>
   );
 }
 
 function ThemeToggle() {
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme ?? 'dark');
-  const apply = (t: string) => {
-    document.documentElement.dataset.theme = t;
-    localStorage.setItem('runrail-theme', t);
-    setTheme(t);
+  const next = theme === 'light' ? 'dark' : 'light';
+  const apply = () => {
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('runrail-theme', next);
+    setTheme(next);
   };
   return (
-    <div className="theme-toggle" role="group" aria-label="Theme">
-      <button type="button" className={theme === 'light' ? 'active' : ''} onClick={() => apply('light')}
-              aria-label="Light theme" aria-pressed={theme === 'light'}><Sun size={13} /></button>
-      <button type="button" className={theme === 'dark' ? 'active' : ''} onClick={() => apply('dark')}
-              aria-label="Dark theme" aria-pressed={theme === 'dark'}><Moon size={13} /></button>
-    </div>
+    <button type="button" className="dock-btn theme-toggle" onClick={apply}
+            aria-label={`Switch to the ${next} theme`} title={`Switch to the ${next} theme`}>
+      {theme === 'light' ? <Moon size={15} /> : <Sun size={15} />}
+    </button>
   );
 }
 
@@ -594,149 +546,124 @@ function CancelRunButton({ run, onDone, size = 'sm' }: { run: Run; onDone?: () =
   );
 }
 
-/* ─── Shared run table ────────────────────────────────── */
-function RunTable({ runs, flows, onChanged }: { runs: Run[]; flows: Workflow[]; onChanged?: () => void }) {
+/* ─── Shared run list ─────────────────────────────────────
+   Runs as a ledger rather than a table: the outcome first, then which
+   workflow, then when and how long. The bar beside each duration is drawn
+   against the longest run in the list, so the slow one stands out without
+   anyone comparing numbers. `byDay` rules the list off by calendar day. */
+function RunTable({ runs, flows, onChanged, byDay = false }: {
+  runs: Run[]; flows: Workflow[]; onChanged?: () => void; byDay?: boolean;
+}) {
   const now = useNow(runs.some(r => r.status === 'running'));
   const navTo = useNavigate();
-  // One query for the whole table; a broken summary must not break the table.
+  // One query for the whole list; a broken summary must not break the list.
   const { entryFor } = useRunNotesSummary();
+  const seconds = (r: Run) => r.duration_seconds
+    ?? (r.status === 'running' && r.started_at ? (now - new Date(r.started_at).getTime()) / 1000 : 0);
+  const longest = Math.max(1, ...runs.map(seconds));
+  const today = localDateKey(new Date());
+  let lastDay = '';
   return (
-    <div className="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>Run</th>
-            <th>Workflow</th>
-            <th>Status</th>
-            <th>Trigger</th>
-            <th>Started</th>
-            <th>Duration</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map(r => {
-            const flowName = flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`;
-            return (
-              <tr key={r.id}>
-                <td>
+    <div className={clsx('run-list', byDay && 'run-list--days')}>
+      {runs.map(r => {
+        const flowName = flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`;
+        const at = r.started_at || r.created_at;
+        const day = localDateKey(new Date(at));
+        const newDay = byDay && day !== lastDay;
+        lastDay = day;
+        const open = (e: React.MouseEvent) => {
+          if ((e.target as HTMLElement).closest('a, button')) return;
+          navigateWithTransition(navTo, `/runs/${r.id}`);
+        };
+        return (
+          <Fragment key={r.id}>
+            {newDay && (
+              <div className="run-day">
+                {day === today ? 'Today' : new Date(at).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+              </div>
+            )}
+            <div className={`run-row is-${r.status}`} onClick={open}>
+              <StatusBadge value={r.status} />
+              <div className="run-main">
+                <Link to={`/workflows/${r.workflow_id}`} className="run-flow-name" title={flowName}>{flowName}</Link>
+                <span className="run-meta">
                   <Link className="run-id" to={`/runs/${r.id}`}
                         style={{ viewTransitionName: `run-${r.id}` } as React.CSSProperties}
                         onClick={e => { e.preventDefault(); navigateWithTransition(navTo, `/runs/${r.id}`); }}>
                     #{r.id}
                   </Link>
+                  <span className="trigger-badge">{r.trigger_type}</span>
                   <RunNotesIndicator entry={entryFor(r.id)} />
-                </td>
-                <td><Link to={`/workflows/${r.workflow_id}`} style={{ color: 'inherit', textDecoration: 'none' }}><b className="run-flow-name" title={flowName}>{flowName}</b></Link></td>
-                <td><StatusBadge value={r.status} /></td>
-                <td><span className="trigger-badge">{r.trigger_type}</span></td>
-                <td style={{ color: 'var(--text-2)', fontSize: 13 }} title={formatDate(r.started_at || r.created_at)}>{timeAgo(r.started_at || r.created_at)}</td>
-                <td style={{ color: 'var(--text-2)', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>{liveDuration(r, now)}</td>
-                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  {LIVE(r.status) && <CancelRunButton run={r} onDone={onChanged} />}
-                  <Link className="row-arrow" to={`/runs/${r.id}`}>›</Link>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                </span>
+              </div>
+              <span className="run-when" title={formatDate(at)}>
+                {byDay ? new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : timeAgo(at)}
+              </span>
+              <span className="run-dur">
+                {seconds(r) > 0 && <i aria-hidden="true"><b style={{ width: `${Math.max(4, (seconds(r) / longest) * 100)}%` }} /></i>}
+                {liveDuration(r, now)}
+              </span>
+              <span className="run-act">
+                {LIVE(r.status) && <CancelRunButton run={r} onDone={onChanged} />}
+                <Link className="row-arrow" to={`/runs/${r.id}`} aria-label={`Open run ${r.id}`}><ChevronRight size={15} /></Link>
+              </span>
+            </div>
+          </Fragment>
+        );
+      })}
     </div>
   );
 }
 
-function FailedRunRow({ run, flows }: { run: Run; flows: Workflow[] }) {
-  const flow = flows.find(w => w.id === run.workflow_id);
-  const name = flow?.name ?? `Workflow ${run.workflow_id}`;
-  return (
-    <Link to={`/runs/${run.id}`} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px', borderBottom: '1px solid var(--border)', transition: 'background .12s', textDecoration: 'none', color: 'inherit' }}
-      onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')}
-      onMouseLeave={e => (e.currentTarget.style.background = '')}
-    >
-      <StatusBadge value="failed" />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>
-          {name}
-        </div>
-        <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>{timeAgo(run.created_at)} · run #{run.id}</div>
-      </div>
-      <ChevronRight size={14} color="var(--text-3)" />
-    </Link>
-  );
-}
-
-function LiveRunRow({ run, flows }: { run: Run; flows: Workflow[] }) {
-  const flow = flows.find(w => w.id === run.workflow_id);
-  const name = flow?.name ?? `Workflow ${run.workflow_id}`;
-  return (
-    <Link to={`/runs/${run.id}`} className="active-run-row" style={{ textDecoration: 'none', color: 'inherit' }}>
-      <span className={`run-pulse ${run.status}`} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>
-          {name}
-        </div>
-        <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 1 }}>#{run.id} · {run.trigger_type} · {timeAgo(run.created_at)}</div>
-      </div>
-      <StatusBadge value={run.status} />
-    </Link>
-  );
-}
-
-function UpcomingList({ flows }: { flows: Workflow[] }) {
+/* ─── Next up ──────────────────────────────────────────────
+   What the schedule does next, as a departure board: the nearest fire counts
+   down by the second, the ones after it by the minute. */
+function Departures({ flows }: { flows: Workflow[] }) {
+  const now = useNow(true, 1000);
+  const minute = Math.floor(now / 60_000);
   const upcoming = useMemo(() => {
-    const now = new Date();
-    const items: { flow: Workflow; next: Date; label: string }[] = [];
-    for (const flow of flows) {
-      if (!flow.enabled || !flow.schedule_cron) continue;
-      let cursor = now;
-      for (let i = 0; i < 3; i++) {
-        const next = nextCronOccurrence(flow.schedule_cron, flow.schedule_timezone, cursor);
-        if (!next || next.getTime() - now.getTime() > 7 * DAY) break;
-        items.push({ flow, next, label: cronLabel(flow.schedule_cron, flow.schedule_timezone) });
-        // +1s, not +1min: a full minute would skip the very next occurrence
-        // of an every-minute schedule.
-        cursor = new Date(next.getTime() + 1000);
-      }
-    }
-    return items.sort((a, b) => a.next.getTime() - b.next.getTime()).slice(0, 8);
-  }, [flows]);
-
-  if (!upcoming.length) {
-    return <EmptyState icon={<Clock size={22} />} title="No upcoming schedules" text="Enabled workflows with cron schedules will appear here." />;
-  }
-  const today = localDateKey(new Date());
+    const owed = upcomingFires(flows, minute * 60_000, 7 * DAY, 4);
+    const items: { flow: Workflow; at: number }[] = [];
+    for (const flow of flows) for (const at of owed.get(flow.id) ?? []) items.push({ flow, at });
+    return items.sort((a, b) => a.at - b.at);
+  }, [flows, minute]);
+  const due = upcoming.filter(item => item.at > now).slice(0, 5);
+  const clock = (at: number) => new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const today = localDateKey(new Date(now));
+  const [lead, ...rest] = due;
   return (
-    <div style={{ padding: '4px 0 8px' }}>
-      {upcoming.map(({ flow, next, label }) => (
-        <Link to={`/workflows/${flow.id}`} key={`${flow.id}-${next.toISOString()}`} className="tl-upcoming-row" style={{ textDecoration: 'none', color: 'inherit', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div className="tl-upcoming-dot" />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={flow.name}>{flow.name}</div>
-            <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 1 }}>{label}</div>
-          </div>
-          {/* The time, then how far off it is. The date only when it is not
-              today — eight rows each saying today's date said nothing. */}
-          <div className="tl-upcoming-when" title={formatDate(next.toISOString())}>
-            <b>{next.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</b>
-            <span>
-              {localDateKey(next) !== today && `${next.toLocaleDateString(undefined, { weekday: 'short' })} · `}
-              {untilLabel(next.getTime() - Date.now())}
+    <aside className="departures" aria-label="Next scheduled runs">
+      <header><h2>Next up</h2><span>{viewerZone()}</span></header>
+      {lead ? (
+        <>
+          <Link className="departure-lead" to={`/workflows/${lead.flow.id}`}>
+            <span className="departure-count">{countdown(lead.at - now)}</span>
+            <b title={lead.flow.name}>{lead.flow.name}</b>
+            <span className="departure-meta">
+              {clock(lead.at)} · {cronLabel(lead.flow.schedule_cron!, lead.flow.schedule_timezone)}
             </span>
-          </div>
-        </Link>
-      ))}
-    </div>
+          </Link>
+          <ol>
+            {rest.map(({ flow, at }) => (
+              <li key={`${flow.id}-${at}`}>
+                <Link to={`/workflows/${flow.id}`}>
+                  <time>{clock(at)}</time>
+                  <b title={flow.name}>{flow.name}</b>
+                  <span>
+                    {localDateKey(new Date(at)) !== today && `${new Date(at).toLocaleDateString(undefined, { weekday: 'short' })} · `}
+                    {untilLabel(at - now)}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ol>
+        </>
+      ) : (
+        <p className="departures-empty">Nothing is scheduled. Give a workflow a schedule and its next run counts down here.</p>
+      )}
+    </aside>
   );
 }
-
-type DailyStat = { date: string; success: number; failed: number; other: number };
-
-type Summary = {
-  running: number; queued: number; waiting: number; live: number;
-  runs_24h: number; succeeded_24h: number; failed_24h: number;
-  avg_duration_24h: number | null;
-  done_7d: number; success_7d: number; success_rate_7d: number | null;
-};
 
 const CHART_DAYS = 14;
 
@@ -875,89 +802,107 @@ function DotMeter({ ratio }: { ratio: number }) {
   );
 }
 
-/** The hero's date line. Its own ticker, so a minute passing re-renders one
- *  line and not the dashboard. */
-function HeroClock({ mood }: { mood: string }) {
-  const now = new Date(useNow(true, 15_000));
+/** The hero's date line. Its own ticker, so a second passing re-renders one
+ *  line and not the page. */
+function NowClock() {
+  const now = new Date(useNow(true, 1000));
+  // The viewer's own clock format, with the seconds stepped back: they are
+  // there to show the page is alive, not to be read.
+  const parts = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).formatToParts(now);
   return (
-    <div className="dashboard-eyebrow">
-      <i className={`mood-orb mood-${mood}`} aria-hidden="true" />
-      <span>{now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</span>
-      <time>{now.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</time>
-    </div>
+    <p className="now-date">
+      <span>{now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+      <time>
+        {parts.map((part, i) =>
+          part.type === 'second' || (part.type === 'literal' && parts[i + 1]?.type === 'second')
+            ? <small key={i}>{part.value}</small> : part.value)}
+      </time>
+    </p>
   );
 }
 
-/* ─── Dashboard ───────────────────────────────────────── */
-/** How many of the newest runs the dashboard holds. Fewer than this coming
- *  back means it holds all of them, which the rail needs to know. */
-const RECENT_LIMIT = 100;
-
-function Dashboard() {
-  const [runs, setRuns] = useState<Run[] | null>(null);
-  const [flows, setFlows] = useState<Workflow[] | null>(null);
-  const [summary, setSummary] = useState<Summary | null>(null);
+/** Workflows whose latest verdict is a failure, each with the two things a
+ *  person does about it: read the run, or run it again. */
+function FailingPanel({ failing, onRetried }: { failing: Failing<Workflow, Run>[]; onRetried: () => void }) {
   const navTo = useNavigate();
   const { toast } = useToast();
-
-  // Lists (recent table, live, failures, sparklines) come from a small recent
-  // fetch; headline metrics come from the server-aggregated /stats/summary so
-  // they don't under-count once a workflow overflows the fetch limit.
-  const loadStats = () => {
-    void api<Run[]>(`/runs?limit=${RECENT_LIMIT}`).then(setRuns).catch(() => {});
-    void api<Summary>('/stats/summary').then(setSummary).catch(() => {});
+  const [busy, setBusy] = useState<number | null>(null);
+  const retry = async (run: Run) => {
+    setBusy(run.id);
+    try {
+      const next = await post<Run>(`/runs/${run.id}/retry`, {});
+      onRetried();
+      navTo(`/runs/${next.id}`);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not retry the run', 'error');
+    } finally { setBusy(null); }
   };
-  const load = () => {
-    api<Run[]>(`/runs?limit=${RECENT_LIMIT}`).then(setRuns).catch(() => setRuns([]));
-    api<Workflow[]>('/workflows').then(setFlows).catch(() => setFlows([]));
-    api<Summary>('/stats/summary').then(setSummary).catch(() => {});
-  };
-  // A run stopped on a gate that nobody notices is this feature's main failure
-  // mode, so the count is a headline stat, not only a panel further down.
-  const approvals = useOpenApprovals();
-  const waitingRuns = new Set((approvals ?? []).map(row => row.run_id)).size;
-  const services = useServices({ supervisor: false, pollIdle: false });
-  const serviceCount = serviceCounts(services.items);
+  return (
+    <section className="panel failing-panel">
+      <div className="panel-head">
+        <div><h2>Failing</h2><p>Workflows whose latest run failed</p></div>
+      </div>
+      {failing.slice(0, 6).map(({ flow, run }) => (
+        <div key={flow.id} className="failing-row">
+          <i className="lane-signal" aria-hidden="true" />
+          <div>
+            <Link to={`/workflows/${flow.id}`} title={flow.name}>{flow.name}</Link>
+            <span>Failed {timeAgo(run.finished_at || run.started_at || run.created_at)} · <Link to={`/runs/${run.id}`}>run #{run.id}</Link></span>
+          </div>
+          <Button variant="ghost" size="sm" disabled={busy === run.id} onClick={() => retry(run)}>
+            <RefreshCw size={12} /> Retry
+          </Button>
+        </div>
+      ))}
+      {failing.length > 6 && <Link className="panel-more" to="/runs?status=failed">{failing.length - 6} more <ArrowRight size={13} /></Link>}
+    </section>
+  );
+}
 
-  useEffect(() => { load(); }, []);
-  useEffect(() => {
-    const u1 = rrws.on('run_created', loadStats);
-    const u2 = rrws.on('run_updated', loadStats);
-    const u3 = rrws.on('task_run_updated', loadStats);
-    return () => { u1(); u2(); u3(); };
-  }, []);
-  useLiveRefresh(Boolean(runs?.some(r => LIVE(r.status))), loadStats);
+/* ─── Now ─────────────────────────────────────────────────
+   The home screen. It answers, in this order: is everything all right, what
+   should I do about it, what is moving, and what happens next. */
+function Dashboard() {
+  const { runs, flows, summary, services, serviceCount, waitingRuns, failing, mood, complete, refresh } = usePulse();
+  const navTo = useNavigate();
+  const { toast } = useToast();
+  const failingIds = useMemo(() => new Set(failing.map(f => f.flow.id)), [failing]);
 
   if (runs === null || flows === null) {
-    return <div><div style={{ height: 28, width: 160, marginBottom: 24 }} className="skeleton-line" /><SkeletonCard /><SkeletonCard /></div>;
+    return (
+      <div className="now-loading">
+        <div className="skeleton-line" style={{ height: 14, width: 220 }} />
+        <div className="skeleton-line" style={{ height: 58, width: 'min(560px, 80%)' }} />
+        <div className="skeleton-line" style={{ height: 320, width: '100%' }} />
+      </div>
+    );
   }
 
-  const liveRuns = runs.filter(r => LIVE(r.status)).slice(0, 6);
-  const failures = runs.filter(r => r.status === 'failed').slice(0, 4);
   const empty = flows.length === 0;
   // `waiting` are runs parked on an approval gate: live, but blocked on a
-  // person rather than making progress, so the card says so.
+  // person rather than making progress, so the strip says so.
   const parked = summary?.waiting ?? runs.filter(r => r.status === 'waiting_approval').length;
-  const liveCount = summary?.live ?? (liveRuns.length + parked);
-  const runningCount = summary?.running ?? liveRuns.filter(r => r.status === 'running').length;
-  const queuedCount = summary?.queued ?? liveRuns.filter(r => r.status === 'queued').length;
+  const runningCount = summary?.running ?? runs.filter(r => r.status === 'running').length;
+  const queuedCount = summary?.queued ?? runs.filter(r => r.status === 'queued').length;
+  const liveCount = summary?.live ?? (runningCount + queuedCount + parked);
   const runs24h = summary?.runs_24h ?? 0;
   const succeeded24h = summary?.succeeded_24h ?? 0;
   const failed24h = summary?.failed_24h ?? 0;
   const done7d = summary?.done_7d ?? 0;
   const successRate = summary?.success_rate_7d ?? null;
   const avgDuration = summary?.avg_duration_24h ?? null;
+  const activeFlows = flows.filter(w => w.enabled).length;
 
   const runNow = async (id: number) => {
     try {
       const run = await post<Run>(`/workflows/${id}/run`, { parameters: {} });
+      refresh();
       navTo(`/runs/${run.id}`);
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Could not start workflow', 'error');
     }
   };
 
-  const activeFlows = flows.filter(w => w.enabled).length;
   // Only the states that have something in them: "0 running · 0 queued · 2
   // waiting" spends two thirds of the line on nothing.
   const liveNote = [
@@ -965,41 +910,42 @@ function Dashboard() {
     queuedCount && `${queuedCount} queued`,
     parked && `${parked} waiting on you`,
   ].filter(Boolean).join(' · ') || 'Nothing running or queued';
-  // One verdict, one colour, one next step — all three read from the same
-  // order of urgency, so the headline never points one way and the button
-  // another.
-  const mood = empty ? 'calm' : serviceCount.down ? 'down' : waitingRuns ? 'waiting' : failed24h ? 'failed' : 'calm';
+
+  // One verdict, one colour, one next step — all read from the same order of
+  // urgency, so the headline never points one way and the button another.
+  const state = { down: serviceCount.down, waiting: waitingRuns.length, failing: failing.length };
   const reviewApprovals = () => {
-    const waiting = [...new Set((approvals ?? []).map(row => row.run_id))];
-    if (waiting.length === 1) { navTo(`/runs/${waiting[0]}`); return; }
+    if (waitingRuns.length === 1) { navTo(`/runs/${waitingRuns[0]}`); return; }
     document.querySelector('.approval-inbox')?.scrollIntoView({ behavior: REDUCED_MOTION() ? 'auto' : 'smooth', block: 'center' });
   };
-  const next = empty ? { label: 'Create a workflow', icon: <Plus size={14} />, go: () => navTo('/workflows') }
-    : mood === 'down' ? { label: 'Open services', icon: <Server size={14} />, go: () => navTo('/services') }
-    : mood === 'waiting' ? { label: waitingRuns === 1 ? 'Review the approval' : `Review ${waitingRuns} approvals`, icon: <ShieldAlert size={14} />, go: reviewApprovals }
-    : mood === 'failed' ? { label: 'Review failures', icon: <AlertTriangle size={14} />, go: () => navTo('/runs?status=failed') }
-    : { label: 'View workflows', icon: <GitBranch size={14} />, go: () => navTo('/workflows') };
+  const next = mood === 'down' ? { label: 'Open services', icon: <Server size={15} />, go: () => navTo('/services') }
+    : mood === 'waiting' ? { label: waitingRuns.length === 1 ? 'Review the approval' : `Review ${waitingRuns.length} approvals`, icon: <ShieldAlert size={15} />, go: reviewApprovals }
+    : mood === 'failing' ? (failing.length === 1
+        ? { label: 'Open the failed run', icon: <AlertTriangle size={15} />, go: () => navTo(`/runs/${failing[0].run.id}`) }
+        : { label: 'Review failures', icon: <AlertTriangle size={15} />, go: () => navTo('/runs?status=failed') })
+    : { label: 'Run a workflow', icon: <Play size={15} />, go: openPalette };
 
   return (
-    <>
-      <div className={`dashboard-hero mood-${mood}`}>
-        <div className="dashboard-hero-content">
-          <HeroClock mood={mood} />
-          {/* The headline is the dashboard's verdict, so it has to agree with
-              the action under it: what needs a person, in that order. */}
-          <h1 className="dashboard-title">
-            {empty ? 'Welcome to RunRail'
-              : serviceCount.down ? `${serviceCount.down === 1 ? 'A service is' : `${serviceCount.down} services are`} down.`
-              : waitingRuns ? `${waitingRuns === 1 ? 'A run is' : `${waitingRuns} runs are`} waiting for you.`
-              : failed24h ? `${failed24h} run${failed24h === 1 ? '' : 's'} failed today.`
-              : 'Everything on track.'}
-          </h1>
-          <p className="dashboard-sub">
-            {empty
-              ? 'Schedules, retries, logs, and history for the scripts you already have.'
-              : (
-                <>
-                  {activeFlows} active workflow{activeFlows === 1 ? '' : 's'}
+    <div className="now">
+      <section className="now-hero">
+        <div className="now-lead">
+          <NowClock />
+          <h1 className="now-verdict">{empty ? 'Welcome to RunRail.' : verdictLine(state)}</h1>
+          <p className="now-sub">
+            {empty ? 'Schedules, retries, logs, and history for the scripts you already have.' : (
+              <>
+                {mood === 'failing' && (
+                  <span className="now-detail">
+                    {failing.slice(0, 2).map(({ flow }, i) => (
+                      <Fragment key={flow.id}>{i > 0 && ', '}<Link to={`/workflows/${flow.id}`}>{flow.name}</Link></Fragment>
+                    ))}
+                    {failing.length > 2 && ` and ${failing.length - 2} more`}
+                    {failing.length === 1 && ` last failed ${timeAgo(failing[0].run.finished_at || failing[0].run.created_at)}`}
+                    .
+                  </span>
+                )}
+                <span>
+                  {activeFlows} workflow{activeFlows === 1 ? '' : 's'} on schedule or on call
                   <i aria-hidden="true">·</i>
                   {runs24h.toLocaleString()} run{runs24h === 1 ? '' : 's'} in the last 24 hours
                   {serviceCount.total > 0 && (
@@ -1012,26 +958,22 @@ function Dashboard() {
                       </Link>
                     </>
                   )}
-                </>
-              )}
+                </span>
+              </>
+            )}
           </p>
-          <div className="dashboard-cta-row">
-            <Button onClick={next.go}>{next.icon} {next.label}</Button>
-            {!empty && mood !== 'calm' && <Link className="text-link" to="/workflows">Workflows <ArrowRight size={13} /></Link>}
-            {!empty && <Link className="text-link" to="/runs">Run history <ArrowRight size={13} /></Link>}
-          </div>
-        </div>
-        {!empty && (
-          <div className="dashboard-hero-aside">
-            <div className="dashboard-hero-aside-head">
-              <span>Activity</span>
-              <Link className="panel-link" to="/wallboard"><MonitorPlay size={12} /> Wallboard</Link>
+          {/* On a first run the welcome card below carries the next step. */}
+          {!empty && (
+            <div className="now-actions">
+              <Button onClick={next.go}>{next.icon} {next.label}</Button>
+              {mood !== 'calm' && <Button variant="ghost" onClick={openPalette}><Play size={14} /> Run a workflow</Button>}
+              <Link className="text-link" to="/runs">Run history <ArrowRight size={13} /></Link>
+              <Link className="text-link" to="/wallboard"><MonitorPlay size={13} /> Wallboard</Link>
             </div>
-            <RunHeatmap selectable />
-          </div>
-        )}
-        {!empty && <PulseRail runs={runs} flows={flows} complete={runs.length < RECENT_LIMIT} />}
-      </div>
+          )}
+        </div>
+        {!empty && <Departures flows={flows} />}
+      </section>
 
       {empty ? (
         <>
@@ -1041,8 +983,10 @@ function Dashboard() {
         </>
       ) : (
         <>
+          <Board runs={runs} flows={flows} complete={complete} failing={failingIds} onRun={runNow} />
+
           <div className="instruments">
-            <Instrument label="Live now" value={liveCount}
+            <Instrument label="In flight" value={liveCount}
                         tone={parked ? 'warning' : liveCount ? 'running' : 'default'}
                         note={liveNote}>
               {runningCount > 0 && <LoadingBar size="sm" className="instrument-live" />}
@@ -1057,60 +1001,47 @@ function Dashboard() {
             <Instrument label="Failures · 24h" value={failed24h}
                         tone={failed24h ? 'danger' : 'default'}
                         to={failed24h ? '/runs?status=failed' : undefined}
-                        note={failed24h ? 'Needs attention' : 'All clear'} />
-            <Instrument label="Avg duration · 24h"
+                        note={failed24h ? 'Open the failed runs' : 'None'} />
+            <Instrument label="Typical run"
                         value={avgDuration != null ? <UnitValue text={formatDuration(avgDuration)} /> : '—'}
-                        note="Completed runs" />
+                        note="Average over 24 hours" />
           </div>
 
-          <div className="dashboard-panels">
-            <div>
-              <ActivityChart />
-              <div className="panel dashboard-lead-panel">
+          <div className="now-grid">
+            <div className="now-main">
+              <section className="panel">
                 <div className="panel-head">
-                  <div><h2>Recent runs</h2><p>The latest executions across all workflows</p></div>
-                  <Link className="panel-link" to="/runs">See all →</Link>
+                  <div><h2>Latest runs</h2><p>Across every workflow, newest first</p></div>
+                  <Link className="panel-link" to="/runs">All runs <ArrowRight size={13} /></Link>
                 </div>
                 {runs.length > 0
-                  ? <RunTable runs={runs.slice(0, 8)} flows={flows} onChanged={load} />
+                  ? <RunTable runs={runs.slice(0, 9)} flows={flows} onChanged={refresh} />
                   : <EmptyState icon={<History size={22} />} title="No runs yet" text="Trigger a workflow to see it here." />}
-              </div>
-              {/* What can be started and what will start on its own, side by
-                  side under the history. They used to sit at the bottom of the
-                  narrow column, which ran three times the length of this one. */}
-              <div className="dashboard-pair">
-                <WorkflowQuickList flows={flows} runs={runs} onRun={runNow} />
-                <div className="panel">
-                  <div className="panel-head"><div><h2>Upcoming</h2><p>Next scheduled executions</p></div></div>
-                  <UpcomingList flows={flows} />
-                </div>
+              </section>
+              {/* The fortnight and the season, side by side. */}
+              <div className="now-history">
+                <ActivityChart />
+                <section className="panel year-panel">
+                  <div className="panel-head">
+                    <div><h2>The long view</h2><p>Every day's runs, by outcome</p></div>
+                  </div>
+                  <div className="year-panel-body"><RunHeatmap selectable /></div>
+                </section>
               </div>
             </div>
-            <div>
+            <div className="now-side">
               {/* Self-fetching and self-hiding — first in the column so a
                   paused run is the first thing the column says. */}
               <ApprovalInbox />
-              {/* Services before runs: they are what should always be up, and
-                  the panel leads with any that are not. "Live runs" says what
-                  the next panel holds, since a running service is live too. */}
+              {failing.length > 0 && <FailingPanel failing={failing} onRetried={refresh} />}
+              {/* Services are what should always be up, and the panel leads
+                  with any that are not. */}
               <ServicesPanel items={services.items} onChanged={services.load} />
-              <div className="panel" style={{ marginBottom: 16 }}>
-                <div className="panel-head"><div><h2>Live runs</h2><p>Running, queued, and waiting on a person</p></div></div>
-                {liveRuns.length > 0
-                  ? <div style={{ padding: '6px 0' }}>{liveRuns.map(r => <LiveRunRow key={r.id} run={r} flows={flows} />)}</div>
-                  : <EmptyState icon={<Activity size={22} />} title="No runs live" text="Runs appear here the moment they queue or start." />}
-              </div>
-              {failures.length > 0 && (
-                <div className="panel">
-                  <div className="panel-head"><div><h2>Needs attention</h2><p>Most recent failures</p></div></div>
-                  {failures.map(r => <FailedRunRow key={r.id} run={r} flows={flows} />)}
-                </div>
-              )}
             </div>
           </div>
         </>
       )}
-    </>
+    </div>
   );
 }
 
@@ -1155,75 +1086,6 @@ function WebhookTest({ workflow }: { workflow: Workflow }) {
    whose names start with "b" were ever reachable from here. Now: the most
    recently active first, a filter once there are more than a handful, and a
    scrolling list whose fade says there is more below. */
-
-const QUICK_ROWS = 8;
-
-function WorkflowQuickList({ flows, runs, onRun }: {
-  flows: Workflow[]; runs: Run[]; onRun: (id: number) => void;
-}) {
-  const [query, setQuery] = useState('');
-  const [atEnd, setAtEnd] = useState(false);
-  const listRef = useRef<HTMLDivElement>(null);
-
-  const ordered = useMemo(() => {
-    const lastActive = new Map<number, number>();
-    for (const run of runs) {
-      const at = new Date(run.created_at).getTime();
-      if (at > (lastActive.get(run.workflow_id) ?? 0)) lastActive.set(run.workflow_id, at);
-    }
-    return [...flows].sort((a, b) =>
-      (lastActive.get(b.id) ?? 0) - (lastActive.get(a.id) ?? 0) || a.name.localeCompare(b.name));
-  }, [flows, runs]);
-
-  const needle = query.trim().toLowerCase();
-  const shown = needle ? ordered.filter(w => w.name.toLowerCase().includes(needle)) : ordered;
-  const scrolls = shown.length > QUICK_ROWS;
-
-  const onScroll = () => {
-    const el = listRef.current;
-    if (el) setAtEnd(el.scrollTop + el.clientHeight >= el.scrollHeight - 4);
-  };
-  useEffect(() => { setAtEnd(false); listRef.current?.scrollTo({ top: 0 }); }, [needle]);
-
-  return (
-    <div className="panel wf-quick" style={{ marginBottom: 16 }}>
-      <div className="panel-head">
-        <div><h2>Workflows</h2><p>Most recently active first</p></div>
-        <Link className="panel-link" to="/workflows">All {flows.length} →</Link>
-      </div>
-      {flows.length > 6 && (
-        <label className="wf-quick-search">
-          <Search size={13} aria-hidden="true" />
-          <input value={query} onChange={e => setQuery(e.target.value)}
-                 placeholder="Find a workflow…" aria-label="Filter workflows"
-                 onKeyDown={e => { if (e.key === 'Escape' && query) { e.preventDefault(); setQuery(''); } }} />
-          {query && (
-            <button type="button" className="wf-quick-clear" onClick={() => setQuery('')} aria-label="Clear filter">
-              <X size={12} />
-            </button>
-          )}
-        </label>
-      )}
-      <div ref={listRef} onScroll={onScroll}
-           className={clsx('wf-quick-list', scrolls && 'is-scrollable', scrolls && !atEnd && 'has-more')}>
-        {shown.map(w => (
-          <div key={w.id} className="wf-spark-row">
-            <Link className="wf-spark-name" to={`/workflows/${w.id}`} title={w.name}>{w.name}</Link>
-            <WorkflowSparkline runs={runs.filter(r => r.workflow_id === w.id).slice(0, 12)} />
-            <button className="edit-link" onClick={() => onRun(w.id)} title={`Run ${w.name} now`}
-                    aria-label={`Run ${w.name} now`}><Play size={12} /></button>
-          </div>
-        ))}
-        {needle && shown.length === 0 && (
-          <p className="wf-quick-empty">No workflow matches “{query.trim()}”.</p>
-        )}
-      </div>
-      {needle && shown.length > 0 && (
-        <div className="wf-quick-foot">{shown.length} of {flows.length}</div>
-      )}
-    </div>
-  );
-}
 
 function WorkflowSparkline({ runs }: { runs: Run[] }) {
   const bars = [...runs].reverse();
@@ -1270,6 +1132,14 @@ function QuickStart() {
 }
 
 /* ─── Runs page ───────────────────────────────────────── */
+const RUN_TABS: { key: string; label: string; match: (status: string) => boolean }[] = [
+  { key: '',          label: 'All',       match: () => true },
+  { key: 'live',      label: 'Live',      match: LIVE },
+  { key: 'failed',    label: 'Failed',    match: s => s === 'failed' },
+  { key: 'success',   label: 'Succeeded', match: s => s === 'success' },
+  { key: 'cancelled', label: 'Cancelled', match: s => s === 'cancelled' },
+];
+
 function Runs() {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [flows, setFlows] = useState<Workflow[]>([]);
@@ -1304,7 +1174,7 @@ function Runs() {
   useEffect(() => {
     const linked = params.get('workflow');
     if (linked) setWorkflowId(linked);
-    // And a status, for the dashboard's "Review failures".
+    // And a status, for "Review failures" on the home screen.
     const linkedStatus = params.get('status');
     if (linkedStatus) setStatus(linkedStatus);
   }, [params]);
@@ -1317,116 +1187,104 @@ function Runs() {
   useLiveRefresh(Boolean(runs?.some(r => LIVE(r.status))), loadStats);
 
   const flowName = (id: number) => flows.find(w => w.id === id)?.name ?? `Workflow ${id}`;
-  const shown = useMemo(() => {
+  // A status the tabs do not name (a link to ?status=queued) still filters.
+  const tab = RUN_TABS.find(t => t.key === status);
+  const matches = tab ? tab.match : (s: string) => s === status;
+  // Everything but the status, so each tab can say how many it would show.
+  const scoped = useMemo(() => {
     if (!runs) return [];
     const q = query.trim().toLowerCase();
     return runs.filter(r =>
-      (!status || r.status === status)
-      && (!workflowId || String(r.workflow_id) === workflowId)
+      (!workflowId || String(r.workflow_id) === workflowId)
       && (!trigger || r.trigger_type === trigger)
       && (!q || `#${r.id}`.includes(q) || String(r.id) === q || flowName(r.workflow_id).toLowerCase().includes(q))
     );
-  }, [runs, status, workflowId, trigger, query, flows]);
+  }, [runs, workflowId, trigger, query, flows]);
+  const shown = useMemo(() => scoped.filter(r => matches(r.status)), [scoped, status]);
 
   if (runs === null) {
-    return <div><div style={{ height: 28, width: 120, marginBottom: 24 }} className="skeleton-line" /><SkeletonCard /><SkeletonCard /></div>;
+    return <div><div style={{ height: 40, width: 160, marginBottom: 24 }} className="skeleton-line" /><SkeletonCard /><SkeletonCard /></div>;
   }
 
-  const liveRuns = runs.filter(r => LIVE(r.status)).slice(0, 6);
-  const parked = summary?.waiting ?? runs.filter(r => r.status === 'waiting_approval').length;
   const avgDuration = summary?.avg_duration_24h ?? null;
   const filtersActive = Boolean(status || workflowId || trigger || query || day);
+  const facts = [
+    summary && `${summary.live} live`,
+    summary && `${summary.runs_24h.toLocaleString()} in the last 24 hours`,
+    summary && (summary.failed_24h ? `${summary.failed_24h} failed` : 'none failed'),
+    avgDuration != null && `typically ${formatDuration(avgDuration)}`,
+  ].filter(Boolean).join(' · ');
 
   return (
     <>
-      <PageHeader eyebrow="OBSERVABILITY" title="Runs" subtitle="Live activity, schedule context, and the full execution history." />
+      <PageHeader title="Runs" subtitle={facts || 'Every execution, newest first.'} />
 
-      <div className="summary-strip">
-        <div><span>Live</span><strong>{summary?.live ?? (liveRuns.length + parked)}</strong></div>
-        {parked > 0 && <div><span>Waiting on a person</span><strong>{parked}</strong></div>}
-        <div><span>Runs · 24h</span><strong>{summary?.runs_24h ?? '—'}</strong></div>
-        <div><span>Failures · 24h</span><strong>{summary?.failed_24h ?? '—'}</strong></div>
-        <div><span>Avg duration · 24h</span><strong>{avgDuration != null ? formatDuration(avgDuration) : '—'}</strong></div>
-        <div><span>History loaded</span><strong>{runs.length}</strong></div>
-      </div>
-
-      <div className="dashboard-panels dashboard-panels-v2">
-        <div>
-          <div className="panel" style={{ marginBottom: 16 }}>
-            <div className="panel-head">
-              <div><h2>Run history</h2><p>Filter and inspect every execution in one place</p></div>
-              {filtersActive && (
-                <button className="edit-link" onClick={() => {
-                  setStatus(''); setWorkflowId(''); setTrigger(''); setQuery('');
-                  setParams({}, { replace: true });
-                }}>
-                  Clear filters
-                </button>
-              )}
-            </div>
-            {day && (
-              <div className="filterbar" style={{ marginBottom: 0, border: 'none', padding: '0 20px 0' }}>
-                <span className="pill">
-                  {new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, {
-                    weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' })}
-                  {' · '}
-                  <button className="edit-link"
-                          onClick={() => setParams(previous => {
-                            const next = new URLSearchParams(previous);
-                            next.delete('day');
-                            return next;
-                          }, { replace: true })}>
-                    show all days
-                  </button>
-                </span>
-              </div>
-            )}
-            <div className="filterbar" style={{ marginBottom: 0, border: 'none', padding: '0 20px 18px' }}>
-              <div className="filterbar-search">
-                <Search size={14} color="var(--text-3)" />
-                <input placeholder="Search by workflow or run id…" value={query} onChange={e => setQuery(e.target.value)} />
-              </div>
-              <select value={workflowId} onChange={e => setWorkflowId(e.target.value)} aria-label="Workflow filter">
-                <option value="">All workflows</option>
-                {flows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-              </select>
-              <select value={status} onChange={e => setStatus(e.target.value)} aria-label="Status filter">
-                <option value="">All statuses</option>
-                {['queued', 'running', 'waiting_approval', 'success', 'failed', 'cancelled'].map(s => (
-                  <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
-                ))}
-              </select>
-              <select value={trigger} onChange={e => setTrigger(e.target.value)} aria-label="Trigger filter">
-                <option value="">All triggers</option>
-                {['manual', 'schedule', 'cli', 'backfill'].map(t => <option key={t}>{t}</option>)}
-              </select>
-              <span className="filterbar-count">{shown.length} of {runs.length}</span>
-            </div>
-            {shown.length > 0
-              ? <RunTable runs={shown.slice(0, 100)} flows={flows} onChanged={load} />
-              : <EmptyState icon={<History size={22} />} title={filtersActive ? 'No runs match these filters' : 'No runs yet'} text={filtersActive ? 'Try widening your filters.' : 'Run a workflow to see its history here.'} />}
-            {shown.length > 100 && (
-              <div style={{ padding: '10px 20px', fontSize: 12, color: 'var(--text-3)', borderTop: '1px solid var(--border)' }}>
-                Showing the first 100 matches. Narrow the filters to see older runs.
-              </div>
-            )}
-          </div>
-          {runs.length > 0 && <ActivityChart />}
+      <div className="toolbar">
+        <div className="tabs" role="tablist" aria-label="Status">
+          {RUN_TABS.map(t => {
+            const n = scoped.filter(r => t.match(r.status)).length;
+            return (
+              <button key={t.key} type="button" role="tab" aria-selected={status === t.key}
+                      className={clsx('tab-pill', status === t.key && 'active', t.key && n > 0 && `is-${t.key}`)}
+                      onClick={() => setStatus(t.key)}>
+                {t.label}<small>{n}</small>
+              </button>
+            );
+          })}
         </div>
-
-        <div>
-          <div className="panel" style={{ marginBottom: 16 }}>
-            <div className="panel-head"><div><h2>Live runs</h2><p>Running, queued, and waiting on a person</p></div></div>
-            {liveRuns.length > 0
-              ? <div style={{ padding: '6px 0' }}>{liveRuns.map(r => <LiveRunRow key={r.id} run={r} flows={flows} />)}</div>
-              : <EmptyState icon={<Activity size={22} />} title="No runs live right now" text="Runs surface here as soon as they queue or start." />}
+        <div className="toolbar-fields">
+          <div className="filterbar-search">
+            <Search size={14} />
+            <input placeholder="Workflow or run id" value={query} onChange={e => setQuery(e.target.value)} aria-label="Search runs" />
           </div>
-          <div className="panel" style={{ marginBottom: 16 }}>
-            <div className="panel-head"><div><h2>Upcoming</h2><p>Next scheduled executions</p></div></div>
-            <UpcomingList flows={flows} />
-          </div>
+          <select value={workflowId} onChange={e => setWorkflowId(e.target.value)} aria-label="Workflow filter">
+            <option value="">All workflows</option>
+            {flows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+          <select value={trigger} onChange={e => setTrigger(e.target.value)} aria-label="Trigger filter">
+            <option value="">All triggers</option>
+            {['manual', 'schedule', 'cli', 'backfill'].map(t => <option key={t}>{t}</option>)}
+          </select>
         </div>
       </div>
+
+      {(day || filtersActive) && (
+        <div className="toolbar-note">
+          {day && (
+            <span className="pill">
+              {new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, {
+                weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' })}
+              {' · '}
+              <button className="edit-link"
+                      onClick={() => setParams(previous => {
+                        const next = new URLSearchParams(previous);
+                        next.delete('day');
+                        return next;
+                      }, { replace: true })}>
+                show all days
+              </button>
+            </span>
+          )}
+          <span className="filterbar-count">{shown.length} of {runs.length} loaded</span>
+          <button className="edit-link" onClick={() => {
+            setStatus(''); setWorkflowId(''); setTrigger(''); setQuery('');
+            setParams({}, { replace: true });
+          }}>
+            Clear filters
+          </button>
+        </div>
+      )}
+
+      <section className="panel ledger">
+        {shown.length > 0
+          ? <RunTable runs={shown.slice(0, 100)} flows={flows} onChanged={load} byDay />
+          : <EmptyState icon={<History size={22} />} title={filtersActive ? 'No runs match these filters' : 'No runs yet'} text={filtersActive ? 'Try widening your filters.' : 'Run a workflow to see its history here.'} />}
+        {shown.length > 100 && (
+          <p className="ledger-foot">Showing the first 100 matches. Narrow the filters to see older runs.</p>
+        )}
+      </section>
+
+      {runs.length > 0 && <ActivityChart />}
     </>
   );
 }
@@ -2477,13 +2335,39 @@ function EditEnvironmentModal({ env, onClose, done }: { env: Env; onClose: () =>
 }
 
 /* ─── Workflows ───────────────────────────────────────── */
+/** A countdown with its own ticker, so a second passing re-renders one cell
+ *  and not the list around it. */
+function Countdown({ at }: { at: number }) {
+  const now = useNow(true, 1000);
+  return <>{countdown(at - now)}</>;
+}
+
+const HISTORY_TICKS = 16;
+
+type FlowFilter = 'all' | 'scheduled' | 'manual' | 'paused' | 'failing';
+
 function Workflows() {
-  const [items, setItems] = useState<Workflow[]>([]);
+  const [items, setItems] = useState<Workflow[] | null>(null);
+  const [runs, setRuns] = useState<Run[]>([]);
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<FlowFilter>('all');
   const navTo = useNavigate();
   const { toast } = useToast();
-  const load = () => api<Workflow[]>('/workflows').then(setItems).catch(() => {});
-  useEffect(() => { void load(); }, []);
+  // Half a minute is fine for "which fire is next"; the countdowns tick on
+  // their own.
+  const tick = Math.floor(useNow(true, 30_000) / 30_000);
+  const load = () => {
+    api<Workflow[]>('/workflows').then(setItems).catch(() => setItems(prev => prev ?? []));
+    api<Run[]>('/runs?limit=500').then(setRuns).catch(() => {});
+  };
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const u1 = rrws.on('run_created', load);
+    const u2 = rrws.on('run_updated', load);
+    return () => { u1(); u2(); };
+  }, []);
+  useLiveRefresh(runs.some(r => LIVE(r.status)), load, 5000);
 
   const runWorkflow = async (e: React.MouseEvent, id: number) => {
     e.stopPropagation();
@@ -2495,48 +2379,136 @@ function Workflows() {
     }
   };
 
+  const rows = useMemo(() => {
+    const flows = items ?? [];
+    const history = new Map<number, Run[]>();
+    for (const run of runs) {
+      const list = history.get(run.workflow_id);
+      if (list) { if (list.length < HISTORY_TICKS) list.push(run); } else history.set(run.workflow_id, [run]);
+    }
+    const failing = new Set(failingFlows(runs, flows, Date.now()).map(f => f.flow.id));
+    const owed = upcomingFires(flows, Date.now(), 14 * DAY, 1);
+    return flows.map(flow => {
+      const recent = history.get(flow.id) ?? [];
+      return {
+        flow, recent,
+        next: owed.get(flow.id)?.[0] ?? null,
+        state: laneState(flow, recent.filter(r => LIVE(r.status)), failing.has(flow.id)),
+      };
+    }).sort((a, b) => {
+      const urgent = (s: string) => (s === 'failing' ? 0 : s === 'waiting' ? 1 : 2);
+      return urgent(a.state) - urgent(b.state)
+        || a.flow.name.localeCompare(b.flow.name, undefined, { numeric: true });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, runs, tick]);
+
+  const FILTERS: { key: FlowFilter; label: string; match: (row: typeof rows[number]) => boolean }[] = [
+    { key: 'all',       label: 'All',       match: () => true },
+    { key: 'scheduled', label: 'Scheduled', match: r => Boolean(r.flow.schedule_cron) && r.flow.enabled },
+    { key: 'manual',    label: 'On demand', match: r => !r.flow.schedule_cron && r.flow.enabled },
+    { key: 'paused',    label: 'Paused',    match: r => !r.flow.enabled || r.state === 'paused' },
+    { key: 'failing',   label: 'Failing',   match: r => r.state === 'failing' },
+  ];
+  const needle = query.trim().toLowerCase();
+  const named = needle
+    ? rows.filter(r => r.flow.name.toLowerCase().includes(needle) || (r.flow.description ?? '').toLowerCase().includes(needle))
+    : rows;
+  const shown = named.filter(FILTERS.find(f => f.key === filter)!.match);
+
+  if (items === null) {
+    return <div><div style={{ height: 40, width: 220, marginBottom: 24 }} className="skeleton-line" /><SkeletonCard /><SkeletonCard /></div>;
+  }
+
   return (
     <>
       <PageHeader
-        eyebrow="AUTOMATION"
         title="Workflows"
-        subtitle="Orchestrate scripts and notebooks with schedules and dependencies."
+        subtitle={items.length
+          ? `${items.length} workflow${items.length === 1 ? '' : 's'}. Each line shows how its recent runs went and when it runs next.`
+          : 'Orchestrate scripts and notebooks with schedules and dependencies.'}
         action={<Button onClick={() => setOpen(true)}><Plus size={15} /> New workflow</Button>}
       />
       {items.length > 0 ? (
-        <div className="workflow-grid">
-          {items.map(w => (
-            <article className="workflow-card" key={w.id} onClick={() => navigateWithTransition(navTo, `/workflows/${w.id}`)}>
-              <div className="workflow-top">
-                <div className="workflow-glyph"><GitBranch size={18} /></div>
-                <div className="workflow-top-tags">
-                  {/* Renders nothing for the unlocked majority, so the row is
-                      unchanged for them. */}
-                  <LockBadge resource={w.lock_resource} mode={w.lock_mode} />
-                  <StatusBadge value={w.enabled ? 'enabled' : 'disabled'} />
-                </div>
+        <>
+          <div className="toolbar">
+            <div className="tabs" role="tablist" aria-label="Show">
+              {FILTERS.map(f => {
+                const n = named.filter(f.match).length;
+                if (f.key !== 'all' && f.key !== filter && n === 0) return null;
+                return (
+                  <button key={f.key} type="button" role="tab" aria-selected={filter === f.key}
+                          className={clsx('tab-pill', filter === f.key && 'active', f.key === 'failing' && n > 0 && 'is-failed')}
+                          onClick={() => setFilter(f.key)}>
+                    {f.label}<small>{n}</small>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="toolbar-fields">
+              <div className="filterbar-search">
+                <Search size={14} />
+                <input placeholder="Find a workflow" value={query} onChange={e => setQuery(e.target.value)} aria-label="Find a workflow" />
               </div>
-              {/* A row of its own: squeezed in beside the icon and the other
-                  chips, the mute notice stacked them into a ragged column.
-                  Renders nothing unless muted, and stops its own click so
-                  the card's navigation never fires from the un-snooze. */}
-              <SnoozeBadge workflow={w} className="workflow-mute"
-                           onChange={u => setItems(list => list.map(x => x.id === u.id ? u : x))} />
-              <h3 style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties} title={w.name}>{w.name}</h3>
-              <p>{w.description || 'No description yet'}</p>
-              <div className="workflow-meta">
-                <span><Clock size={12} />{w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'Manual runs'}</span>
-                <span><ChevronsRight size={12} />Max {w.max_concurrent_runs}</span>
-              </div>
-              <div className="workflow-actions">
-                <button onClick={e => runWorkflow(e, w.id)}>
-                  <Play size={12} /> Run now
-                </button>
-                <span>View workflow →</span>
-              </div>
-            </article>
-          ))}
-        </div>
+            </div>
+          </div>
+
+          <section className="panel flow-list">
+            <div className="flow-row flow-row--head" aria-hidden="true">
+              <span />
+              <span>Workflow</span>
+              <span className="flow-schedule">Schedule</span>
+              <span className="flow-history">Recent runs</span>
+              <span className="flow-last">Last run</span>
+              <span className="flow-next">Next</span>
+              <span />
+            </div>
+            {shown.map(({ flow: w, recent, next, state }) => {
+              const last = recent[0];
+              return (
+                <article key={w.id} className={clsx('flow-row', `is-${state}`)}
+                         onClick={e => { if (!(e.target as HTMLElement).closest('a, button')) navigateWithTransition(navTo, `/workflows/${w.id}`); }}>
+                  <i className="lane-signal" aria-hidden="true" />
+                  <div className="flow-main">
+                    <h3 title={w.name}>
+                      <Link to={`/workflows/${w.id}`} style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties}
+                            onClick={e => { e.preventDefault(); navigateWithTransition(navTo, `/workflows/${w.id}`); }}>{w.name}</Link>
+                      {/* Both render nothing for the unlocked, unmuted majority. */}
+                      <LockBadge resource={w.lock_resource} mode={w.lock_mode} />
+                      <SnoozeBadge workflow={w} className="workflow-mute"
+                                   onChange={u => setItems(list => (list ?? []).map(x => x.id === u.id ? u : x))} />
+                      {!w.enabled && <StatusBadge value="disabled" />}
+                    </h3>
+                    <p>{w.description || 'No description yet'}</p>
+                  </div>
+                  <span className="flow-schedule">
+                    {w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'On demand'}
+                  </span>
+                  <span className="flow-history">
+                    {/* Oldest on the left, so the strip reads the way time does. */}
+                    {Array.from({ length: HISTORY_TICKS - recent.length }, (_, i) => <i key={`e${i}`} className="tick" />)}
+                    {[...recent].reverse().map(r => (
+                      <Link key={r.id} to={`/runs/${r.id}`} className={`tick is-${r.status}`}
+                            title={`#${r.id} · ${r.status.replace(/_/g, ' ')} · ${timeAgo(r.started_at || r.created_at)}`}
+                            aria-label={`Run ${r.id}, ${r.status.replace(/_/g, ' ')}`} />
+                    ))}
+                  </span>
+                  <span className="flow-last">
+                    {last ? timeAgo(last.started_at || last.created_at) : 'Not yet'}
+                  </span>
+                  <span className="flow-next">{next ? <Countdown at={next} /> : '—'}</span>
+                  <button type="button" className="flow-run" onClick={e => runWorkflow(e, w.id)}
+                          title={`Run ${w.name} now`} aria-label={`Run ${w.name} now`}>
+                    <Play size={12} /><span>Run</span>
+                  </button>
+                </article>
+              );
+            })}
+            {shown.length === 0 && (
+              <p className="flow-empty">No workflow matches{needle ? ` “${query.trim()}”` : ' this filter'}.</p>
+            )}
+          </section>
+        </>
       ) : (
         <EmptyState
           icon={<GitBranch size={24} />}
