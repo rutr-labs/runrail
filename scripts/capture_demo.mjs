@@ -2,7 +2,9 @@
 //
 //   python scripts/seed_demo.py --home /tmp/rr-demo --reset
 //   RUNRAIL_HOME=/tmp/rr-demo runrail serve --port 8795      # in another terminal
+//   python scripts/stage_demo.py http://127.0.0.1:8795 /tmp/rr-orders-repo
 //   cd frontend && node ../scripts/capture_demo.mjs http://localhost:8795 /tmp/shots shots
+//   for f in /tmp/shots/*.png; do ffmpeg -i "$f" -c:v libwebp -quality 88 -compression_level 6 "docs/img/$(basename "$f" .png).webp"; done
 //   cd frontend && node ../scripts/capture_demo.mjs http://localhost:8795 /tmp/frames gif
 //   ffmpeg -framerate 2.5 -i /tmp/frames/frame-%03d.png -vf "setpts=PTS/1.35,fps=4,scale=1800:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=192:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" -loop 0 raw.gif
 //   gifsicle -O3 --lossy=60 raw.gif -o docs/img/demo.gif
@@ -11,8 +13,11 @@
 // this machine (channel: 'chrome'). Stills are 1440x900 at 1.25x, dark theme,
 // with animations switched off so a frame never lands mid-transition. Runs of
 // the seeded quick workflows are started while capturing, so the board shows
-// work beginning, progressing and landing.
-import { chromium } from '@playwright/test';
+// work beginning, progressing and landing. Stills are kept as WebP: the
+// page's sky gradient makes a PNG of it four times the size.
+import { createRequire } from 'node:module';
+// Resolved from the working directory (frontend/), not from this file's.
+const { chromium } = createRequire(`${process.cwd()}/`)('@playwright/test');
 import { mkdirSync } from 'node:fs';
 
 const [base, out, mode = 'shots'] = process.argv.slice(2);
@@ -32,12 +37,21 @@ const calm = () => page.addStyleTag({ content: `
   .wallboard-aurora { display: none !important; }
 ` });
 
-async function shot(path, file, { scroll = 0, settle = 1500 } = {}) {
+async function shot(path, file, { scroll = 0, settle = 1500, at, then } = {}) {
   await page.goto(base + path, { waitUntil: 'networkidle' });
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
   await calm();  // a still must not land mid-glide when the board re-sorts
   await page.waitForTimeout(settle);
   if (scroll) await page.evaluate(y => window.scrollTo(0, y), scroll);
+  // `at`: bring this element to just under the top bar.
+  if (at) {
+    await page.locator(at).first().waitFor({ timeout: 15000 });
+    await page.evaluate(sel => {
+      const top = document.querySelector(sel).getBoundingClientRect().top + window.scrollY;
+      window.scrollTo(0, top - 84);
+    }, at);
+  }
+  if (then) await then();
   await page.waitForTimeout(300);
   await page.screenshot({ path: `${out}/${file}`, fullPage: false });
   console.log('shot', file);
@@ -86,15 +100,34 @@ if (mode === 'shots') {
     await page.waitForTimeout(500);
   }
   await shot('/settings', '08-settings.png');
-  // Fresh runs in flight for the board, started just before the shot.
-  for (const w of quick.slice(0, 3)) await startRun(w.id);
-  await page.waitForTimeout(4000);
-  await shot('/wallboard', '03-wallboard.png', { settle: 800 });
+  await shot('/settings', '11-variables.png', { at: 'section.settings-vars' });
+  // Every run of the last day, laid out against time.
+  await shot('/runs?view=timeline&span=24h', '12-timeline.png', { settle: 2500 });
+  // The scenes scripts/stage_demo.py sets up: a run form, and a run that
+  // failed after a code change, beside the one before it that succeeded.
+  const flows = await (await page.request.get(base + '/api/workflows')).json();
+  const orders = flows.find(w => w.name === 'orders_daily');
+  if (orders) {
+    await shot(`/workflows/${orders.id}`, '10-run-form.png', {
+      then: async () => {
+        await page.getByRole('button', { name: /Run with/ }).click();
+        await page.locator('.modal').waitFor();
+      },
+    });
+    const [failed] = await (await page.request.get(`${base}/api/runs?workflow_id=${orders.id}&status=failed&limit=1`)).json();
+    if (failed) await shot(`/runs/${failed.id}`, '09-what-changed.png', { at: 'section.changes', settle: 2500 });
+  }
 } else {
   // GIF frames: the wallboard, one frame every 400ms for 24s, at the same scale.
   await page.goto(base + '/wallboard', { waitUntil: 'networkidle' });
   await calm();
   await page.waitForTimeout(1500);
+  // Services and the timetable fill the frame: the headline above them holds
+  // still, and they are where runs begin, progress and land.
+  await page.evaluate(() => {
+    const services = document.querySelector('section.wb-services');
+    if (services) window.scrollTo(0, services.getBoundingClientRect().top + window.scrollY - 32);
+  });
   const frames = Number(process.env.FRAMES ?? 60);
   // Runs started while recording, so the board shows work beginning,
   // progressing and landing rather than a still.

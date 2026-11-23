@@ -13,7 +13,7 @@ Give the scripts, notebooks and queries you already have schedules, retries, app
 
 ![Live wallboard](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/demo.gif)
 
-*The wallboard: services along the top, then every workflow. Each run's bar is measured against that workflow's own median duration and turns amber when it goes over.*
+*The wallboard, for a screen on the wall: services along the top, then the timetable — the last few hours of every busy workflow on one clock, the next ninety minutes ahead of it. Runs appear the moment they start; nothing on the page polls.*
 
 A task in RunRail is a command:
 
@@ -57,9 +57,9 @@ runrail run hello
 
 Open [http://127.0.0.1:8080](http://127.0.0.1:8080). The run is in the history with its logs, and the schedule fires again inside five minutes. The YAML is optional, by the way: everything in that file can be done in the UI, and most things are easier there.
 
-A few workflows later, the dashboard looks like this:
+A few workflows later, the Now page looks like this. Its headline is the one thing that matters most right now, and below it the page answers three questions in order: what needs you (a service down, a run waiting for approval, a workflow that keeps failing, each with the button that deals with it), what is in motion (every running run against how long that workflow usually takes), and how it has been going.
 
-![RunRail dashboard](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/01-dashboard.png)
+![RunRail's Now page](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/01-dashboard.webp)
 
 ## The parts that matter
 
@@ -75,25 +75,31 @@ A few workflows later, the dashboard looks like this:
 
 **Notebooks come out the other end as reports.** An executed notebook renders to HTML on the run page, charts and tables included. `/reports/<workflow>/latest` always resolves to the newest successful run, so a link you shared last month still shows this morning's numbers.
 
+**It's live.** Pages change the moment something happens — a run starts, a task fails, a service comes up — because the server pushes it to them. That holds when the worker runs as a separate process, too.
+
 Also in the box: retries and backfills, per-workflow concurrency, resource locks so two jobs never enter the same database at once, snooze, auto-pause after repeated failures, deadlines that alert while a run is still going, per-task duration trends, notes on a run, webhooks for Slack and Microsoft Teams, YAML export and apply, and a REST API with live docs at `/docs`.
 
 ## A look around
 
-A run in progress. Independent tasks overlap on the timeline, and every attempt keeps its own logs.
+A finished run. The pipeline is lit by this run; select a task to read its output, with every attempt's log kept apart. The strip under the name steps through the workflow's runs before and after this one.
 
-![Run detail](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/02-run-detail.png)
+![Run detail](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/02-run-detail.webp)
 
-A run waiting on approval, showing the prompt from whoever built the workflow and the command about to execute.
+A run waiting on approval, showing the prompt from whoever built the workflow, the command about to execute, and what has already succeeded.
 
-![Approval gate](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/05-approval.png)
+![Approval gate](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/05-approval.webp)
 
-Services. Each card says what the process is doing and why, in the supervisor's own words: up and until when, waiting for a resource and who holds it, stopped by you and when its schedule takes over again.
+Every run of a day, a lane per workflow. Six hours, a day, three days or a week, stepped back as far as the history goes; the chart above it picks a day.
 
-![Services](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/06-services.png)
+![Run timeline](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/12-timeline.webp)
+
+Services, each against its week. Each row says what the process is doing and why, in the supervisor's own words: up and until when, waiting for a resource and who holds it, stopped by you and when its schedule takes over again.
+
+![Services](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/06-services.webp)
 
 One service, with its schedule as a week, its live log, and every start and stop it has had.
 
-![A service](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/07-service.png)
+![A service](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/07-service.webp)
 
 ## Install
 
@@ -138,7 +144,7 @@ Tasks also get the parameters in their environment, for scripts that are not tem
 
 A workflow can say which parameters a run takes. Under **Edit → Run form**, give each one a name, a type (text, number, date, choice, yes/no), an optional default, a label and a line of help. **Run with…** then shows a form instead of a JSON box: a date picker, a dropdown, a switch. Values are checked before anything is queued.
 
-![A run form](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/10-run-form.png)
+![A run form](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/10-run-form.webp)
 
 Every way a run starts goes through the same form — the button, the API, `runrail run --param`, a backfill, the schedule — so a run always records exactly what it ran with. Missing values take their default; a date default can be `today` or `yesterday`, counted on the workflow's calendar (in a backfill, from each backfilled day). A required parameter with no default makes **Run now** ask first, and a scheduled workflow must give one a default, since nobody is there to ask. Parameters the form does not list still pass through as before.
 
@@ -171,7 +177,7 @@ It is a schedule *or* a chain, never both, and loops are refused when you save. 
 
 A failed run opens with a **What changed** panel, comparing it with the last run of the same workflow that succeeded. Any finished run can be compared with any earlier one. It shows only what differs:
 
-![What changed since the last good run](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/09-what-changed.png)
+![What changed since the last good run](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/09-what-changed.webp)
 
 
 - **Parameters** that changed.
@@ -211,7 +217,7 @@ runrail worker --concurrency 8
 
 ## Notifications
 
-Set a default webhook on the Settings page (or `RUNRAIL_NOTIFY_WEBHOOK_URL`), or a webhook per workflow. RunRail posts on the first failure after a success, and again when it recovers. A schedule that breaks at midnight sends one message, not three hundred. Ten event kinds go out in all, covering failures, recoveries, auto-pause, approvals, missed schedules, deadlines and services in a crash loop; Settings lets you switch kinds off and set quiet hours, during which nothing is posted — what happened overnight is in Activity in the morning.
+Set a default webhook on the Settings page (or `RUNRAIL_NOTIFY_WEBHOOK_URL`), or a webhook per workflow. RunRail posts on the first failure after a success, and again when it recovers. A schedule that breaks at midnight sends one message, not three hundred. Ten event kinds go out in all, covering failures, recoveries, auto-pause, approvals, missed schedules, deadlines and services in a crash loop; Settings lets you switch kinds off and set quiet hours, during which nothing is posted — what happened overnight is under the bell in the morning.
 
 Slack and custom receivers get JSON whose `text` field renders directly. For Microsoft Teams, make a Workflow from the "when a webhook request is received" template (Teams → channel → Workflows) and paste the URL. RunRail recognises Teams URLs and sends the Adaptive Card envelope that flow expects.
 
@@ -223,6 +229,8 @@ A bounded worker pool (`RUNRAIL_WORKER_CONCURRENCY`) claims queued runs atomical
 
 Services have a supervisor of their own, beside the worker. Once a second it compares each service's process with what the service should be doing (its mode, its windows, any Start or Stop you pressed) and starts, stops, restarts or waits accordingly. It holds a lease in the database, so with `serve` and a separate `worker` running only one of them manages services, and a supervisor taking over from one that died first stops whatever that one left running.
 
+The browser is told about changes over one WebSocket rather than asking for them: runs, tasks, services, approvals, settings. A `runrail worker` or `runrail scheduler` started as a separate process has no browser to talk to, so it writes its events to a small table that the API reads twice a second and passes on; rows older than ten minutes are pruned. If the socket drops, the page catches up when it reconnects and falls back to polling until then.
+
 All of it happens on one machine, using threads and subprocesses. There are no remote workers.
 
 SQLite in WAL mode is the default. For PostgreSQL, set `RUNRAIL_DB_URL=postgresql+psycopg://user:password@host:5432/runrail`; the `+psycopg` matters, because a bare `postgresql://` looks for psycopg2, which isn't installed. CI runs the whole suite against both. Logs live under `$RUNRAIL_HOME/logs/`, artifacts under `$RUNRAIL_HOME/artifacts/<id>/`, timestamped so retries never overwrite each other.
@@ -233,7 +241,7 @@ Docker is available (`docker compose up --build` starts RunRail with PostgreSQL 
 
 Most of what you would tune lives on the **Settings** page and applies without a restart: the default webhook and which alerts go out, quiet hours, how long runs are kept (with a preview of what that would delete before it does), and how many runs and tasks execute at once. The same page shows the machine — version, uptime, database and disk, what the worker and the supervisor are doing — and has the operator controls: **pause everything new** while what is executing finishes, **download a backup**, and restore one.
 
-![Settings](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/08-settings.png)
+![Settings](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/08-settings.webp)
 
 An environment variable pins a setting: the page shows it locked and names the variable, so a deployment that configures RunRail in a unit file or `.env` stays exactly what that file says.
 
@@ -260,7 +268,7 @@ Schedules evaluate in each workflow's own timezone, so "daily at 9:00" stays 9:0
 
 Settings also holds **variables and secrets** that every task and service gets as environment variables: a database host, a folder, an API token. Your scripts read them the usual way — `$NAME` in a shell, `%NAME%` in a Windows command, `os.environ["NAME"]` in Python or a notebook — so nothing in them changes. An environment's or a service's own variables win over these when both set the same name.
 
-![Variables and secrets](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/11-variables.png)
+![Variables and secrets](https://raw.githubusercontent.com/rutr-labs/runrail/main/docs/img/11-variables.webp)
 
 A secret is shown only while you type it. It is stored encrypted, and its value is replaced with `••••••` wherever RunRail writes or shows output: task and service logs, the notebooks papermill writes, rendered reports, recorded commands and errors, log search. Logs written before a secret was added are masked when they are read. Masking catches the exact value (and its JSON-escaped form), not a piece or an encoding of it.
 
@@ -287,16 +295,16 @@ Secrets travel inside the database, encrypted; the key stays out of a backup unl
 
 ```bash
 pip install -e '.[dev,notebook]'
-pytest                                        # 379 backend tests
+pytest                                        # 621 backend tests
 ruff check src tests
 
 cd frontend
 npm install
 npm run build     # needed from a clone; the built UI is gitignored, not committed
-npm test          # 165 frontend tests
+npm test          # 322 frontend tests
 npm run test:e2e  # browser tests against a real `runrail serve` (needs the build above)
 ```
 
-The frontend tests check cron previews against fire times generated by the backend's own scheduler, so if the UI ever promises a run time the scheduler wouldn't produce, the build fails. `scripts/seed_demo.py` fills a throwaway home with a realistic history if you want something to look at.
+The frontend tests check cron previews against fire times generated by the backend's own scheduler, so if the UI ever promises a run time the scheduler wouldn't produce, the build fails. `scripts/seed_demo.py` fills a throwaway home with a realistic history if you want something to look at; `scripts/capture_demo.mjs` says how the screenshots in this README are made from it.
 
 Licensed under [Apache-2.0](https://github.com/rutr-labs/runrail/blob/main/LICENSE).
