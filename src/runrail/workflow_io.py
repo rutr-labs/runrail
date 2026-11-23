@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from runrail import variables
+from runrail import chaining, variables
 from runrail.api.crud import check_schedulable
 from runrail.models import (
     Environment,
@@ -62,12 +62,16 @@ def export_workflows(db: Session, name: str | None = None) -> dict[str, Any]:
         raise ValueError(f"Workflow '{name}' does not exist")
     projects = {p.id: p.name for p in db.scalars(select(Project))}
     environments = {e.id: e.name for e in db.scalars(select(Environment))}
+    workflow_names = dict(db.execute(select(Workflow.id, Workflow.name)).all())
 
     exported = []
     for workflow in workflows:
         item: dict[str, Any] = {"name": workflow.name, "key": workflow.key}
         item.update(_compact({field: getattr(workflow, field) for field in _WORKFLOW_FIELDS}))
         item["enabled"] = workflow.enabled  # always explicit, even when False
+        # By name, like projects: ids mean nothing on another machine.
+        if workflow.after:
+            item["after"] = sorted(workflow_names[i] for i in workflow.after if i in workflow_names)
         # Exported as a pair, and only as a pair: the mode alone is meaningless,
         # and yaml.safe_dump refuses an enum member, so write its value.
         if workflow.lock_resource:
@@ -172,6 +176,34 @@ def _resolve(db: Session, model, name: str | None, kind: str) -> int | None:
     return obj.id
 
 
+def _apply_after(db: Session, workflow: Workflow, names: Any) -> None:
+    """Link a workflow to the ones its file entry says it runs after, by name,
+    through the same checks as the API."""
+    if names is None:
+        names = []
+    if isinstance(names, str):
+        names = [names]
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise ValueError(f"Workflow '{workflow.name}': after must be a list of workflow names")
+    ids = []
+    for name in names:
+        upstream = db.scalar(select(Workflow.id).where(Workflow.name == name))
+        if upstream is None:
+            raise ValueError(f"Workflow '{workflow.name}' runs after '{name}', "
+                             "which does not exist here")
+        ids.append(upstream)
+    try:
+        ids = chaining.check_upstreams(db, workflow.id, workflow.name, ids, workflow.schedule_cron)
+    except chaining.ChainError as exc:
+        raise ValueError(f"Workflow '{workflow.name}': {exc}") from None
+    chaining.set_upstreams(workflow, ids)
+    db.flush()
+    try:
+        check_schedulable(workflow)
+    except ValueError as exc:
+        raise ValueError(f"Workflow '{workflow.name}': {exc}") from None
+
+
 def _validate_graph(tasks: list[dict[str, Any]]) -> None:
     names = [task["name"] for task in tasks]
     if len(names) != len(set(names)):
@@ -203,6 +235,7 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
     if not all(isinstance(section, list) for section in sections) or not any(sections):
         raise ValueError("File must contain a top-level 'workflows' or 'services' list")
     summary: dict[str, list[str]] = {"created": [], "updated": []}
+    applied: list[tuple[Workflow, dict[str, Any]]] = []
     for entry in variable_entries:
         outcome, var_name = _apply_variable(db, entry)
         summary.setdefault(outcome, []).append(f"variable {var_name}")
@@ -309,6 +342,17 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
             if name not in wanted:
                 db.delete(task)
         summary["created" if created else "updated"].append(wf_name)
+        applied.append((workflow, entry))
+    # "after" names other workflows, which may come later in the same file, so
+    # it is resolved once every workflow above exists. A file is the source of
+    # truth here as for schedules: a workflow without `after` runs after nothing.
+    # Cleared first, so a file that turns a chain around is checked for loops
+    # against itself, not against the links it is replacing.
+    for workflow, _ in applied:
+        chaining.set_upstreams(workflow, [])
+    db.flush()
+    for workflow, entry in applied:
+        _apply_after(db, workflow, entry.get("after"))
     for entry in services:
         created, name = _apply_service(db, entry)
         summary["created" if created else "updated"].append(f"service {name}")

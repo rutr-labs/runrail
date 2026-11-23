@@ -38,6 +38,7 @@ import {
 import { attemptLabel, attemptTag, groupAttempts } from './attempts';
 import { RunFormEditor, RunFormFields, runFormValue } from './components/RunForm';
 import { RunChanges } from './components/RunChanges';
+import { ChainInfo, ChainStrip } from './components/ChainStrip';
 import { collect, initialValues, needsAsking, type FormValues, type RunParameter } from './runForms';
 import type { AttemptGroup } from './attempts';
 import { LockField, LockBadge, lockValues } from './components/LockField';
@@ -68,6 +69,10 @@ type Run = {
   notes?: RunNote[];
   resume_count?: number;
   sla_breached_at?: string | null;
+  /** A chained run: the upstream run whose success started it. The run page
+   *  also gets that run's workflow, named. */
+  triggered_by_run_id?: number | null;
+  triggered_by?: { run_id: number; workflow_id: number; workflow_name: string | null } | null;
 };
 
 type TaskRun = {
@@ -120,7 +125,33 @@ type Workflow = {
   lock_mode?: 'shared' | 'exclusive';
   /** The run form: typed parameters "Run with…" asks for. A WorkflowIn key. */
   run_parameters_json?: RunParameter[] | null;
+  /** Ids of the workflows this one runs after, instead of a schedule. Empty
+   *  when it does not. A WorkflowIn key, so both modals send it. */
+  after?: number[];
 };
+
+/** How a workflow starts, in a few words: its schedule, the workflows it runs
+ *  after, or by hand. `names` maps workflow ids to names. */
+function startsLabel(w: Workflow, names: Map<number, string>, manual = 'Manual only'): string {
+  if (w.schedule_cron) return cronLabel(w.schedule_cron, w.schedule_timezone);
+  if (w.after?.length) return `After ${w.after.map(id => names.get(id) ?? `#${id}`).join(', ')}`;
+  return manual;
+}
+
+/** A trigger type as people say it. "upstream" is the chained start. */
+function triggerLabel(trigger: string): string {
+  return trigger === 'upstream' ? 'after' : trigger;
+}
+
+/** The "after" list a workflow form publishes through ScheduleBuilder. */
+function afterValue(f: FormData): number[] {
+  try {
+    const value = JSON.parse(String(f.get('after') ?? '[]'));
+    return Array.isArray(value) ? value.map(Number) : [];
+  } catch {
+    return [];
+  }
+}
 
 type Project = {
   id: number;
@@ -624,7 +655,7 @@ function RunTable({ runs, flows, onChanged }: { runs: Run[]; flows: Workflow[]; 
                 </td>
                 <td><Link to={`/workflows/${r.workflow_id}`} style={{ color: 'inherit', textDecoration: 'none' }}><b className="run-flow-name" title={flowName}>{flowName}</b></Link></td>
                 <td><StatusBadge value={r.status} /></td>
-                <td><span className="trigger-badge">{r.trigger_type}</span></td>
+                <td><span className="trigger-badge">{triggerLabel(r.trigger_type)}</span></td>
                 <td style={{ color: 'var(--text-2)', fontSize: 13 }} title={formatDate(r.started_at || r.created_at)}>{timeAgo(r.started_at || r.created_at)}</td>
                 <td style={{ color: 'var(--text-2)', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>{liveDuration(r, now)}</td>
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -670,7 +701,7 @@ function LiveRunRow({ run, flows }: { run: Run; flows: Workflow[] }) {
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>
           {name}
         </div>
-        <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 1 }}>#{run.id} · {run.trigger_type} · {timeAgo(run.created_at)}</div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 1 }}>#{run.id} · {triggerLabel(run.trigger_type)} · {timeAgo(run.created_at)}</div>
       </div>
       <StatusBadge value={run.status} />
     </Link>
@@ -1244,7 +1275,7 @@ function Runs() {
               </select>
               <select value={trigger} onChange={e => setTrigger(e.target.value)} aria-label="Trigger filter">
                 <option value="">All triggers</option>
-                {['manual', 'schedule', 'cli', 'backfill'].map(t => <option key={t}>{t}</option>)}
+                {['manual', 'schedule', 'upstream', 'cli', 'backfill'].map(t => <option key={t} value={t}>{triggerLabel(t)}</option>)}
               </select>
               <span className="filterbar-count">{shown.length} of {runs.length}</span>
             </div>
@@ -1557,7 +1588,9 @@ function RunDetail() {
             <h1 style={{ viewTransitionName: `run-${run.id}` } as React.CSSProperties}>
               {flow ? `${flow.name} · #${run.id}` : `Run #${run.id}`}
             </h1>
-            <p>Created {formatDate(run.created_at)} · {run.trigger_type} trigger</p>
+            <p>Created {formatDate(run.created_at)} · {run.triggered_by
+              ? <>after <Link to={`/runs/${run.triggered_by.run_id}`}>{run.triggered_by.workflow_name ?? 'a workflow'} #{run.triggered_by.run_id}</Link></>
+              : `${triggerLabel(run.trigger_type)} trigger`}</p>
           </div>
           <div className="detail-actions">
             <CancelRunButton run={run} onDone={refresh} size="md" />
@@ -1594,7 +1627,7 @@ function RunDetail() {
 
       <div className="summary-strip">
         <div><span>Status</span><StatusBadge value={run.status} /></div>
-        <div><span>Trigger</span><strong>{run.trigger_type}</strong></div>
+        <div><span>Trigger</span><strong>{triggerLabel(run.trigger_type)}</strong></div>
         <div><span>Duration</span><strong>{liveDuration(run, now)}</strong></div>
         <div><span>Tasks</span><strong>{run.task_runs?.length || 0}</strong></div>
         {/* A run that queues behind a lock does so because of THIS, and the
@@ -2330,6 +2363,7 @@ function Workflows() {
   const { toast } = useToast();
   const load = () => api<Workflow[]>('/workflows').then(setItems).catch(() => {});
   useEffect(() => { void load(); }, []);
+  const names = useMemo(() => new Map(items.map(w => [w.id, w.name])), [items]);
 
   const runWorkflow = async (e: React.MouseEvent, id: number) => {
     e.stopPropagation();
@@ -2371,7 +2405,7 @@ function Workflows() {
               <h3 style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties} title={w.name}>{w.name}</h3>
               <p>{w.description || 'No description yet'}</p>
               <div className="workflow-meta">
-                <span><Clock size={12} />{w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'Manual runs'}</span>
+                <span><Clock size={12} />{startsLabel(w, names, 'Manual runs')}</span>
                 <span><ChevronsRight size={12} />Max {w.max_concurrent_runs}</span>
               </div>
               <div className="workflow-actions">
@@ -2402,7 +2436,9 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
   const [envs, setEnvs] = useState<Env[]>([]);
   const [projectId, setProjectId] = useState('');
   const [environmentId, setEnvironmentId] = useState('');
+  const [workflows, setWorkflows] = useState<Workflow[] | null>(null);
   useEffect(() => {
+    api<Workflow[]>('/workflows').then(setWorkflows).catch(() => setWorkflows([]));
     // Preselect the only project (and its default runtime) — the common case
     // right after "Connect a project" should not require re-picking everything.
     api<Project[]>('/projects').then(list => {
@@ -2427,6 +2463,7 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
         name: f.get('name'), description: f.get('description') || null,
         schedule_cron: f.get('cron') || null,
         schedule_timezone: f.get('schedule_timezone') || null, enabled: true,
+        after: afterValue(f),
         max_concurrent_runs: Number(f.get('concurrency')),
         project_id: projectId ? Number(projectId) : null,
         default_environment_id: environmentId ? Number(environmentId) : null,
@@ -2446,7 +2483,7 @@ function WorkflowModal({ onClose, done }: { onClose: () => void; done: (id: numb
       <form className="modal-body form-stack" onSubmit={submit}>
         <label className="field"><span>Workflow name</span><input name="name" placeholder="Daily customer refresh" required autoFocus /></label>
         <label className="field"><span>Description <em>Optional</em></span><textarea name="description" placeholder="What does this workflow accomplish?" /></label>
-        <ScheduleBuilder initialCron={null} initialTimezone={null} />
+        <ScheduleBuilder initialCron={null} initialTimezone={null} chain={{ workflows: workflows ?? [] }} />
         <div className="field-row">
           <label className="field compact"><span>Max active runs</span><input name="concurrency" type="number" min="1" defaultValue="1" /></label>
         </div>
@@ -2495,7 +2532,9 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
   const [envs, setEnvs] = useState<Env[]>([]);
   const [projectId, setProjectId] = useState(String(w.project_id ?? ''));
   const [environmentId, setEnvironmentId] = useState(String(w.default_environment_id ?? ''));
+  const [workflows, setWorkflows] = useState<Workflow[] | null>(null);
   useEffect(() => {
+    api<Workflow[]>('/workflows').then(setWorkflows).catch(() => setWorkflows([]));
     api<Project[]>('/projects').then(setProjects).catch(() => {});
     api<Env[]>('/environments').then(setEnvs).catch(() => {});
   }, []);
@@ -2509,6 +2548,9 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
         name: f.get('name'), description: f.get('description') || null,
         schedule_cron: f.get('cron') || null,
         schedule_timezone: f.get('schedule_timezone') || null, enabled: f.get('enabled') === 'on',
+        // Always sent: a schedule and a chain are one or the other, and the
+        // server refuses a schedule saved beside a chain it was not told to drop.
+        after: afterValue(f),
         max_concurrent_runs: Number(f.get('concurrency')),
         project_id: projectId ? Number(projectId) : null,
         default_environment_id: environmentId ? Number(environmentId) : null,
@@ -2532,7 +2574,10 @@ function EditWorkflowModal({ w, onClose, done }: { w: Workflow; onClose: () => v
       <form className="modal-body form-stack" onSubmit={submit}>
         <label className="field"><span>Workflow name</span><input name="name" defaultValue={w.name} required autoFocus /></label>
         <label className="field"><span>Description <em>Optional</em></span><textarea name="description" defaultValue={w.description || ''} placeholder="What does this workflow accomplish?" /></label>
-        <ScheduleBuilder initialCron={w.schedule_cron || null} initialTimezone={w.schedule_timezone || null} />
+        {/* Rendered at once, list or not: the hidden inputs carry the saved
+            schedule and chain even if Save is pressed before the list loads. */}
+        <ScheduleBuilder initialCron={w.schedule_cron || null} initialTimezone={w.schedule_timezone || null}
+                         chain={{ workflows: workflows ?? [], selfId: w.id, initialAfter: w.after }} />
         <div className="field-row">
           <label className="field compact"><span>Max active runs</span><input name="concurrency" type="number" min="1" defaultValue={w.max_concurrent_runs} /></label>
         </div>
@@ -2597,10 +2642,13 @@ function WorkflowDetail() {
   const [backfillOpen, setBackfillOpen] = useState(false);
   const [runParamsOpen, setRunParamsOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [chainInfo, setChainInfo] = useState<ChainInfo | null>(null);
   const navTo = useNavigate();
   const { toast } = useToast();
 
+  const loadChain = () => void api<ChainInfo>(`/workflows/${id}/chain`).then(setChainInfo).catch(() => {});
   const load = () => {
+    loadChain();
     api<Workflow>(`/workflows/${id}`).then(setW).catch(() => {});
     api<Task[]>(`/workflows/${id}/tasks`).then(setTasks).catch(() => {});
     api<Run[]>(`/runs?workflow_id=${id}`).then(setRuns).catch(() => {});
@@ -2646,8 +2694,9 @@ function WorkflowDetail() {
   useEffect(() => { load(); }, [id]);
   useEffect(() => {
     const refreshRuns = () => void api<Run[]>(`/runs?workflow_id=${id}`).then(setRuns).catch(() => {});
-    const u1 = rrws.on('run_created', e => { if (String(e.workflow_id) === id) refreshRuns(); });
-    const u2 = rrws.on('run_updated', refreshRuns);
+    const u1 = rrws.on('run_created', e => { if (String(e.workflow_id) === id) { refreshRuns(); loadChain(); } });
+    // Any run finishing may be an upstream's, which moves the chain strip.
+    const u2 = rrws.on('run_updated', () => { refreshRuns(); loadChain(); });
     return () => { u1(); u2(); };
   }, [id]);
   useLiveRefresh(runs.some(r => LIVE(r.status)), () => void api<Run[]>(`/runs?workflow_id=${id}`).then(setRuns).catch(() => {}));
@@ -2713,7 +2762,10 @@ function WorkflowDetail() {
         {w.snooze_until && (
           <div><span>Alerts</span><SnoozeBadge workflow={w} onChange={setW} onExpire={load} /></div>
         )}
-        <div><span>Schedule</span><strong title={w.schedule_timezone || undefined}>{w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'Manual only'}</strong></div>
+        {(() => {
+          const starts = startsLabel(w, new Map((chainInfo?.after ?? []).map(u => [u.id, u.name])));
+          return <div><span>Starts</span><strong title={w.schedule_timezone || starts}>{starts}</strong></div>;
+        })()}
         <div><span>Tasks</span><strong>{tasks.length}</strong></div>
         <div><span>Max active runs</span><strong>{w.max_concurrent_runs}</strong></div>
         {w.lock_resource && (
@@ -2723,6 +2775,8 @@ function WorkflowDetail() {
         {w.project_id && <div><span>Project</span><strong title={projectName}>{projectName}</strong></div>}
         {w.default_environment_id && <div><span>Default env</span><strong title={defaultEnvName}>{defaultEnvName}</strong></div>}
       </div>
+
+      {chainInfo && <ChainStrip info={chainInfo} enabled={w.enabled} />}
 
       {runs.length > 0 && <RunMiniHistory runs={runs} />}
 
@@ -2745,7 +2799,7 @@ function WorkflowDetail() {
 
       {/* Unconditional, unlike everything above it: a workflow whose schedule
           has never once fired is exactly the case this exists for. */}
-      <ScheduleGapsPanel workflowId={Number(id)} state={gaps} />
+      <ScheduleGapsPanel workflowId={Number(id)} state={gaps} chained={Boolean(w.after?.length)} />
 
       {orderedTasks.length > 1 && (
         <div className="panel" style={{ marginBottom: 20 }}>
@@ -3247,6 +3301,7 @@ const WB_RANK: Record<string, number> = {
 function Wallboard() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [flows, setFlows] = useState<Workflow[]>([]);
+  const names = useMemo(() => new Map(flows.map(w => [w.id, w.name])), [flows]);
   const [clock, setClock] = useState(() => new Date());
   const [blooms, setBlooms] = useState<Record<number, string>>({});
   const prevStatuses = useRef(new Map<number, string>());
@@ -3431,7 +3486,7 @@ function Wallboard() {
               )}
               <div className="wallboard-tile-meta">
                 {last ? `${timeAgo(last.finished_at || last.created_at)}` : '—'}
-                {w.schedule_cron ? ` · ${cronLabel(w.schedule_cron, w.schedule_timezone)}` : ' · manual'}
+                {` · ${startsLabel(w, names, 'manual')}`}
                 {next ? ` · next in ${formatEta(next.getTime() - clock.getTime())}` : ''}
                 {status !== 'failed' && rate7d != null ? ` · ${rate7d}% · 7d` : ''}
                 {!w.enabled ? ' · paused' : ''}
