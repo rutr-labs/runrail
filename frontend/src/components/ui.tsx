@@ -121,32 +121,6 @@ export function StatusBadge({ value }: { value: string }) {
   );
 }
 
-/* ─── Glass Card ─────────────────────────────────────── */
-export function GlassCard({
-  children, className, glow
-}: { children: ReactNode; className?: string; glow?: boolean }) {
-  return (
-    <div className={clsx('glass-card', glow && 'glass-card--glow', className)}>
-      {children}
-    </div>
-  );
-}
-
-/* ─── Card Header ────────────────────────────────────── */
-export function CardHeader({
-  title, subtitle, action
-}: { title: ReactNode; subtitle?: ReactNode; action?: ReactNode }) {
-  return (
-    <div className="card-header">
-      <div>
-        <h2 className="card-title">{title}</h2>
-        {subtitle && <p className="card-subtitle">{subtitle}</p>}
-      </div>
-      {action && <div className="card-action">{action}</div>}
-    </div>
-  );
-}
-
 /* ─── Page Header ────────────────────────────────────── */
 export function PageHeader({
   eyebrow, title, subtitle, action
@@ -160,28 +134,6 @@ export function PageHeader({
       </div>
       {action && <div className="page-header-action">{action}</div>}
     </header>
-  );
-}
-
-/* ─── Metric Card ────────────────────────────────────── */
-export function MetricCard({
-  icon, label, value, tone = 'default', note
-}: {
-  icon: ReactNode; label: string; value: ReactNode;
-  tone?: 'default' | 'success' | 'danger' | 'running' | 'warning';
-  note?: string;
-}) {
-  return (
-    <div className={clsx('metric-card', `metric-${tone}`)}>
-      <div className="metric-icon-wrap">{icon}</div>
-      <div className="metric-body">
-        <span className="metric-label">{label}</span>
-        <strong className="metric-value" style={{ fontVariantNumeric: 'tabular-nums' }}>
-          {typeof value === 'number' ? <CountUp value={value} /> : value}
-        </strong>
-        {note && <span className="metric-note">{note}</span>}
-      </div>
-    </div>
   );
 }
 
@@ -292,19 +244,6 @@ export function Modal({
 export function CancelButton({ children = 'Cancel' }: { children?: ReactNode }) {
   const close = useModalClose();
   return <Button variant="ghost" onClick={close}>{children}</Button>;
-}
-
-/* ─── Health Chip ────────────────────────────────────── */
-export function HealthChip({
-  label, status
-}: { label: string; status: 'online' | 'offline' | 'unknown' }) {
-  const dot = status === 'online' ? 'dot-online' : status === 'offline' ? 'dot-offline' : 'dot-unknown';
-  return (
-    <span className={clsx('health-chip', `health-${status}`)}>
-      <span className={clsx('health-dot', dot)} />
-      {label}
-    </span>
-  );
 }
 
 /* ─── Skeleton ───────────────────────────────────────── */

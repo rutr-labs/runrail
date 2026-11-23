@@ -1,16 +1,12 @@
 import { CSSProperties, FormEvent, Fragment, ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
-import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import clsx from 'clsx';
 import {
-  LayoutDashboard, GitBranch, History, FolderOpen,
-  Cpu, Package, Play, Plus, Search, ChevronRight, Server, Bell,
-  Clock, Calendar, Zap, GitMerge, Activity,
-  AlertTriangle, CheckCircle2, RefreshCw, Trash2, Pencil,
-  ArrowLeft, Terminal, Download, Settings, ChevronsRight,
-  Ban, Menu, X, SlidersHorizontal,
-  ShieldAlert, ShieldCheck, CircleSlash, Share2, BookOpen, Lock,
-  Sun, Moon, ArrowRight, MonitorPlay, Radio, Ellipsis, ChevronDown,
+  GitBranch, History, FolderOpen, Cpu, Package, Play, Plus, Search, ChevronRight, Server, Bell,
+  Clock, Calendar, Zap, GitMerge, Activity, AlertTriangle, RefreshCw, Trash2, Pencil, ArrowLeft,
+  Terminal, Download, Settings, ChevronsRight, Ban, X, SlidersHorizontal, ShieldAlert, Share2,
+  BookOpen, Lock, Sun, Moon, ArrowRight, MonitorPlay, Radio, Ellipsis, ChevronDown,
 } from 'lucide-react';
 import { api, del, post, put } from './api';
 import { rrws } from './ws';
@@ -19,11 +15,11 @@ import { FilePicker } from './components/FilePicker';
 import { RunHeatmap } from './components/Heatmap';
 import { cronLabel, nextCronOccurrence } from './cron';
 import { ScheduleBuilder } from './components/ScheduleBuilder';
-import { Button, CancelButton, StatusBadge, CountUp, EmptyState, Modal, PageHeader, TaskTypeBadge, SkeletonCard, HealthChip, LoadingBar, CometCanvas } from './components/ui';
+import { Button, CancelButton, StatusBadge, CountUp, EmptyState, Modal, PageHeader, TaskTypeBadge, SkeletonCard, LoadingBar, CometCanvas } from './components/ui';
 import { Board } from './components/Board';
 import { untilLabel } from './pulseRail';
 import { countdown, laneState, upcomingFires } from './board';
-import { failingFlows, signalLabel, verdictLine, type Failing } from './pulseModel';
+import { signalLabel, verdictLine, type Failing } from './pulseModel';
 import { PulseProvider, usePulse } from './Pulse';
 import { PeekProvider, usePeek } from './components/RunPeek';
 import { LogViewer } from './components/LogViewer';
@@ -46,19 +42,18 @@ import { RunFormEditor, RunFormFields, runFormValue } from './components/RunForm
 import { RunChanges } from './components/RunChanges';
 import { chainSummary, type ChainInfo } from './components/ChainStrip';
 import { Pipeline, type PipeEnd } from './components/Pipeline';
-import { collect, initialValues, needsAsking, type FormValues, type RunParameter } from './runForms';
-import type { AttemptGroup } from './attempts';
+import { collect, initialValues, needsAsking, type FormValues } from './runForms';
+import { AttemptGroup } from './attempts';
 import { LockField, LockBadge, lockValues } from './components/LockField';
 import { LatestReportPanel, ReportPanel } from './components/ReportPanel';
-import type { LatestReportMeta } from './components/ReportPanel';
+import { LatestReportMeta } from './components/ReportPanel';
 import { ShareRunModal } from './components/ShareRunModal';
 import { LogSearch } from './components/LogSearch';
 import { RunNotes, RunNotesIndicator, useRunNotesSummary } from './components/RunNotes';
-import type { RunNote } from './components/RunNotes';
 import { TrendSpark, useTaskDurations } from './components/TrendSpark';
-import type { TaskDurationSeries } from './components/TrendSpark';
+import { TaskDurationSeries } from './components/TrendSpark';
 
-import type { Run, TaskRun, Workflow, Project, Env, Task, DailyStat, Summary } from './types';
+import { Run, TaskRun, Workflow, Project, Env, Task, DailyStat, Summary } from './types';
 
 
 /* ─── Helpers ─────────────────────────────────────────── */

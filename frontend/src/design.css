@@ -81,7 +81,6 @@
   --r-md: 13px;
   --r-lg: 20px;
   --r-xl: 26px;
-  --r-2xl: 34px;
 
   --page: 1360px;
   --gutter: 32px;
@@ -359,14 +358,13 @@ main {
 
 /* ─── Type ────────────────────────────────────────────── */
 .page-header { margin: 30px 0 28px; align-items: flex-end; }
-.page-title, .detail-head-text h1 {
+.page-title {
   font-family: var(--font-display);
   font-size: clamp(34px, 3.7vw, 50px); font-weight: 600; line-height: 1.02; letter-spacing: -0.038em;
   text-wrap: balance;
 }
 .page-subtitle { margin-top: 12px; max-width: 78ch; font-size: 14.5px; color: var(--text-2); text-wrap: pretty; }
-.eyebrow-label, .run-day, .flow-row--head, .instrument-label, .now-date, .departures header, .lane--axis .lane-next,
-.sidebar-section-label, thead th {
+.eyebrow-label, .run-day, .flow-row--head, .instrument-label, .now-date, .departures header, .lane--axis .lane-next, thead th {
   font-family: var(--font-mono);
   font-size: 10.5px; font-weight: 500; letter-spacing: 0.09em; text-transform: uppercase;
   color: var(--text-3);
@@ -380,8 +378,7 @@ a.text-link, .text-link { display: inline-flex; align-items: center; gap: 6px; f
 
 /* ─── Surfaces ────────────────────────────────────────────
    One material: a sheet of slightly lit glass with a generous corner. */
-.panel, .glass-card, .list-panel, .resource-card, .workflow-card,
-.metric-card, .settings-section, .welcome-card {
+.panel, .glass-card, .settings-section, .welcome-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--r-xl);
@@ -389,16 +386,15 @@ a.text-link, .text-link { display: inline-flex; align-items: center; gap: 6px; f
 }
 .panel { overflow: hidden; margin-bottom: 20px; }
 .panel-head { padding: 20px 24px 14px; border-bottom: 0; }
-.panel-head h2, .card-title, .board-title h2 {
+.panel-head h2, .board-title h2 {
   font-family: var(--font-display);
   font-size: 19px; font-weight: 600; letter-spacing: -0.025em; line-height: 1.2;
 }
-.panel-head p, .card-subtitle, .board-title p { margin-top: 3px; font-size: 12.5px; color: var(--text-3); }
+.panel-head p, .board-title p { margin-top: 3px; font-size: 12.5px; color: var(--text-3); }
 .panel-link, .panel-more { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--text-2); }
 .panel-link:hover, .panel-more:hover { color: var(--text-1); }
 .panel-more { padding: 12px 24px 16px; }
-.resource-card:hover, .workflow-card:hover { transform: translateY(-2px); border-color: var(--border-strong); }
-.resource-card h3, .workflow-card h3, .empty-title, .modal-title {
+.empty-title, .modal-title {
   font-family: var(--font-display); font-weight: 600; letter-spacing: -0.025em;
 }
 .modal-title { font-size: 22px; }
@@ -979,10 +975,6 @@ a.tick:hover { transform: scaleY(1.3); }
 thead th { padding: 14px 16px 10px; }
 tbody td { padding: 12px 16px; border-color: var(--hairline); }
 thead th:first-child, tbody td:first-child { padding-left: 24px; }
-.summary-strip { border-radius: var(--r-xl); background: var(--bg-card); border-color: var(--border); gap: 0; box-shadow: var(--surface-shadow); }
-.summary-strip > div { background: none; margin: -1px 0 0 -1px; border: solid var(--hairline); border-width: 1px 0 0 1px; padding: 16px 22px; }
-.summary-strip > div > strong { font-family: var(--font-display); font-size: 18px; font-weight: 550; letter-spacing: -0.02em; }
-.metric-value { font-family: var(--font-display); font-weight: 550; letter-spacing: -0.035em; }
 .skeleton-line { border-radius: 14px; }
 
 /* ─── Pipeline ────────────────────────────────────────────
