@@ -6,7 +6,44 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-23
+
+A new interface, live updates, and workflows that start after other
+workflows. One thing to check before upgrading: **if you open RunRail by a
+domain name** rather than localhost or an IP address, set
+`RUNRAIL_PUBLIC_URL` to that address or add the name to
+`RUNRAIL_ALLOWED_HOSTS` (see Security below). Two migrations run on first
+start (new tables, a nullable column and an enum value); on SQLite a restore
+point is taken first.
+
+### Changed
+- **The interface is redesigned from the ground up.** A dock across the top
+  replaces the sidebar. The home screen is now **Now**: a headline with the
+  one thing that matters most, the timetable (the last few hours of every
+  busy workflow on one clock, the next ninety minutes ahead), then three
+  bands: *Needs you* (a service down, a run waiting for approval, a failing
+  workflow, each with its Restart, Review or Retry), *In motion* (running
+  runs against how long that workflow usually takes, the queue, what just
+  finished, services) and *Over time*. Run and workflow pages state their
+  verdict in a sentence, with the facts in a rail beside it. A run page is
+  one panel: the pipeline lit by the run, and a console under it that opens
+  on the task that matters. Every page from Settings to Environments is
+  rebuilt to match. Nothing about workflows, runs or the API changes.
+- **Pages update live.** The server pushes changes to the browser over a
+  WebSocket instead of each page polling for them: runs, tasks, services,
+  approvals, settings. Events from a separate `runrail worker` or
+  `runrail scheduler` reach the browser through a small table the API reads
+  (one migration; rows are kept ten minutes). If the connection drops, the
+  page catches up when it is back and polls until then.
+
 ### Added
+- **A run timeline for any stretch of time.** Runs has a Timeline view beside
+  the list: every run over six hours, a day, three days or a week, a lane per
+  workflow, stepped back and forward, with the page's filters applied and a
+  link that keeps the view. The chart of the last fourteen days leads the
+  page and picks a day. `GET /runs` takes `since` and `until`.
+- **Run peek.** A run clicked on the timetable or in a list opens beside the
+  page, with its tasks and the end of its log.
 - **Run a workflow after other workflows.** Under **Starts**, a workflow can
   now run *after other workflows* instead of on a schedule (or `after:` in
   YAML, by name). It starts once every workflow it runs after has succeeded
@@ -21,6 +58,9 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
 
 
 ### Fixed
+- **Picking a day in the Runs list uses your time zone.** It read the day as a
+  UTC day, so anywhere else the list and the chart disagreed by the offset.
+  A single day is also loaded whole instead of stopping at 500 runs.
 - **Notebooks on Windows no longer run their kernel over plain-text TCP.**
   Every notebook run there printed ipykernel's "Kernel is running over TCP
   without encryption" warning, and meant it: ZeroMQ has no IPC sockets on
