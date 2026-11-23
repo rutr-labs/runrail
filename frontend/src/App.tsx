@@ -26,6 +26,7 @@ import { untilLabel } from './pulseRail';
 import { countdown, laneState, upcomingFires } from './board';
 import { failingFlows, signalLabel, verdictLine, type Failing } from './pulseModel';
 import { PulseProvider, usePulse } from './Pulse';
+import { PeekProvider, usePeek } from './components/RunPeek';
 import { LogViewer } from './components/LogViewer';
 import { useToast } from './components/toast';
 import { ApprovalGate, ApprovalInbox, useOpenApprovals } from './components/ApprovalGate';
@@ -196,22 +197,40 @@ function useApiHealth(): 'online' | 'offline' | 'unknown' {
 function Shell() {
   return (
     <PulseProvider>
-      <ShellFrame />
+      <PeekProvider>
+        <ShellFrame />
+      </PeekProvider>
     </PulseProvider>
   );
 }
 
+/** `g` then one of these goes straight to a place. */
+const GO: Record<string, string> = { n: '/', w: '/workflows', r: '/runs', s: '/services', l: '/logs', a: '/artifacts' };
+
 function ShellFrame() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const location = useLocation();
+  const navTo = useNavigate();
   const health = useApiHealth();
   const navRef = useRef<HTMLElement>(null);
   useEffect(() => {
+    let chord = 0;   // when `g` was pressed, for the second key of a go-to
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen(v => !v);
+        return;
       }
+      // Bare keys are shortcuts only when nobody is typing and nothing is open.
+      const el = e.target as HTMLElement | null;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      if (el?.closest('input, textarea, select, [contenteditable="true"], .modal-shade, .cmdk-shade')) return;
+      if (document.querySelector('.modal-shade, .cmdk-shade')) return;
+      const key = e.key.toLowerCase();
+      if (key === '/') { e.preventDefault(); setPaletteOpen(true); return; }
+      if (key === 'g') { chord = Date.now(); return; }
+      if (GO[key] && Date.now() - chord < 1200) { e.preventDefault(); navTo(GO[key]); }
+      chord = 0;
     };
     const onAsk = () => setPaletteOpen(true);
     window.addEventListener('keydown', onKey);
@@ -510,6 +529,7 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
           <span><kbd>↑↓</kbd> Navigate</span>
           <span><kbd>↵</kbd> Select</span>
           <span><kbd>esc</kbd> Close</span>
+          <span className="cmdk-foot-tip"><kbd>/</kbd> opens this · <kbd>g</kbd> then <kbd>n</kbd> <kbd>w</kbd> <kbd>r</kbd> <kbd>s</kbd> jumps to a place</span>
         </div>
       </div>
     </div>,
@@ -556,6 +576,7 @@ function RunTable({ runs, flows, onChanged, byDay = false }: {
 }) {
   const now = useNow(runs.some(r => r.status === 'running'));
   const navTo = useNavigate();
+  const peek = usePeek();
   // One query for the whole list; a broken summary must not break the list.
   const { entryFor } = useRunNotesSummary();
   const seconds = (r: Run) => r.duration_seconds
@@ -565,15 +586,17 @@ function RunTable({ runs, flows, onChanged, byDay = false }: {
   let lastDay = '';
   return (
     <div className={clsx('run-list', byDay && 'run-list--days')}>
-      {runs.map(r => {
+      {runs.map((r, index) => {
         const flowName = flows.find(w => w.id === r.workflow_id)?.name ?? `Workflow ${r.workflow_id}`;
         const at = r.started_at || r.created_at;
         const day = localDateKey(new Date(at));
         const newDay = byDay && day !== lastDay;
         lastDay = day;
+        // The row opens the run beside the list; its id and its arrow go to
+        // the run's own page.
         const open = (e: React.MouseEvent) => {
           if ((e.target as HTMLElement).closest('a, button')) return;
-          navigateWithTransition(navTo, `/runs/${r.id}`);
+          peek.open(r.id);
         };
         return (
           <Fragment key={r.id}>
@@ -582,7 +605,7 @@ function RunTable({ runs, flows, onChanged, byDay = false }: {
                 {day === today ? 'Today' : new Date(at).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
               </div>
             )}
-            <div className={`run-row is-${r.status}`} onClick={open}>
+            <div className={`run-row is-${r.status}`} onClick={open} style={{ '--i': Math.min(index, 16) } as CSSProperties}>
               <StatusBadge value={r.status} />
               <div className="run-main">
                 <Link to={`/workflows/${r.workflow_id}`} className="run-flow-name" title={flowName}>{flowName}</Link>
@@ -867,6 +890,10 @@ function Dashboard() {
   const navTo = useNavigate();
   const { toast } = useToast();
   const failingIds = useMemo(() => new Set(failing.map(f => f.flow.id)), [failing]);
+  const peek = usePeek();
+  // Where the timetable puts "now". The headline sits to its left and what
+  // comes next to its right, so the whole first screen reads along one line.
+  const [nowX, setNowX] = useState(0);
 
   if (runs === null || flows === null) {
     return (
@@ -926,7 +953,8 @@ function Dashboard() {
     : { label: 'Run a workflow', icon: <Play size={15} />, go: openPalette };
 
   return (
-    <div className="now">
+    <div className="now" style={nowX ? { '--now-x': `${nowX}px` } as CSSProperties : undefined}>
+      <div className={clsx('now-stage', !empty && 'has-beam')}>
       <section className="now-hero">
         <div className="now-lead">
           <NowClock />
@@ -974,6 +1002,10 @@ function Dashboard() {
         </div>
         {!empty && <Departures flows={flows} />}
       </section>
+      {!empty && <Board runs={runs} flows={flows} complete={complete} failing={failingIds} onRun={runNow} onNowX={setNowX} onOpenRun={peek.open} />}
+      {/* The present, drawn once for the whole scene. */}
+      {!empty && <span className="now-beam" aria-hidden="true" />}
+      </div>
 
       {empty ? (
         <>
@@ -983,7 +1015,6 @@ function Dashboard() {
         </>
       ) : (
         <>
-          <Board runs={runs} flows={flows} complete={complete} failing={failingIds} onRun={runNow} />
 
           <div className="instruments">
             <Instrument label="In flight" value={liveCount}
@@ -1289,6 +1320,22 @@ function Runs() {
   );
 }
 
+/** A run's verdict as a sentence: what happened, how long it took, how long
+ *  ago. The run page leads with it. */
+function runSentence(run: Run, now: number): string {
+  const took = liveDuration(run, now);
+  const ended = timeAgo(run.finished_at || run.started_at || run.created_at, now);
+  switch (run.status) {
+    case 'success': return `Succeeded in ${took} · ${ended}`;
+    case 'failed': return `Failed after ${took} · ${ended}`;
+    case 'running': return `Running for ${took}`;
+    case 'queued': return `Queued ${timeAgo(run.created_at, now)}`;
+    case 'waiting_approval': return 'Waiting for your approval';
+    case 'cancelled': return `Cancelled ${ended}`;
+    default: return run.status.replace(/_/g, ' ');
+  }
+}
+
 /* ─── Why a queued run is waiting ─────────────────────────
    A run sitting at `queued` with nothing visibly happening is the one place
    this app can leave someone guessing, and the reason is never in the run's
@@ -1560,82 +1607,49 @@ function RunDetail() {
   const openTaskAnchor = hash.startsWith('#task-') ? decodeURIComponent(hash.slice(6)) : null;
   return (
     <>
-      <div className="detail-head">
-        <Link to="/runs"><ArrowLeft size={14} /> Runs</Link>
-        <div className="detail-head-row">
-          <div className="workflow-glyph large"><Play size={22} /></div>
-          <div className="detail-head-text">
-            <span className="eyebrow">WORKFLOW RUN</span>
-            <h1 style={{ viewTransitionName: `run-${run.id}` } as React.CSSProperties}>
-              {flow ? `${flow.name} · #${run.id}` : `Run #${run.id}`}
-            </h1>
-            <p>Created {formatDate(run.created_at)} · {run.trigger_type} trigger</p>
-          </div>
-          <div className="detail-actions">
-            <CancelRunButton run={run} onDone={refresh} size="md" />
-            {/* Renders nothing unless the run is failed or cancelled. Resume is
-                the primary action there, so Retry steps down to ghost. */}
-            <ResumeButton run={run} onResumed={refresh} />
-            {!LIVE(run.status) && (
-              <Button variant="ghost" onClick={retry}
-                      title="Queue a NEW run (new run id) with this run's parameters">
-                <RefreshCw size={13} /> {run.status === 'failed' ? 'Retry' : 'Run again'}
-              </Button>
-            )}
-            {!LIVE(run.status) && (
-              <Button variant="ghost" onClick={() => setShareOpen(true)}
-                      title="Download this run as one self-contained HTML file">
-                <Share2 size={13} /> Share
-              </Button>
-            )}
-            {hasNotebook && !LIVE(run.status) && (
-              <Link className="btn btn-ghost btn-md" to={`/runs/${run.id}/report`}
-                    title="This run's notebook report on its own page — a stable link to paste">
-                <BookOpen size={13} /> Report
-              </Link>
-            )}
-            {flow && <Link className="btn btn-ghost btn-md" to={`/workflows/${flow.id}`}><GitBranch size={13} /> Workflow</Link>}
-            <StatusBadge value={run.status} />
-          </div>
+      <header className={`hero-head is-${run.status}`}>
+        <Link className="back-link" to="/runs"><ArrowLeft size={14} /> Runs</Link>
+        <p className="hero-eyebrow">
+          Run #{run.id}<i>·</i>{run.trigger_type}<i>·</i>{formatDate(run.created_at)}
+        </p>
+        <h1 style={{ viewTransitionName: `run-${run.id}` } as React.CSSProperties}>
+          {flow ? <Link to={`/workflows/${flow.id}`}>{flow.name}</Link> : `Run #${run.id}`}
+        </h1>
+        {/* The run's own verdict, in a sentence: what happened, how long it
+            took, how long ago. */}
+        <p className="hero-status"><i aria-hidden="true" />{runSentence(run, now)}</p>
+        <div className="detail-actions">
+          <CancelRunButton run={run} onDone={refresh} size="md" />
+          {/* Renders nothing unless the run is failed or cancelled. Resume is
+              the primary action there, so Retry steps down to ghost. */}
+          <ResumeButton run={run} onResumed={refresh} />
+          {!LIVE(run.status) && (
+            <Button variant="ghost" onClick={retry}
+                    title="Queue a NEW run (new run id) with this run's parameters">
+              <RefreshCw size={13} /> {run.status === 'failed' ? 'Retry' : 'Run again'}
+            </Button>
+          )}
+          {!LIVE(run.status) && (
+            <Button variant="ghost" onClick={() => setShareOpen(true)}
+                    title="Download this run as one self-contained HTML file">
+              <Share2 size={13} /> Share
+            </Button>
+          )}
+          {hasNotebook && !LIVE(run.status) && (
+            <Link className="btn btn-ghost btn-md" to={`/runs/${run.id}/report`}
+                  title="This run's notebook report on its own page — a stable link to paste">
+              <BookOpen size={13} /> Report
+            </Link>
+          )}
         </div>
-      </div>
+      </header>
 
       {/* Above everything: a run stopped on a person is the page's headline.
           Renders nothing when no gate is open, so it needs no status guard. */}
       <ApprovalGate run={run} tasks={flowTasks} onDecided={refresh} />
 
-      <div className="summary-strip">
-        <div><span>Status</span><StatusBadge value={run.status} /></div>
-        <div><span>Trigger</span><strong>{run.trigger_type}</strong></div>
-        <div><span>Duration</span><strong>{liveDuration(run, now)}</strong></div>
-        <div><span>Tasks</span><strong>{run.task_runs?.length || 0}</strong></div>
-        {/* A run that queues behind a lock does so because of THIS, and the
-            run page is where that question gets asked. */}
-        {flow?.lock_resource && (
-          <div><span>Resource lock</span><LockBadge resource={flow.lock_resource} mode={flow.lock_mode} /></div>
-        )}
-        {Boolean(run.resume_count) && <div><span>Resumed</span><strong>{run.resume_count}×</strong></div>}
-        {run.started_at && <div><span>Started</span><strong>{formatDate(run.started_at)}</strong></div>}
-        {run.finished_at && <div><span>Finished</span><strong>{formatDate(run.finished_at)}</strong></div>}
-      </div>
-
-      {/* "What is different from last time?" — the first question about a
-          failed run, so it opens there; any finished run can ask it. */}
-      {!LIVE(run.status) && (
-        <RunChanges key={run.id} runId={run.id} workflowId={run.workflow_id} failed={run.status === 'failed'} />
-      )}
-
-      {params.length > 0 && (
-        <div className="panel" style={{ marginBottom: 20 }}>
-          <div className="panel-head"><div><h2>Parameters</h2><p>Values injected into task templates for this run</p></div></div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '0 20px 16px' }}>
-            {params.map(([key, value]) => (
-              <span key={key} className="path-chip" style={{ margin: 0 }}>{`${key} = ${String(value)}`}</span>
-            ))}
-          </div>
-        </div>
-      )}
-
+      <div className="detail-cols">
+      <div className="detail-main">
       {(hasGraph || hasTimeline) && (
         <div className="panel" style={{ marginBottom: 20 }}>
           <div className="panel-head">
@@ -1674,6 +1688,12 @@ function RunDetail() {
         </div>
       )}
 
+      {/* "What is different from last time?" — the first question about a
+          failed run, so it opens there; any finished run can ask it. */}
+      {!LIVE(run.status) && (
+        <RunChanges key={run.id} runId={run.id} workflowId={run.workflow_id} failed={run.status === 'failed'} />
+      )}
+
       {/* The conclusion, above the raw stdout it was drawn from. Renders
           nothing when the run produced no notebook. Keyed on status so a run
           that finishes while you watch picks up the notebook it just wrote —
@@ -1699,6 +1719,42 @@ function RunDetail() {
       </div>
 
       <RunNotes runId={run.id} initialNotes={run.notes} onChanged={refresh} />
+      </div>
+
+      {/* The facts, beside the story rather than above it. */}
+      <aside className="detail-aside">
+        <section className="panel facts">
+          <h2>Details</h2>
+          <dl>
+            <div><dt>Status</dt><dd><StatusBadge value={run.status} /></dd></div>
+            {flow && <div><dt>Workflow</dt><dd><Link to={`/workflows/${flow.id}`} title={flow.name}>{flow.name}</Link></dd></div>}
+            <div><dt>Trigger</dt><dd>{run.trigger_type}</dd></div>
+            <div><dt>Duration</dt><dd>{liveDuration(run, now)}</dd></div>
+            <div><dt>Tasks</dt><dd>{run.task_runs?.length || 0}</dd></div>
+            {/* A run that queues behind a lock does so because of THIS, and the
+                run page is where that question gets asked. */}
+            {flow?.lock_resource && (
+              <div><dt>Resource lock</dt><dd><LockBadge resource={flow.lock_resource} mode={flow.lock_mode} /></dd></div>
+            )}
+            {Boolean(run.resume_count) && <div><dt>Resumed</dt><dd>{run.resume_count}×</dd></div>}
+            <div><dt>Created</dt><dd>{formatDate(run.created_at)}</dd></div>
+            {run.started_at && <div><dt>Started</dt><dd>{formatDate(run.started_at)}</dd></div>}
+            {run.finished_at && <div><dt>Finished</dt><dd>{formatDate(run.finished_at)}</dd></div>}
+          </dl>
+          {params.length > 0 && (
+            <div className="facts-extra">
+              <h3>Parameters</h3>
+              <p>Values injected into task templates for this run</p>
+              <div className="facts-chips">
+                {params.map(([key, value]) => (
+                  <span key={key} className="path-chip" style={{ margin: 0 }}>{`${key} = ${String(value)}`}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      </aside>
+      </div>
 
       {shareOpen && (
         <ShareRunModal runId={run.id} runStatus={run.status}
@@ -2463,10 +2519,10 @@ function Workflows() {
               <span className="flow-next">Next</span>
               <span />
             </div>
-            {shown.map(({ flow: w, recent, next, state }) => {
+            {shown.map(({ flow: w, recent, next, state }, index) => {
               const last = recent[0];
               return (
-                <article key={w.id} className={clsx('flow-row', `is-${state}`)}
+                <article key={w.id} className={clsx('flow-row', `is-${state}`)} style={{ '--i': Math.min(index, 16) } as CSSProperties}
                          onClick={e => { if (!(e.target as HTMLElement).closest('a, button')) navigateWithTransition(navTo, `/workflows/${w.id}`); }}>
                   <i className="lane-signal" aria-hidden="true" />
                   <div className="flow-main">
@@ -2794,62 +2850,52 @@ function WorkflowDetail() {
   const orderedTasks = topologicallyOrdered(tasks);
   const projectName = projects.find(p => p.id === w.project_id)?.name ?? '—';
   const defaultEnvName = envs.find(e => e.id === w.default_environment_id)?.name ?? '—';
+  const standing = flowStanding(w, runs);
   return (
     <>
-      <div className="detail-head">
-        <Link to="/workflows"><ArrowLeft size={14} /> Workflows</Link>
-        <div className="detail-head-row">
-          <div className="workflow-glyph large"><GitBranch size={22} /></div>
-          <div className="detail-head-text">
-            <span className="eyebrow">WORKFLOW</span>
-            <h1 style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties}>{w.name}</h1>
-            <p>{w.description || 'No description yet'}</p>
-            {w.webhook_error && (
-              // A failing webhook used to fail silently forever; this is the
-              // one place the person who set it up will look.
-              <p className="webhook-warn" title={`Last attempt ${w.webhook_error_at ? new Date(w.webhook_error_at).toLocaleString() : ''}`}>
-                <AlertTriangle size={12} /> Alerts are not being delivered: {w.webhook_error}.
-                <button type="button" className="text-link" onClick={() => setEditOpen(true)}>Check the webhook</button>
-              </p>
-            )}
-          </div>
-          <div className="detail-actions">
-            <Button variant="ghost" onClick={() => setEditOpen(true)}><Pencil size={13} /> Edit</Button>
-            <Button variant="ghost" onClick={() => setAddOpen(true)}><Plus size={13} /> Add task</Button>
-            <Button onClick={runNow}><Play size={13} /> Run now</Button>
-            <Button variant="ghost" onClick={() => setRunParamsOpen(true)}
-                    title={w.run_parameters_json?.length ? 'Choose the values for this run' : 'Run with one-off parameters'}>
-              <SlidersHorizontal size={13} /> Run with…
-            </Button>
-            <Button variant="ghost" onClick={() => setBackfillOpen(true)}><Calendar size={13} /> Backfill</Button>
-            <SnoozeControl workflow={w} onChange={setW} />
-            {tasks.some(t => t.task_type === 'notebook') && (
-              <Link className="btn btn-ghost btn-md" to={`/reports/${w.id}/latest`}
-                    title="A stable link to the newest report — safe to pin in a wiki">
-                <BookOpen size={13} /> Latest report
-              </Link>
-            )}
-            <Button variant="danger" onClick={deleteWorkflow}><Trash2 size={13} /></Button>
-          </div>
+      <header className={`hero-head is-${standing.tone}`}>
+        <Link className="back-link" to="/workflows"><ArrowLeft size={14} /> Workflows</Link>
+        <p className="hero-eyebrow">
+          Workflow<i>·</i>{w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'On demand'}
+          {w.project_id && <><i>·</i>{projectName}</>}
+        </p>
+        <h1 style={{ viewTransitionName: `wf-${w.id}` } as React.CSSProperties}>{w.name}</h1>
+        {/* Where the workflow stands, in a sentence. */}
+        <p className="hero-status"><i aria-hidden="true" />{standing.line}</p>
+        {w.description && <p className="hero-desc">{w.description}</p>}
+        {w.webhook_error && (
+          // A failing webhook used to fail silently forever; this is the
+          // one place the person who set it up will look.
+          <p className="webhook-warn" title={`Last attempt ${w.webhook_error_at ? new Date(w.webhook_error_at).toLocaleString() : ''}`}>
+            <AlertTriangle size={12} /> Alerts are not being delivered: {w.webhook_error}.
+            <button type="button" className="text-link" onClick={() => setEditOpen(true)}>Check the webhook</button>
+          </p>
+        )}
+        <div className="detail-actions">
+          <Button onClick={runNow}><Play size={13} /> Run now</Button>
+          <Button variant="ghost" onClick={() => setRunParamsOpen(true)}
+                  title={w.run_parameters_json?.length ? 'Choose the values for this run' : 'Run with one-off parameters'}>
+            <SlidersHorizontal size={13} /> Run with…
+          </Button>
+          <Button variant="ghost" onClick={() => setBackfillOpen(true)}><Calendar size={13} /> Backfill</Button>
+          <span className="detail-actions-rule" aria-hidden="true" />
+          <Button variant="ghost" onClick={() => setEditOpen(true)}><Pencil size={13} /> Edit</Button>
+          <Button variant="ghost" onClick={() => setAddOpen(true)}><Plus size={13} /> Add task</Button>
+          <SnoozeControl workflow={w} onChange={setW} />
+          {tasks.some(t => t.task_type === 'notebook') && (
+            <Link className="btn btn-ghost btn-md" to={`/reports/${w.id}/latest`}
+                  title="A stable link to the newest report — safe to pin in a wiki">
+              <BookOpen size={13} /> Latest report
+            </Link>
+          )}
+          <Button variant="danger" onClick={deleteWorkflow} title="Delete this workflow"><Trash2 size={13} /></Button>
         </div>
-      </div>
+      </header>
 
-      <div className="summary-strip">
-        <div><span>Status</span><StatusBadge value={w.enabled ? 'enabled' : 'disabled'} /></div>
-        {w.snooze_until && (
-          <div><span>Alerts</span><SnoozeBadge workflow={w} onChange={setW} onExpire={load} /></div>
-        )}
-        <div><span>Schedule</span><strong title={w.schedule_timezone || undefined}>{w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'Manual only'}</strong></div>
-        <div><span>Tasks</span><strong>{tasks.length}</strong></div>
-        <div><span>Max active runs</span><strong>{w.max_concurrent_runs}</strong></div>
-        {w.lock_resource && (
-          <div><span>Resource lock</span><LockBadge resource={w.lock_resource} mode={w.lock_mode} /></div>
-        )}
-        <div><span>Total runs</span><strong>{runs.length}</strong></div>
-        {w.project_id && <div><span>Project</span><strong title={projectName}>{projectName}</strong></div>}
-        {w.default_environment_id && <div><span>Default env</span><strong title={defaultEnvName}>{defaultEnvName}</strong></div>}
-      </div>
-
+      <div className="detail-cols">
+      <div className="detail-main">
+      {/* How it has been going: run by run, then day by day. */}
+      <div className="detail-pair">
       {runs.length > 0 && <RunMiniHistory runs={runs} />}
 
       {/* The grid and the card below it are one story: the grid shows WHERE a
@@ -2868,6 +2914,7 @@ function WorkflowDetail() {
                       gapsComplete={gapFeed?.gapsComplete} />
         </div>
       )}
+      </div>
 
       {/* Unconditional, unlike everything above it: a workflow whose schedule
           has never once fired is exactly the case this exists for. */}
@@ -2952,6 +2999,32 @@ function WorkflowDetail() {
         </div>
       )}
 
+      </div>
+
+      {/* The facts, beside the story rather than above it. */}
+      <aside className="detail-aside">
+        <section className="panel facts">
+          <h2>Details</h2>
+          <dl>
+            <div><dt>Status</dt><dd><StatusBadge value={w.enabled ? 'enabled' : 'disabled'} /></dd></div>
+            {w.snooze_until && (
+              <div><dt>Alerts</dt><dd><SnoozeBadge workflow={w} onChange={setW} onExpire={load} /></dd></div>
+            )}
+            <div><dt>Schedule</dt><dd title={w.schedule_timezone || undefined}>{w.schedule_cron ? cronLabel(w.schedule_cron, w.schedule_timezone) : 'Manual only'}</dd></div>
+            {standing.next && <div><dt>Next run</dt><dd className="facts-mono"><Countdown at={standing.next} /></dd></div>}
+            <div><dt>Tasks</dt><dd>{tasks.length}</dd></div>
+            <div><dt>Max active runs</dt><dd>{w.max_concurrent_runs}</dd></div>
+            {w.lock_resource && (
+              <div><dt>Resource lock</dt><dd><LockBadge resource={w.lock_resource} mode={w.lock_mode} /></dd></div>
+            )}
+            <div><dt>Total runs</dt><dd>{runs.length}</dd></div>
+            {w.project_id && <div><dt>Project</dt><dd title={projectName}>{projectName}</dd></div>}
+            {w.default_environment_id && <div><dt>Default env</dt><dd title={defaultEnvName}>{defaultEnvName}</dd></div>}
+          </dl>
+        </section>
+      </aside>
+      </div>
+
       {addOpen && <TaskModal workflowId={id!} tasks={tasks} project={projects.find(p => p.id === w.project_id)} defaultEnvironment={envs.find(e => e.id === (w.default_environment_id || projects.find(p => p.id === w.project_id)?.default_environment_id))} onClose={() => setAddOpen(false)} done={() => { setAddOpen(false); load(); }} />}
       {editOpen && <EditWorkflowModal w={w} onClose={() => setEditOpen(false)} done={() => { setEditOpen(false); load(); }} />}
       {runParamsOpen && w && <RunParamsModal workflow={w} onClose={() => setRunParamsOpen(false)} />}
@@ -2959,6 +3032,27 @@ function WorkflowDetail() {
       {editingTask && <EditTaskModal task={editingTask} tasks={tasks} project={projects.find(p => p.id === (editingTask.project_id || w.project_id))} onClose={() => setEditingTask(null)} done={() => { setEditingTask(null); load(); }} />}
     </>
   );
+}
+
+/** Where a workflow stands, as one sentence and one tone: the workflow page
+ *  leads with it the way the run page leads with a run's verdict. `runs` is
+ *  newest first. */
+function flowStanding(w: Workflow, runs: Run[]): { tone: string; line: string; next: number | null } {
+  const paused = !w.enabled || Boolean(w.snoozed && w.snooze_pauses_runs);
+  const fire = w.schedule_cron && !paused ? nextCronOccurrence(w.schedule_cron, w.schedule_timezone, new Date()) : null;
+  const next = fire ? fire.getTime() : null;
+  const soon = next ? ` · next run ${untilLabel(next - Date.now())}` : '';
+  const settled = runs.find(r => r.status === 'success' || r.status === 'failed');
+  const ago = (r: Run) => timeAgo(r.finished_at || r.started_at || r.created_at);
+  if (runs.some(r => r.status === 'waiting_approval')) {
+    return { tone: 'waiting_approval', line: 'A run is waiting for your approval', next };
+  }
+  const running = runs.find(r => r.status === 'running');
+  if (running) return { tone: 'running', line: `Running now · started ${timeAgo(running.started_at || running.created_at)}`, next };
+  if (settled?.status === 'failed') return { tone: 'failed', line: `Failing · the last run failed ${ago(settled)}${soon}`, next };
+  if (paused) return { tone: 'cancelled', line: w.enabled ? 'Muted, with runs paused' : 'Paused · it will not run on its schedule', next };
+  if (settled) return { tone: 'success', line: `On track · last run succeeded ${ago(settled)}${soon}`, next };
+  return { tone: 'queued', line: `Has not run yet${soon}`, next };
 }
 
 /** Order tasks the same way the worker will: dependencies first, then id. */
@@ -2976,22 +3070,29 @@ function topologicallyOrdered(tasks: Task[]): Task[] {
   return ordered;
 }
 
+/** The last runs as bars: colour is how each ended, height is how long it
+ *  took, so a workflow that is getting slower shows it before it fails. */
 function RunMiniHistory({ runs }: { runs: Run[] }) {
-  const recent = [...runs].slice(0, 40).reverse();
+  const recent = [...runs].slice(0, 60).reverse();
   const stats = { success: runs.filter(r => r.status === 'success').length, failed: runs.filter(r => r.status === 'failed').length };
   const durs = runs.filter(r => r.duration_seconds != null);
   const avg = durs.length ? durs.reduce((a, r) => a + r.duration_seconds!, 0) / durs.length : 0;
+  const longest = Math.max(1, ...recent.map(r => r.duration_seconds ?? 0));
   return (
-    <div className="panel" style={{ marginBottom: 20 }}>
+    <div className="panel run-spark">
       <div className="panel-head">
         <div>
-          <h2>Run history at a glance</h2>
-          <p>{runs.length} total · {stats.success} succeeded · {stats.failed} failed{avg ? ` · avg ${formatDuration(avg)}` : ''}</p>
+          <h2>Run history</h2>
+          <p>{runs.length} runs · {stats.success} succeeded · {stats.failed} failed{avg ? ` · typically ${formatDuration(avg)}` : ''}</p>
         </div>
+        <span className="run-spark-key">Height is duration · newest on the right</span>
       </div>
-      <div className="mini-dots">
-        {recent.map((r, i) => (
-          <Link key={r.id} to={`/runs/${r.id}`} className={`mini-dot ${r.status}`} style={{ animationDelay: `${i * 5}ms` }} title={`#${r.id} · ${r.status} · ${formatDate(r.created_at)}`} />
+      <div className="mini-bars">
+        {recent.map(r => (
+          <Link key={r.id} to={`/runs/${r.id}`} className={`mini-bar is-${r.status}`}
+                style={{ height: `${Math.max(10, ((r.duration_seconds ?? 0) / longest) * 100)}%` }}
+                title={`#${r.id} · ${r.status.replace(/_/g, ' ')} · ${r.duration_seconds != null ? formatDuration(r.duration_seconds) : 'no duration yet'} · ${formatDate(r.created_at)}`}
+                aria-label={`Run ${r.id}, ${r.status.replace(/_/g, ' ')}`} />
         ))}
       </div>
     </div>
@@ -3465,7 +3566,7 @@ function Wallboard() {
 
   return (
     <div className={`wallboard wallboard--${mood}`}>
-      <div className="wallboard-aurora" aria-hidden />
+      <div className="atmosphere" aria-hidden="true"><i /><i /><i /></div>
       <header className="wallboard-head">
         <span className="wallboard-brand">
           <span className="sidebar-logo"><RunRailMark size={30} title="" /></span>
@@ -3589,6 +3690,7 @@ function Wallboard() {
 /* ─── App Entry ───────────────────────────────────────── */
 export default function App() {
   const location = useLocation();
-  if (location.pathname === '/wallboard') return <Wallboard />;
+  // The wallboard stands outside the shell, but it shares the sky.
+  if (location.pathname === '/wallboard') return <PulseProvider><Wallboard /></PulseProvider>;
   return <Shell />;
 }

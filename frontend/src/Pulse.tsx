@@ -93,7 +93,10 @@ export function PulseProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     document.documentElement.dataset.mood = mood;
     document.documentElement.dataset.live = running > 0 ? 'true' : 'false';
-  }, [mood, running]);
+    // Remembered for the next load (index.html reads it), so a reload opens
+    // under the sky it closed under instead of flashing calm first.
+    if (runs && flows) { try { sessionStorage.setItem('runrail-mood', mood); } catch { /* private mode */ } }
+  }, [mood, running, Boolean(runs && flows)]);
 
   const value: Pulse = {
     runs, flows, summary, complete: (runs?.length ?? 0) < PULSE_RUNS,

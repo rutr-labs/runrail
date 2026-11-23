@@ -14,6 +14,8 @@
       || localStorage.getItem('runrail-theme');
     const system = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     document.documentElement.dataset.theme = stored || system || 'dark';
+    // The sky this tab last closed under — see Pulse.tsx.
+    try { document.documentElement.dataset.mood = sessionStorage.getItem('runrail-mood') || 'calm'; } catch (e) {}
   </script>
 </head>
 <body>

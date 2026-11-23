@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, MouseEvent } from 'react';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
@@ -37,7 +37,7 @@ const clock = (t: number) =>
 
 type Tip = { x: number; y: number; tone: string; title: string; lines: string[] };
 
-export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, complete, failing, onRun, max = 12 }: {
+export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, complete, failing, onRun, onNowX, onOpenRun, max = 12 }: {
   runs: R[];
   flows: F[];
   /** True when `runs` is the whole history rather than the newest page of it. */
@@ -45,6 +45,11 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
   /** Workflows whose latest verdict is a failure. */
   failing: Set<number>;
   onRun: (id: number) => void;
+  /** Where "now" falls, in px from the board's left edge — so the page around
+   *  the board can line itself up on the same instant. */
+  onNowX?: (x: number) => void;
+  /** Open a run beside the board instead of leaving for its page. */
+  onOpenRun?: (id: number) => void;
   max?: number;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -59,7 +64,12 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
     if (!el) return;
     // offsetLeft / clientWidth: layout values, which an ancestor's entrance
     // transform cannot skew the way getBoundingClientRect would.
-    const measure = () => setBox({ left: el.offsetLeft, width: el.clientWidth });
+    // The line can overhang the board by its hover padding, so its own offset
+    // is part of where the track starts.
+    const measure = () => setBox({
+      left: el.offsetLeft + ((el.offsetParent as HTMLElement | null)?.offsetLeft ?? 0),
+      width: el.clientWidth,
+    });
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
@@ -88,6 +98,8 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
   const scale = nowX / past;                     // px per ms
   const start = now - past;
   const end = now + horizon;
+  const beam = width ? box.left + nowX : 0;
+  useEffect(() => { if (beam) onNowX?.(beam); }, [beam]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Everything on the sheet is placed against a fixed origin and the sheet
   // itself is moved, so a tick is one transform rather than a hundred.
@@ -158,10 +170,10 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
           <span className="lane-next">Next</span>
         </div>
 
-        {lanes.map(lane => {
+        {lanes.map((lane, index) => {
           const next = lane.fires[0] ?? null;
           return (
-            <div key={lane.flow.id} className={clsx('lane', `is-${lane.state}`)}>
+            <div key={lane.flow.id} className={clsx('lane', `is-${lane.state}`)} style={{ '--i': index } as CSSProperties}>
               <div className="lane-name">
                 <i className="lane-signal" aria-hidden="true" />
                 <Link to={`/workflows/${lane.flow.id}`} title={lane.flow.name}>{lane.flow.name}</Link>
@@ -183,6 +195,13 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
                         <Link key={run.id} to={`/runs/${run.id}`} tabIndex={-1}
                               className={clsx('bar', `is-${run.status}`, live && 'is-live')}
                               style={{ left: at(from), width: span }}
+                              onClick={e => {
+                                // A modified click still opens the run's page in a new tab.
+                                if (!onOpenRun || e.metaKey || e.ctrlKey || e.shiftKey) return;
+                                e.preventDefault();
+                                setTip(null);
+                                onOpenRun(run.id);
+                              }}
                               onMouseEnter={e => showTip(e, run.status, lane.flow.name, [
                                 `#${run.id} · ${STATUS_WORD[run.status] ?? run.status}`,
                                 [
