@@ -19,6 +19,18 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
   upstream's last result and what runs next, and the runs list can filter on
   the new `after` trigger. One migration adds a table and a nullable column.
 
+
+### Fixed
+- **Notebooks on Windows no longer run their kernel over plain-text TCP.**
+  Every notebook run there printed ipykernel's "Kernel is running over TCP
+  without encryption" warning, and meant it: ZeroMQ has no IPC sockets on
+  Windows, so the kernel's channels were open on loopback to any local
+  process. The kernel manager now gives each kernel CurveZMQ keys, which
+  encrypts the channels and ends the warning. Managed environments now
+  install `jupyter_client>=8.10`, the first that can do this; an environment
+  built before this picks it up the next time its packages are saved. macOS
+  and Linux already used IPC sockets and are unchanged.
+
 ## [0.8.2] — 2026-10-20
 
 Secrets, run forms, and a comparison with the last good run. Everything here
