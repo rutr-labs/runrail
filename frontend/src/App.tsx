@@ -732,15 +732,26 @@ function niceCeil(value: number): number {
   return 10 * magnitude;
 }
 
-function ActivityChart() {
+/** The last fortnight, a column a day. On the Runs page it leads, short, and
+ *  is how you pick a day: `hrefFor` says where a day's column goes and
+ *  `selected` marks the one being looked at. */
+function ActivityChart({ compact = false, selected, hrefFor = key => `/runs?day=${key}` }: {
+  compact?: boolean;
+  selected?: string | null;
+  hrefFor?: (key: string) => string;
+} = {}) {
   // Aggregated server-side so the counts stay correct no matter how many runs
   // a day holds (a client-side bucket of a capped /runs fetch under-counts).
   const [stats, setStats] = useState<Record<string, DailyStat>>({});
   const [focus, setFocus] = useState<number | null>(null);
-  useEffect(() => {
+  const load = () => {
     api<DailyStat[]>(`/stats/daily?days=${CHART_DAYS}&tz=${encodeURIComponent(viewerZone())}`)
       .then(rows => setStats(Object.fromEntries(rows.map(r => [r.date, r])))).catch(() => {});
-  }, []);
+  };
+  useEffect(load, []);
+  // Today's column grows as runs finish. A day's count does not need to move
+  // with every one, so a burst is one reload when it settles.
+  useLiveEvents(['run_updated'], load, { settleMs: 15_000 });
   // Local days, matching the buckets the server just counted. setDate rather
   // than setUTCDate, so "today" is the operator's today.
   const days = Array.from({ length: CHART_DAYS }, (_, i) => {
@@ -755,11 +766,17 @@ function ActivityChart() {
   const total = days.reduce((sum, d) => sum + d.total, 0);
   const finished = days.reduce((sum, d) => sum + d.success + d.failed, 0);
   const succeeded = days.reduce((sum, d) => sum + d.success, 0);
-  const shown = focus != null ? days[focus] : null;
+  const picked = days.find(d => d.key === selected) ?? null;
+  const shown = focus != null ? days[focus] : picked;
   return (
-    <div className="panel activity-chart" style={{ marginBottom: 16 }}>
+    <div className={clsx('panel activity-chart', compact && 'is-compact')}>
       <div className="panel-head">
-        <div><h2>Activity</h2><p>Runs per day by outcome, last {CHART_DAYS} days</p></div>
+        <div>
+          <h2>{compact ? `The last ${CHART_DAYS} days` : 'Activity'}</h2>
+          <p>{compact
+            ? (picked ? 'Showing one day — select it again to see them all' : 'Select a day to see only its runs')
+            : `Runs per day by outcome, last ${CHART_DAYS} days`}</p>
+        </div>
         {/* One readout for the whole chart: the period's totals at rest, the
             day under the pointer while it is over a column. */}
         <p className="ac-readout" aria-live="off">
@@ -800,10 +817,12 @@ function ActivityChart() {
                 <span className="ac-label">{d.day.toLocaleDateString(undefined, { weekday: 'narrow' })}</span>
               </>
             );
-            const cls = clsx('ac-col', i === CHART_DAYS - 1 && 'is-today', focus === i && 'is-focus');
+            const cls = clsx('ac-col', i === CHART_DAYS - 1 && 'is-today', focus === i && 'is-focus',
+                             d.key === selected && 'is-selected');
             // Only the days that lead somewhere are links — as on the heatmap.
             return d.total > 0
-              ? <Link key={d.key} to={`/runs?day=${d.key}`} className={cls} aria-label={label}
+              ? <Link key={d.key} to={hrefFor(d.key)} className={cls} aria-label={label}
+                      aria-current={d.key === selected ? 'date' : undefined}
                       onMouseEnter={() => setFocus(i)} onFocus={() => setFocus(i)} onBlur={() => setFocus(null)}>{body}</Link>
               : <div key={d.key} className={cls} aria-label={label} onMouseEnter={() => setFocus(i)}>{body}</div>;
           })}
@@ -1221,6 +1240,20 @@ function Runs() {
     if (end == null || end >= Date.now()) next.delete('end'); else next.set('end', new Date(end).toISOString());
     return next;
   }, { replace: true });
+  // A day on the chart: in the list, that day's runs (again to clear it); in
+  // the timeline, that whole local day.
+  const nextMidnight = (key: string) => { const d = new Date(`${key}T00:00:00`); d.setDate(d.getDate() + 1); return d; };
+  const timelineDay = endParam && span.key === '24h' && new Date(rangeEnd).getHours() === 0 && new Date(rangeEnd).getMinutes() === 0
+    ? localDateKey(new Date(rangeEnd - 1)) : null;
+  const dayHref = (key: string) => {
+    const next = new URLSearchParams(params);
+    if (view === 'timeline') {
+      next.set('span', '24h');
+      next.set('end', nextMidnight(key).toISOString());
+    } else if (key === day) next.delete('day');
+    else next.set('day', key);
+    return `/runs?${next}`;
+  };
   const setView = (next: 'list' | 'timeline') => setParams(previous => {
     const p = new URLSearchParams(previous);
     if (next === 'timeline') p.set('view', 'timeline'); else { p.delete('view'); p.delete('span'); p.delete('end'); }
@@ -1228,8 +1261,12 @@ function Runs() {
   }, { replace: true });
 
   const runsPath = useMemo(() => {
-    const query = new URLSearchParams({ limit: '500' });
-    if (day) query.set('day', day);
+    // One day is bounded on its own, so it is loaded whole: its counts must
+    // agree with its column on the chart.
+    const query = new URLSearchParams({ limit: day ? '5000' : '500' });
+    // The viewer's calendar day, as the chart and the heatmap count it; the
+    // server would otherwise read it as a UTC day.
+    if (day) { query.set('day', day); query.set('tz', viewerZone()); }
     return `/runs?${query}`;
   }, [day]);
 
@@ -1301,6 +1338,11 @@ function Runs() {
                     onClick={() => setView('timeline')}><ChartGantt size={14} /> Timeline</button>
           </div>
         } />
+
+      {/* The fortnight first: where the runs were and where they failed, and
+          how to pick a day — in the list, it narrows to that day; in the
+          timeline, it shows that day. */}
+      <ActivityChart compact selected={view === 'list' ? day : timelineDay} hrefFor={dayHref} />
 
       <div className="toolbar">
         <div className="tabs" role="tablist" aria-label="Status">
@@ -1401,7 +1443,6 @@ function Runs() {
       </section>
       )}
 
-      {view === 'list' && runs.length > 0 && <ActivityChart />}
     </>
   );
 }
