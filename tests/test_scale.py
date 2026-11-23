@@ -40,11 +40,14 @@ TASK_RUNS_ON_ONE_RUN = 40
 
 @contextmanager
 def counted(engine):
-    """Statements issued inside the block."""
+    """Statements issued inside the block, leaving out the live-event relay's:
+    the app's lifespan tails live_events every half second on the same
+    engine, and a slow request (PostgreSQL in CI) can straddle one."""
     statements: list[str] = []
 
     def record(conn, cursor, statement, parameters, context, executemany):
-        statements.append(statement)
+        if "live_events" not in statement:
+            statements.append(statement)
 
     event.listen(engine, "before_cursor_execute", record)
     try:
