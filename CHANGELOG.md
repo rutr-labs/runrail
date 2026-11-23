@@ -6,6 +6,21 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-11-23
+
+A fix for upgrading to 0.9.0 with an older workflow webhook. Nothing to do on
+upgrade, and no migrations.
+
+### Fixed
+- **Workflows saved with a webhook that is not an http(s) URL list again.**
+  Before 0.9.0 a workflow's webhook field took any text; 0.9.0 checks it, and
+  also checked it when reading a workflow back, so one such workflow (often a
+  Slack URL pasted without `https://`) made the workflows list and the home
+  screen fail to load. It is now shown as stored. Alerts to it are refused
+  with a reason on the workflow's page, and the next save asks for a full URL.
+  Applying a file or restoring a backup that carries one says which workflow
+  and field to fix, in one line.
+
 ## [0.9.0] — 2026-11-23
 
 A new interface, live updates, and workflows that start after other
