@@ -4,6 +4,43 @@ Notable changes to RunRail. The format follows [Keep a Changelog](https://keepac
 
 Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any release that is safe to upgrade into without doing anything: new features that are opt-in, fixes, migrations that only add. The middle one (0.**9**.0) moves only when upgrading asks something of you or changes results: a setting, CLI flag or API field renamed or removed, or behaviour that changes what a run produces. 1.0 is when RunRail declares that stable, after which these follow semver's usual meaning.
 
+## [Unreleased]
+
+### Security
+- **RunRail answers only to the host names it expects.** A request must name
+  a loopback address, an IP address, the host in `RUNRAIL_PUBLIC_URL`, or one
+  listed in the new `RUNRAIL_ALLOWED_HOSTS` (comma-separated; `*` turns the
+  check off). This closes a way for a web page to reach a local RunRail
+  through a DNS name pointed at 127.0.0.1. **If you open RunRail by a domain
+  name, set one of those two**; any other name gets a 403 that says what to
+  set.
+- **Live streams check where a connection comes from.** The log and event
+  WebSockets now apply the same origin check as the rest of the API.
+- `docker compose` publishes port 8080 on 127.0.0.1 only. RunRail has no
+  accounts, so expose it more widely only behind a proxy that handles sign-in.
+- The API answers a read only to RunRail's own pages and to tools such as
+  curl and the CLI, not to another website's scripts. Report links opened
+  from a wiki or a chat work as before.
+- RunRail's pages ask browsers not to let other sites frame them.
+- Webhook URLs must be `http://` or `https://`, both when saved and when sent.
+- On macOS and Linux, RunRail's log, artifact, environment and backup
+  folders and its SQLite database are now readable only by the user who runs
+  it.
+- `runrail serve` and `runrail api` print a warning when listening on an
+  address other than 127.0.0.1.
+
+
+### Fixed
+- **Notebooks on Windows no longer run their kernel over plain-text TCP.**
+  Every notebook run there printed ipykernel's "Kernel is running over TCP
+  without encryption" warning, and meant it: ZeroMQ has no IPC sockets on
+  Windows, so the kernel's channels were open on loopback to any local
+  process. The kernel manager now gives each kernel CurveZMQ keys, which
+  encrypts the channels and ends the warning. Managed environments now
+  install `jupyter_client>=8.10`, the first that can do this; an environment
+  built before this picks it up the next time its packages are saved. macOS
+  and Linux already used IPC sockets and are unchanged.
+
 ## [0.8.2] — 2026-10-20
 
 Secrets, run forms, and a comparison with the last good run. Everything here

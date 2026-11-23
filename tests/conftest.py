@@ -59,6 +59,20 @@ def _migrated_sqlite(tmp_path_factory) -> Path | None:
     return template
 
 
+#: Where the test client says it is, instead of TestClient's "testserver": the
+#: API refuses Host names it does not answer to (runrail.api.origin).
+_LOOPBACK = "127.0.0.1"
+
+
+class _LoopbackClient(TestClient):
+    def websocket_connect(self, url: str, *args, **kwargs):
+        # Starlette sends a relative WebSocket path to ws://testserver whatever
+        # base_url says, so give it the same host the HTTP requests use.
+        if url.startswith("/"):
+            url = f"ws://{_LOOPBACK}{url}"
+        return super().websocket_connect(url, *args, **kwargs)
+
+
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch, _migrated_sqlite):
     monkeypatch.setenv("RUNRAIL_HOME", str(tmp_path / ".runrail"))
@@ -82,6 +96,6 @@ def client(tmp_path: Path, monkeypatch, _migrated_sqlite):
     database.init_db()
     _reset(database.engine)
     from runrail.api.app import create_app
-    with TestClient(create_app()) as test_client:
+    with _LoopbackClient(create_app(), base_url=f"http://{_LOOPBACK}") as test_client:
         yield test_client
     database.engine.dispose()

@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -45,6 +46,10 @@ class Settings(BaseSettings):
     # exported run file, a report permalink. Set it when RunRail sits behind a
     # proxy; the fallback only resolves inside the same network.
     public_url: str | None = None
+    # Names besides loopback, IP addresses and public_url's host that browsers
+    # may reach RunRail by, comma-separated; "*" turns the check off. Anything
+    # else is refused, which is what stops DNS rebinding (runrail.api.origin).
+    allowed_hosts: str | None = None
     # The key secrets are encrypted with, when it should not sit in the home
     # folder: a Fernet key (`runrail secrets-key` prints the current one).
     # Unset, RunRail keeps one in <home>/secrets.key. Never passed to tasks.
@@ -56,6 +61,11 @@ class Settings(BaseSettings):
     @property
     def base_url(self) -> str:
         return (self.public_url or f"http://{self.host}:{self.port}").rstrip("/")
+
+    @property
+    def allowed_host_names(self) -> set[str]:
+        return {name.strip().lower().rstrip(".") for name in (self.allowed_hosts or "").split(",")
+                if name.strip()}
 
     @property
     def database_url(self) -> str:
@@ -75,9 +85,25 @@ class Settings(BaseSettings):
 
     def ensure_directories(self) -> None:
         self.home.mkdir(parents=True, exist_ok=True)
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
-        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
-        self.environments_dir.mkdir(parents=True, exist_ok=True)
+        # What RunRail keeps (task logs, notebook outputs, environments,
+        # restore points) is readable by this user only. The home folder itself
+        # is left alone: RUNRAIL_HOME can be a folder the person also uses.
+        for folder in (self.logs_dir, self.artifacts_dir, self.environments_dir, self.home / "backups"):
+            folder.mkdir(parents=True, exist_ok=True)
+            private(folder, 0o700)
+
+
+def private(path: Path, mode: int) -> None:
+    """Restrict a file or folder RunRail owns to its own user. Not on Windows,
+    where these bits mean nothing and the profile folder is already private,
+    and not for a path another user owns (a shared mount)."""
+    if os.name == "nt":
+        return
+    try:
+        if path.stat().st_uid == os.getuid() and path.stat().st_mode & 0o077:
+            path.chmod(mode)
+    except OSError:
+        pass
 
 
 @lru_cache

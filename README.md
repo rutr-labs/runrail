@@ -209,7 +209,7 @@ All of it happens on one machine, using threads and subprocesses. There are no r
 
 SQLite in WAL mode is the default. For PostgreSQL, set `RUNRAIL_DB_URL=postgresql+psycopg://user:password@host:5432/runrail`; the `+psycopg` matters, because a bare `postgresql://` looks for psycopg2, which isn't installed. CI runs the whole suite against both. Logs live under `$RUNRAIL_HOME/logs/`, artifacts under `$RUNRAIL_HOME/artifacts/<id>/`, timestamped so retries never overwrite each other.
 
-Docker is available (`docker compose up --build` starts RunRail with PostgreSQL on port 8080) and entirely optional.
+Docker is available (`docker compose up --build` starts RunRail with PostgreSQL on port 8080, reachable from this machine only) and entirely optional.
 
 ## Configuration
 
@@ -229,7 +229,8 @@ An environment variable pins a setting: the page shows it locked and names the v
 | `RUNRAIL_WORKER_POLL_SECONDS` | `1.0` |
 | `RUNRAIL_RETENTION_DAYS` | unset; when set, finished runs older than this are deleted with their logs and artifacts |
 | `RUNRAIL_NOTIFY_WEBHOOK_URL` | unset; default webhook |
-| `RUNRAIL_PUBLIC_URL` | unset; base URL for links inside exported files and reports |
+| `RUNRAIL_PUBLIC_URL` | unset; base URL for links inside exported files and reports, and a name RunRail answers to |
+| `RUNRAIL_ALLOWED_HOSTS` | unset; more names RunRail answers to, comma-separated (loopback names and IP addresses always work) |
 | `RUNRAIL_BROWSE_ROOT` | user home; limits the UI file picker |
 | `RUNRAIL_SQLITE_DB_PATH` | unset; the database SQL tasks run against, unless the task sets `sqlite_db_path` |
 | `RUNRAIL_SECRETS_KEY` | unset; the key secrets are encrypted with, instead of `$RUNRAIL_HOME/secrets.key` |
@@ -256,6 +257,7 @@ Secrets travel inside the database, encrypted; the key stays out of a backup unl
 ## Worth knowing
 
 - It's built for one person on one machine. There are no accounts and no roles, by choice rather than omission. If you expose the port beyond localhost, put something in front of it that handles authentication, and narrow `RUNRAIL_BROWSE_ROOT` while you're there.
+- RunRail answers only to `localhost`, IP addresses and the names you give it, which is what stops a website from reaching it through DNS rebinding. If you reach it by a domain name (`runrail.mycompany.com`), set `RUNRAIL_PUBLIC_URL` to that address or add the name to `RUNRAIL_ALLOWED_HOSTS`.
 - Work runs on a single machine. Plenty happens in parallel there, but there are no remote workers.
 - SQL tasks run against SQLite only.
 - Services are managed by `runrail serve` or `runrail worker`. `runrail api` on its own shows them but starts and stops nothing, and the Services page says so.

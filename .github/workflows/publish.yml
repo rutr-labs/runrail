@@ -21,22 +21,29 @@ on:
         options: [testpypi, pypi]
         default: testpypi
 
+# Nothing here writes to the repository. The publish jobs add only the OIDC
+# token PyPI's Trusted Publishing needs, inside the protected environments.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
       # Rebuild the React UI so the wheel always ships the current bundle.
-      - uses: actions/setup-node@v4
+      # No dependency cache: what is published is built from the lockfile alone,
+      # never from a cache another run could have written.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
       - run: npm ci
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
       - name: Build sdist and wheel
@@ -53,7 +60,7 @@ jobs:
           assert any("web/static/assets/" in n for n in names), "UI assets missing from wheel"
           print("OK: web UI is bundled in", whl)
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: dist
           path: dist/
@@ -66,24 +73,27 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
         with:
           repository-url: https://test.pypi.org/legacy/
 
   publish-pypi:
     needs: build
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    # A manual run publishes only from a release tag, never from a branch.
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3

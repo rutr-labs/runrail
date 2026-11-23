@@ -1,0 +1,11 @@
+# Keeps the commit-pinned actions in .github/workflows current: each update
+# arrives as a pull request that runs the full CI before anyone merges it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

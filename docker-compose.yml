@@ -1,7 +1,9 @@
 services:
   runrail:
     build: .
-    ports: ["8080:8080"]
+    # Loopback only: there are no accounts. Publish wider behind a proxy that
+    # handles sign-in, and set RUNRAIL_PUBLIC_URL to the name it serves.
+    ports: ["127.0.0.1:8080:8080"]
     environment:
       RUNRAIL_DB_URL: postgresql+psycopg://runrail:runrail@postgres:5432/runrail
       RUNRAIL_HOME: /data
