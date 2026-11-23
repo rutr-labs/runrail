@@ -210,6 +210,14 @@ class WorkflowOut(WorkflowIn, ORMModel):
     def _valid_run_form(cls, value: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         return value  # shown as stored; it was checked on the way in
 
+    @field_validator("notify_webhook_url")
+    @classmethod
+    def _webhook_is_http(cls, value: str | None) -> str | None:
+        # Shown as stored. Before 0.9.0 any text was accepted here, and a row
+        # saved then must still list: delivery refuses it and says why, and
+        # the next save asks for a real URL.
+        return value
+
     @field_validator("schedule_cron")
     @classmethod
     def _runnable_crontab(cls, value: str | None) -> str | None:

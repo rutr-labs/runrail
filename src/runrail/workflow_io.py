@@ -11,6 +11,7 @@ present in the file are created/updated, tasks missing from it are removed.
 import re
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -30,6 +31,19 @@ from runrail.models import (
     now,
 )
 from runrail.schemas import ServiceIn, TaskIn, WorkflowIn
+
+
+def _checked(_kind: str, _label: str, _schema, /, **values):
+    """`_schema(**values)`, its refusal said in one line that names the
+    workflow or service and the field, as an apply or a restore shows it."""
+    try:
+        return _schema(**values)
+    except ValidationError as exc:
+        error = exc.errors()[0]
+        field = ".".join(str(part) for part in error["loc"])
+        reason = error["msg"].removeprefix("Value error, ")
+        raise ValueError(f"{_kind} '{_label}': {field} {reason}") from None
+
 
 # Configuration only. Operator state (snooze, notification markers, breach
 # markers) is deliberately absent: a file applied on another machine must not
@@ -289,7 +303,8 @@ def apply_workflows(db: Session, data: dict[str, Any]) -> dict[str, list[str]]:
         # columns straight from YAML accepted what the API refuses: an unknown
         # time zone the scheduler then skipped, and max_concurrent_runs: 0,
         # which queued runs forever while the missed-run watchdog stayed quiet.
-        checked = WorkflowIn(
+        checked = _checked(
+            "Workflow", wf_name, WorkflowIn,
             name=wf_name, description=entry.get("description"),
             schedule_cron=entry.get("schedule_cron"),
             schedule_timezone=entry.get("schedule_timezone"),
@@ -465,7 +480,8 @@ def _apply_service(db: Session, entry: dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(entry, dict) or not entry.get("name"):
         raise ValueError("Every service needs a name")
     name = entry["name"]
-    checked = ServiceIn(
+    checked = _checked(
+        "Service", name, ServiceIn,
         name=name, description=entry.get("description"), command=entry.get("command") or "",
         cwd=entry.get("cwd"), env_vars_json=entry.get("env_vars"),
         start_mode=entry.get("start_mode") or ServiceStartMode.manual,

@@ -108,3 +108,38 @@ def test_listening_beyond_this_machine_is_said_out_loud(capsys):
     assert capsys.readouterr().err == ""
     _warn_if_exposed("0.0.0.0")
     assert "anyone who can reach this machine" in capsys.readouterr().err
+
+
+def test_a_webhook_saved_before_the_http_rule_still_lists(client):
+    """0.8.2 stored any text as a workflow's webhook. Reading such a row must
+    not fail (it took the workflows list down in 0.9.0); sending to it is
+    refused with a reason, and saving asks for a real URL."""
+    from runrail.db import SessionLocal
+    from runrail.models import Workflow
+    from runrail.notify import deliver
+
+    created = client.post("/api/workflows", json={"name": "old-webhook"}).json()
+    with SessionLocal() as db:
+        db.get(Workflow, created["id"]).notify_webhook_url = "hooks.slack.com/services/T/B/x"
+        db.commit()
+    listed = client.get("/api/workflows")
+    assert listed.status_code == 200
+    assert listed.json()[0]["notify_webhook_url"] == "hooks.slack.com/services/T/B/x"
+    assert client.get(f"/api/workflows/{created['id']}").status_code == 200
+    assert deliver("hooks.slack.com/services/T/B/x", "boom")
+    resaved = client.put(f"/api/workflows/{created['id']}",
+                         json={"name": "old-webhook", "notify_webhook_url": "hooks.slack.com/services/T/B/x"})
+    assert resaved.status_code == 422
+
+
+def test_applying_a_file_with_an_old_webhook_names_the_workflow(client):
+    """A 0.8.2 export or backup can carry such a webhook; applying it is
+    refused, in one line that says which workflow and what to fix."""
+    from runrail.db import SessionLocal
+    from runrail.workflow_io import apply_workflows
+
+    data = {"workflows": [{"name": "nightly", "notify_webhook_url": "hooks.slack.com/x",
+                           "tasks": [{"name": "t", "task_type": "shell", "command": "true"}]}]}
+    with SessionLocal() as db, pytest.raises(ValueError) as refused:
+        apply_workflows(db, data)
+    assert str(refused.value) == "Workflow 'nightly': notify_webhook_url must be an http(s) URL with a host"
