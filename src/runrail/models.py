@@ -96,6 +96,8 @@ class TriggerType(enum.StrEnum):
     schedule = "schedule"
     cli = "cli"
     backfill = "backfill"
+    #: Started because the workflows it runs after had all succeeded (chaining.py).
+    upstream = "upstream"
 
 
 class ArtifactType(enum.StrEnum):
@@ -205,11 +207,37 @@ class Workflow(TimestampMixin, Base):
     webhook_error: Mapped[str | None] = mapped_column(Text)
     webhook_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tasks: Mapped[list["Task"]] = relationship(cascade="all, delete-orphan", back_populates="workflow")
+    #: The workflows this one runs after, instead of a schedule (chaining.py).
+    upstream_links: Mapped[list["WorkflowUpstream"]] = relationship(
+        foreign_keys="WorkflowUpstream.workflow_id", cascade="all, delete-orphan",
+        order_by="WorkflowUpstream.upstream_id")
 
     @property
     def snoozed(self) -> bool:
         until = _aware(self.snooze_until)
         return until is not None and until > now()
+
+    @property
+    def after(self) -> list[int]:
+        """Ids of the workflows this one runs after; empty when it does not."""
+        return [link.upstream_id for link in self.upstream_links]
+
+
+class WorkflowUpstream(Base):
+    """One "runs after" link: `workflow_id` starts once `upstream_id` (and
+    every other upstream it has) has succeeded since it last started.
+
+    `created_at` is when the link was made: a success from before that never
+    counts, so linking two workflows does not start the downstream on the
+    strength of a run from last week."""
+
+    __tablename__ = "workflow_upstreams"
+    workflow_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), primary_key=True)
+    # Indexed: the lookup after every successful run is "who runs after this?".
+    upstream_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), primary_key=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Task(TimestampMixin, Base):
@@ -278,6 +306,9 @@ class WorkflowRun(Base):
     # Set once when the run passes its workflow's SLA; the marker itself is the
     # repeat guard, and resume must clear it so a second breach can re-alert.
     sla_breached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # For a run started by chaining: the upstream run whose success started it.
+    # A plain id, like alert_run_id: retention may delete that run first.
+    triggered_by_run_id: Mapped[int | None] = mapped_column(Integer)
     workflow: Mapped[Workflow] = relationship()
     task_runs: Mapped[list["TaskRun"]] = relationship(cascade="all, delete-orphan", back_populates="workflow_run")
     notes: Mapped[list["RunNote"]] = relationship(

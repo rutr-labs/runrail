@@ -6,7 +6,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from runrail import notify, runtime_settings
+from runrail import chaining, notify, runtime_settings
 from runrail.api.ws import manager as _ws_manager
 from runrail.crontab import cron_trigger
 from runrail.db import SessionLocal
@@ -310,6 +310,10 @@ class SchedulerService:
     def _watchdog() -> None:
         with SessionLocal() as db:
             check_watchdogs(db)
+        # Not inside check_watchdogs: "pause everything new" holds the queue,
+        # not the record of what is due, exactly as it does for schedules.
+        with SessionLocal() as db:
+            chaining.sweep(db)
 
     @staticmethod
     def _cleanup() -> None:

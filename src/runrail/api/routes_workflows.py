@@ -1,10 +1,10 @@
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session, selectinload
 
-from runrail import notify, runtime_settings
+from runrail import chaining, notify, runtime_settings
 from runrail.api.crud import (
     apply_update,
     check_schedulable,
@@ -27,6 +27,7 @@ from runrail.models import (
     TriggerType,
     Workflow,
     WorkflowRun,
+    WorkflowUpstream,
     now,
 )
 from runrail.run_parameters import ParameterError
@@ -90,15 +91,34 @@ def _ensure_workflow_runnable(db: Session, workflow: Workflow) -> None:
 
 @router.get("/workflows", response_model=list[WorkflowOut])
 def list_workflows(db: Session = Depends(get_db)):
-    return db.scalars(select(Workflow).order_by(Workflow.name)).all()
+    return db.scalars(select(Workflow).options(selectinload(Workflow.upstream_links))
+                      .order_by(Workflow.name)).all()
 
 
 @router.post("/workflows", response_model=WorkflowOut, status_code=201)
 def create_workflow(data: WorkflowIn, db: Session = Depends(get_db)):
     ensure_environment_ready(db, data.default_environment_id)
-    workflow = Workflow(**data.model_dump())
+    workflow = Workflow(**data.model_dump(exclude={"after"}))
+    _set_after_or_422(db, workflow, data.after)
     _schedulable_or_422(workflow)
     return save(db, workflow)
+
+
+def _set_after_or_422(db: Session, workflow: Workflow, after: list[int] | None) -> None:
+    """Check and store what the workflow runs after. None leaves the links as
+    they are but still checks them against the row: a schedule added to a
+    chained workflow is refused, not quietly kept beside the chain."""
+    ids = workflow.after if after is None else after
+    try:
+        # No autoflush: the row may carry a pending rename that clashes, which
+        # save() reports as a 409 rather than this check as a 500.
+        with db.no_autoflush:
+            ids = chaining.check_upstreams(db, workflow.id, workflow.name, ids, workflow.schedule_cron)
+    except chaining.ChainError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc)) from None
+    if after is not None:
+        chaining.set_upstreams(workflow, ids)
 
 
 def _schedulable_or_422(workflow: Workflow) -> None:
@@ -118,7 +138,10 @@ def update_workflow(object_id: int, data: WorkflowIn, db: Session = Depends(get_
     ensure_environment_ready(db, data.default_environment_id)
     workflow = get_or_404(db, Workflow, object_id)
     was_enabled, was_watched = workflow.enabled, workflow.missed_run_grace_minutes
-    workflow = apply_update(workflow, data.model_dump(exclude_unset=True))
+    changes = data.model_dump(exclude_unset=True)
+    after = changes.pop("after", None)
+    workflow = apply_update(workflow, changes)
+    _set_after_or_422(db, workflow, after)
     if workflow.enabled and not was_enabled:
         mark_enabled(workflow)
     # A workflow nobody watches any more has nothing to be "still missing".
@@ -163,8 +186,20 @@ def test_notification(object_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/workflows/{object_id}", status_code=204)
 def delete_workflow(object_id: int, db: Session = Depends(get_db)):
-    db.delete(get_or_404(db, Workflow, object_id)); db.commit()
+    workflow = get_or_404(db, Workflow, object_id)
+    # Workflows that ran after this one simply stop starting on their own.
+    # The foreign key cascades this too; said here so it never rests on a
+    # SQLite connection having foreign keys switched on.
+    db.execute(delete(WorkflowUpstream).where(WorkflowUpstream.upstream_id == object_id))
+    db.delete(workflow); db.commit()
     return Response(status_code=204)
+
+
+@router.get("/workflows/{object_id}/chain")
+def workflow_chain(object_id: int, db: Session = Depends(get_db)):
+    """What this workflow runs after (each with its last result, and whether it
+    has succeeded since this one last started) and what runs after it."""
+    return chaining.chain_view(db, get_or_404(db, Workflow, object_id))
 
 
 @router.post("/workflows/{object_id}/run", response_model=WorkflowRunOut, status_code=201)

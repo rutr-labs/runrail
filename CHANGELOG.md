@@ -6,6 +6,30 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
 
 ## [Unreleased]
 
+### Added
+- **Run a workflow after other workflows.** Under **Starts**, a workflow can
+  now run *after other workflows* instead of on a schedule (or `after:` in
+  YAML, by name). It starts once every workflow it runs after has succeeded
+  since it last started: after each success of a single upstream, or once all
+  of several have succeeded. While a run of it is queued, further upstream
+  successes add nothing, so a fast upstream never piles up runs behind a slow
+  downstream. A failure starts nothing. A schedule and a chain are one or the
+  other, and loops are refused when saving. Chained runs show the run that
+  started them ("after ingest-sales #812"), the workflow page shows each
+  upstream's last result and what runs next, and the runs list can filter on
+  the new `after` trigger. One migration adds a table and a nullable column.
+
+### Fixed
+- **Notebooks on Windows no longer run their kernel over plain-text TCP.**
+  Every notebook run there printed ipykernel's "Kernel is running over TCP
+  without encryption" warning, and meant it: ZeroMQ has no IPC sockets on
+  Windows, so the kernel's channels were open on loopback to any local
+  process. The kernel manager now gives each kernel CurveZMQ keys, which
+  encrypts the channels and ends the warning. Managed environments now
+  install `jupyter_client>=8.10`, the first that can do this; an environment
+  built before this picks it up the next time its packages are saved. macOS
+  and Linux already used IPC sockets and are unchanged.
+
 ### Security
 - **RunRail answers only to the host names it expects.** A request must name
   a loopback address, an IP address, the host in `RUNRAIL_PUBLIC_URL`, or one
@@ -28,18 +52,6 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
   it.
 - `runrail serve` and `runrail api` print a warning when listening on an
   address other than 127.0.0.1.
-
-
-### Fixed
-- **Notebooks on Windows no longer run their kernel over plain-text TCP.**
-  Every notebook run there printed ipykernel's "Kernel is running over TCP
-  without encryption" warning, and meant it: ZeroMQ has no IPC sockets on
-  Windows, so the kernel's channels were open on loopback to any local
-  process. The kernel manager now gives each kernel CurveZMQ keys, which
-  encrypts the channels and ends the warning. Managed environments now
-  install `jupyter_client>=8.10`, the first that can do this; an environment
-  built before this picks it up the next time its packages are saved. macOS
-  and Linux already used IPC sockets and are unchanged.
 
 ## [0.8.2] — 2026-10-20
 

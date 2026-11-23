@@ -149,6 +149,24 @@ run_parameters:
   - {name: dry_run, type: bool, default: false}
 ```
 
+## One workflow after another
+
+A workflow starts in one of three ways: on a schedule, after other workflows, or only when you run it. Pick **After other workflows** under **Starts** and tick the ones it follows:
+
+```yaml
+- name: transform
+  after: [ingest-sales, ingest-crm]
+```
+
+The rule is one sentence: **once every workflow it runs after has succeeded since it last started, it starts.** With one upstream that is "each time it succeeds". With several it waits for all of them, so it never runs on inputs only half refreshed.
+
+- **One run waits, never a pile.** If an upstream succeeds again while the downstream is still running, one run is queued and the rest add nothing. Built for pipelines that keep their own place (a tracking table, "everything since the last success"): the queued run picks up whatever is new.
+- **A failure starts nothing.** The upstream's own alert covers it, and the downstream's page says what it is waiting for: "Waiting for ingest-crm (its last run failed)".
+- **Any success counts**: scheduled, by hand, resumed or backfilled. Fix an upstream by hand and what follows it runs.
+- **No gaps to guess.** Instead of scheduling the transform for 02:30 because ingest is usually done by then, it starts the moment ingest finishes, and never while ingest is still writing.
+
+It is a schedule *or* a chain, never both, and loops are refused when you save. A chained run says which run started it ("after ingest-sales #812"), the workflow page shows each upstream's last result and what runs next, and `export` / `apply` carry `after` by name. Like a schedule, a chained workflow that is switched off or snoozed with "pause runs" does not start, and a run that starts on its own needs a default for every required parameter in its run form.
+
 ## What changed since the last good run
 
 A failed run opens with a **What changed** panel, comparing it with the last run of the same workflow that succeeded. Any finished run can be compared with any earlier one. It shows only what differs:
