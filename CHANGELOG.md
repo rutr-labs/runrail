@@ -43,6 +43,16 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
   WebSockets now apply the same origin check as the rest of the API.
 - `docker compose` publishes port 8080 on 127.0.0.1 only. RunRail has no
   accounts, so expose it more widely only behind a proxy that handles sign-in.
+- The API answers a read only to RunRail's own pages and to tools such as
+  curl and the CLI, not to another website's scripts. Report links opened
+  from a wiki or a chat work as before.
+- RunRail's pages ask browsers not to let other sites frame them.
+- Webhook URLs must be `http://` or `https://`, both when saved and when sent.
+- On macOS and Linux, RunRail's log, artifact, environment and backup
+  folders and its SQLite database are now readable only by the user who runs
+  it.
+- `runrail serve` and `runrail api` print a warning when listening on an
+  address other than 127.0.0.1.
 
 ## [0.8.2] — 2026-10-20
 

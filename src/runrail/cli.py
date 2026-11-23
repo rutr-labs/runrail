@@ -192,9 +192,22 @@ def _offer_first_run_import() -> None:
 
 
 @app.command()
+def _warn_if_exposed(host: str) -> None:
+    """RunRail has no accounts: whoever can reach it can run commands. Say so
+    when it is about to listen beyond this machine."""
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return
+    typer.secho(
+        f"Warning: RunRail is listening on {host}, so anyone who can reach this machine on that "
+        "address can run commands with your permissions. RunRail has no sign-in; to reach it from "
+        "elsewhere, keep it on 127.0.0.1 and put a reverse proxy that handles sign-in in front.",
+        fg=typer.colors.YELLOW, err=True)
+
+
 def api(host: str | None = None, port: int | None = None) -> None:
     """Start the API and bundled web UI only."""
     init_db(); settings = get_settings()
+    _warn_if_exposed(host or settings.host)
     uvicorn.run("runrail.api.app:app", host=host or settings.host, port=port or settings.port)
 
 
@@ -281,6 +294,7 @@ def serve(host: str | None = None, port: int | None = None) -> None:
     """Start API, UI, scheduler, and local worker together."""
     _offer_first_run_import()
     init_db(); settings = get_settings()
+    _warn_if_exposed(host or settings.host)
     worker_service = WorkerService(); scheduler_service = SchedulerService()
     thread = threading.Thread(target=worker_service.run, kwargs={"install_signals": False},
                               name="runrail-worker", daemon=True)

@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from pydantic import (
@@ -33,6 +34,18 @@ def _as_utc(value: datetime) -> datetime:
 
 UTCDateTime = Annotated[datetime, AfterValidator(_as_utc)]
 
+
+
+def webhook_url(value: str | None) -> str | None:
+    """A webhook must be an http(s) URL with a host. Anything else (file://,
+    ftp://, a bare path) would have RunRail open it on every alert."""
+    if value is None or not value.strip():
+        return None
+    value = value.strip()
+    parts = urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("must be an http(s) URL with a host")
+    return value
 
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -136,6 +149,11 @@ class WorkflowIn(BaseModel):
     @classmethod
     def _valid_run_form(cls, value: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         return check_definitions(value)
+
+    @field_validator("notify_webhook_url")
+    @classmethod
+    def _webhook_is_http(cls, value: str | None) -> str | None:
+        return webhook_url(value)
 
     @field_validator("lock_resource")
     @classmethod
@@ -371,6 +389,11 @@ class ServiceIn(BaseModel):
     lock_resource: str | None = Field(default=None, max_length=255)
     lock_mode: LockMode = LockMode.exclusive
     notify_webhook_url: str | None = None
+
+    @field_validator("notify_webhook_url")
+    @classmethod
+    def _webhook_is_http(cls, value: str | None) -> str | None:
+        return webhook_url(value)
 
     @field_validator("command")
     @classmethod

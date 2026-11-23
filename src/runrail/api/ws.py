@@ -97,9 +97,14 @@ class WebSocketManager:
 
     def _write_forever(self) -> None:
         import time
+        flushes = 0
         while True:
             time.sleep(FLUSH_SECONDS)
             self.flush()
+            flushes += 1
+            # A worker with no API running beside it would otherwise only add.
+            if flushes % 480 == 0:   # about every two minutes
+                _prune_events()
 
     def flush(self) -> int:
         """Write everything queued, in one transaction. Returns how many."""
