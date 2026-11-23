@@ -29,6 +29,18 @@ Until 1.0, a version reads as follows. The last number (0.8.**2**) moves for any
 - `runrail serve` and `runrail api` print a warning when listening on an
   address other than 127.0.0.1.
 
+
+### Fixed
+- **Notebooks on Windows no longer run their kernel over plain-text TCP.**
+  Every notebook run there printed ipykernel's "Kernel is running over TCP
+  without encryption" warning, and meant it: ZeroMQ has no IPC sockets on
+  Windows, so the kernel's channels were open on loopback to any local
+  process. The kernel manager now gives each kernel CurveZMQ keys, which
+  encrypts the channels and ends the warning. Managed environments now
+  install `jupyter_client>=8.10`, the first that can do this; an environment
+  built before this picks it up the next time its packages are saved. macOS
+  and Linux already used IPC sockets and are unchanged.
+
 ## [0.8.2] — 2026-10-20
 
 Secrets, run forms, and a comparison with the last good run. Everything here

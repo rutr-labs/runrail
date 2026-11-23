@@ -26,7 +26,9 @@ from runrail.models import (
 )
 
 _LOG_LIMIT = 100_000
-_RUNTIME_PACKAGES = ("papermill>=2.6,<3", "ipykernel>=6,<8")
+# jupyter_client 8.10 is the first that can encrypt a kernel's TCP channels,
+# which is how notebooks run on Windows; see worker/nbexec.py.
+_RUNTIME_PACKAGES = ("papermill>=2.6,<3", "ipykernel>=6,<8", "jupyter_client>=8.10,<9")
 
 
 def managed_environment_path(environment: Environment) -> Path:

@@ -1,14 +1,23 @@
 """Notebook launcher handed to the TASK environment's interpreter by path.
 
-Replaces `python -m papermill` so the Jupyter kernel talks over IPC (Unix
-domain sockets, protected by file permissions) instead of loopback TCP.
-ipykernel >= 6.30 warns that TCP kernel channels are unencrypted; on a
-shared machine they are also connectable by any local process that guesses
-the port, while IPC sockets are not. ZeroMQ has no ipc:// transport on
-Windows, so TCP-on-loopback remains the fallback there.
+Replaces `python -m papermill` so the Jupyter kernel's channels are not open
+plain text on loopback TCP. ipykernel warns when they are ("Kernel is running
+over TCP without encryption"), and on a shared machine any local process that
+guesses the port can connect to them.
 
-Self-contained on purpose: the task environment only guarantees papermill
-and ipykernel (see environments._RUNTIME_PACKAGES) — never runrail itself.
+- macOS and Linux: IPC (Unix domain sockets, protected by file permissions).
+- Windows, where ZeroMQ has no ipc:// transport: TCP, encrypted with CurveZMQ
+  keys the kernel manager provisions for each kernel (jupyter_client >= 8.10,
+  a kernel that declares support, and a libzmq built with CURVE). Without all
+  three the channels stay plain TCP and the kernel's warning stays, which is
+  then the truth.
+
+RUNRAIL_KERNEL_TRANSPORT=tcp forces the TCP path anywhere, for a filesystem
+where Unix sockets misbehave, and so that path can be tested off Windows.
+
+Self-contained on purpose: the task environment only guarantees papermill,
+ipykernel and jupyter_client (see environments._RUNTIME_PACKAGES) — never
+runrail itself.
 """
 
 import os
@@ -25,6 +34,28 @@ sys.path[:] = [p for p in sys.path
 import argparse  # noqa: E402
 
 
+def _secure_kernel_channels() -> None:
+    """Choose the kernel's transport, and encrypt it when it has to be TCP.
+
+    papermill's CLI and API expose neither knob, so the trait defaults are set
+    before any KernelManager exists; nbclient's AsyncKernelManager inherits
+    them."""
+    from jupyter_client import KernelManager
+
+    transport = os.environ.get("RUNRAIL_KERNEL_TRANSPORT") or ("tcp" if os.name == "nt" else "ipc")
+    KernelManager.transport.default_value = transport
+    if transport != "tcp":
+        return
+    # "auto" provisions CurveZMQ keys only for a kernel whose kernelspec says
+    # it supports them (ipykernel 7 does), so another kernel still starts.
+    encryption = KernelManager.class_traits().get("transport_encryption")
+    if encryption is None:
+        return  # jupyter_client < 8.10: no manager-side encryption to ask for
+    import zmq
+    if zmq.has("curve"):
+        encryption.default_value = "auto"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Execute a notebook via papermill")
     parser.add_argument("input_path")
@@ -34,11 +65,7 @@ def main() -> int:
                         default=[], metavar=("KEY", "VALUE"))
     args = parser.parse_args()
 
-    if os.name != "nt":
-        # papermill's CLI/API exposes no kernel-transport knob, so flip the
-        # trait default before any KernelManager is instantiated.
-        from jupyter_client import KernelManager
-        KernelManager.transport.default_value = "ipc"
+    _secure_kernel_channels()
 
     import papermill
 
