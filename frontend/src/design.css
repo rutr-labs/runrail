@@ -1106,6 +1106,62 @@ a.pipe-end:hover { background: var(--bg-hover); border-color: var(--text-2); }
 .gaps-fold .schedule-gaps { margin: 0; border: 0; border-radius: 0; box-shadow: none; background: none; }
 .run-shape-pick + * .pipe-scroll, .panel > .pipe-scroll { border-radius: 0 0 var(--r-xl) var(--r-xl); }
 
+/* ─── Run page: the console ───────────────────────────────
+   Under the drawing, one place to read output: the tasks down the left, the
+   chosen task's attempts and log on the right. */
+.run-panel { margin-bottom: 20px; }
+.console { display: grid; grid-template-columns: 264px minmax(0, 1fr); border-top: 1px solid var(--hairline); }
+.console-tasks { display: flex; flex-direction: column; padding: 10px; border-right: 1px solid var(--hairline); min-width: 0; }
+.console-task {
+  --tone: rgba(var(--ink), 0.3);
+  position: relative;
+  display: grid; grid-template-columns: 7px minmax(0, 1fr) auto auto; align-items: center; gap: 0 10px;
+  padding: 9px 12px 12px;
+  border: 0; border-radius: 12px; background: none;
+  text-align: left; color: var(--text-2);
+}
+.console-task:hover { background: var(--bg-hover); color: var(--text-1); }
+.console-task.is-selected { background: rgba(var(--ink), 0.085); color: var(--text-1); }
+.console-task.is-success, .console-task.is-approved { --tone: var(--success); }
+.console-task.is-failed, .console-task.is-rejected { --tone: var(--danger); color: var(--text-1); }
+.console-task.is-running { --tone: var(--running); color: var(--text-1); }
+.console-task.is-awaiting_approval { --tone: var(--warning); color: var(--text-1); }
+.console-task.is-idle { opacity: 0.6; }
+.console-task.is-running .pipe-lamp, .console-task.is-awaiting_approval .pipe-lamp { --lamp: var(--tone); animation: lamp-beat 1.8s ease-in-out infinite; }
+.console-task-name { min-width: 0; font-size: 13.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console-task small { font-family: var(--font-mono); font-size: 11px; color: var(--warning-ink); }
+.console-task-dur { font-family: var(--font-mono); font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-3); white-space: nowrap; }
+.console-task.is-failed .console-task-dur { color: var(--danger-ink); }
+.console-task-bar { position: absolute; left: 29px; right: 12px; bottom: 5px; height: 2px; border-radius: 1px; background: rgba(var(--ink), 0.07); overflow: hidden; }
+.console-task-bar b { display: block; height: 100%; border-radius: inherit; background: var(--tone); opacity: 0.8; }
+
+.console-out { min-width: 0; }
+.console-out .run-task { border: 0; border-radius: 0; background: none; box-shadow: none; margin: 0; }
+.console-out .run-task-head { padding: 18px 22px 12px; }
+.console-out .run-task-head.is-fixed { cursor: default; background: none; }
+.console-out .run-task-head h3 { font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: -0.025em; }
+.console-out .task-order { display: none; }
+.console-out .log-area { padding: 0 22px 22px; }
+.console-out .log-viewer { border-radius: var(--r-md); }
+.console-out .log-content { min-height: 200px; max-height: min(64vh, 680px); }
+.console-out .attempt-empty, .console-empty { padding: 26px 22px 30px; font-size: 13.5px; color: var(--text-3); }
+.console-empty b { color: var(--text-1); font-weight: 600; }
+@media (max-width: 900px) {
+  .console { grid-template-columns: minmax(0, 1fr); }
+  .console-tasks { flex-direction: row; gap: 4px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--hairline); scrollbar-width: none; }
+  .console-task { flex: none; grid-template-columns: 7px auto auto auto; max-width: 240px; }
+  .console-out .run-task-head, .console-out .log-area { padding-inline: 16px; }
+}
+
+/* This run among the workflow's other runs. */
+.run-neighbours { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin-top: 20px; }
+.run-neighbours small { margin-left: 6px; font-size: 12px; color: var(--text-3); }
+.run-step { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--border); color: var(--text-2); }
+a.run-step:hover { background: var(--bg-hover); color: var(--text-1); border-color: var(--border-strong); }
+.run-step.is-off { opacity: 0.35; }
+.run-neighbours .tick { height: 22px; }
+.run-neighbours .tick.is-here { height: 30px; box-shadow: 0 0 0 2px var(--bg-base), 0 0 0 3.5px var(--text-1); }
+
 /* ─── Run history (workflow page) ─────────────────────── */
 .detail-pair { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px; align-items: stretch; }
 .detail-pair > .panel { margin-bottom: 20px; }

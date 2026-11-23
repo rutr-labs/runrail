@@ -1352,6 +1352,55 @@ function Runs() {
   );
 }
 
+/** On a phone the console's task list is one scrolling row; this keeps the
+ *  chosen task in view. It moves only the row, never the page, and only when
+ *  the choice changes — it is a stable ref callback, so React calls it when
+ *  the element it is attached to changes, not on every render. */
+function centreInRow(el: HTMLElement | null) {
+  const row = el?.parentElement;
+  if (!el || !row || row.scrollWidth <= row.clientWidth) return;
+  row.scrollLeft = el.offsetLeft - (row.clientWidth - el.offsetWidth) / 2;
+}
+
+/** This run among the workflow's other runs: a strip of them, oldest on the
+ *  left, with this one marked. It answers "is this new?" before anyone asks —
+ *  a failure after twenty successes reads differently from the fifth in a row
+ *  — and steps to the run before or after without a trip to the list. */
+function RunNeighbours({ run }: { run: Run }) {
+  const [siblings, setSiblings] = useState<Run[]>([]);
+  useEffect(() => {
+    let stale = false;
+    api<Run[]>(`/runs?workflow_id=${run.workflow_id}&limit=80`)
+      .then(list => { if (!stale) setSiblings(list); }).catch(() => {});
+    return () => { stale = true; };
+  }, [run.workflow_id, run.id, run.status]);
+  const at = siblings.findIndex(r => r.id === run.id);
+  if (at < 0 || siblings.length < 2) return null;
+  // Newest first on the wire. Show up to 8 newer and 19 older, drawn oldest first.
+  const strip = siblings.slice(Math.max(0, at - 8), at + 20).reverse();
+  const newer = siblings[at - 1];
+  const older = siblings[at + 1];
+  const say = (r: Run) => `#${r.id} · ${r.status.replace(/_/g, ' ')} · ${timeAgo(r.started_at || r.created_at)}`;
+  return (
+    <div className="run-neighbours">
+      {older
+        ? <Link className="run-step" to={`/runs/${older.id}`} title={`Older run — ${say(older)}`} aria-label={`Older run ${older.id}`}><ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} /></Link>
+        : <span className="run-step is-off" aria-hidden="true"><ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} /></span>}
+      <span className="flow-history">
+        {strip.map(r => (
+          <Link key={r.id} to={`/runs/${r.id}`} className={clsx('tick', `is-${r.status}`, r.id === run.id && 'is-here')}
+                title={r.id === run.id ? `This run — ${say(r)}` : say(r)} aria-label={`Run ${r.id}, ${r.status.replace(/_/g, ' ')}`}
+                aria-current={r.id === run.id ? 'true' : undefined} />
+        ))}
+      </span>
+      {newer
+        ? <Link className="run-step" to={`/runs/${newer.id}`} title={`Newer run — ${say(newer)}`} aria-label={`Newer run ${newer.id}`}><ChevronRight size={14} /></Link>
+        : <span className="run-step is-off" aria-hidden="true"><ChevronRight size={14} /></span>}
+      <small>{at === 0 ? 'the latest run' : `${at} newer`} · {siblings.length - at - 1}{siblings.length >= 80 ? '+' : ''} older</small>
+    </div>
+  );
+}
+
 /** The link above a detail page's title. Arrived from inside the app, it goes
  *  back to exactly where you were — the timetable, a filtered list, another
  *  run — rather than to the top of a list you may never have been on. Opened
@@ -1374,15 +1423,15 @@ function BackLink({ to, label }: { to: string; label: string }) {
 
 /** A run's verdict as a sentence: what happened, how long it took, how long
  *  ago. The run page leads with it. */
-function runSentence(run: Run, now: number): string {
+function runSentence(run: Run, now: number, task?: string): string {
   const took = liveDuration(run, now);
   const ended = timeAgo(run.finished_at || run.started_at || run.created_at, now);
   switch (run.status) {
     case 'success': return `Succeeded in ${took} · ${ended}`;
-    case 'failed': return `Failed after ${took} · ${ended}`;
-    case 'running': return `Running for ${took}`;
+    case 'failed': return task ? `Failed at ${task} after ${took} · ${ended}` : `Failed after ${took} · ${ended}`;
+    case 'running': return task ? `Running ${task} · ${took} so far` : `Running for ${took}`;
     case 'queued': return `Queued ${timeAgo(run.created_at, now)}`;
-    case 'waiting_approval': return 'Waiting for your approval';
+    case 'waiting_approval': return task ? `Waiting for your approval at ${task}` : 'Waiting for your approval';
     case 'cancelled': return `Cancelled ${ended}`;
     default: return run.status.replace(/_/g, ' ');
   }
@@ -1600,7 +1649,10 @@ function RunDetail() {
   const [shareOpen, setShareOpen] = useState(false);
   // Graph and Timeline answer the same question — the shape of the run — so
   // they share one panel instead of stacking two.
-  const [shape, setShape] = useState<'graph' | 'timeline'>('timeline');
+  const [shape, setShape] = useState<'graph' | 'timeline'>('graph');
+  // The task the console shows when someone has chosen one; otherwise it
+  // follows the run (see `focus`).
+  const [pickedTask, setPickedTask] = useState<string | null>(null);
   const navTo = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
@@ -1616,7 +1668,7 @@ function RunDetail() {
   };
 
   const refresh = () => { void api<Run>(`/runs/${id}`).then(setRun).catch(() => {}); };
-  useEffect(() => { setRun(undefined); refresh(); }, [id]);
+  useEffect(() => { setRun(undefined); setPickedTask(null); refresh(); }, [id]);
   useEffect(() => {
     if (run && !flow) {
       api<Workflow>(`/workflows/${run.workflow_id}`).then(setFlow).catch(() => {});
@@ -1657,6 +1709,24 @@ function RunDetail() {
     hasTimeline && (shape === 'timeline' || !hasGraph) ? 'timeline' : 'graph';
   const hasNotebook = flowTasks.some(t => t.task_type === 'notebook');
   const openTaskAnchor = hash.startsWith('#task-') ? decodeURIComponent(hash.slice(6)) : null;
+  // One row per task: every task the workflow has, in the order it runs them,
+  // with this run's attempts where there are any. A task the run never
+  // reached is still a row, so the list is the whole pipeline.
+  const groups = groupAttempts(run.task_runs ?? []);
+  const lastOf = (g: AttemptGroup<TaskRun>) => g.attempts[g.attempts.length - 1] ?? g.gates[g.gates.length - 1];
+  const names = [...new Set([...topologicallyOrdered(flowTasks).map(task => task.name), ...groups.map(g => g.name)])];
+  const rows = names.map(name => {
+    const group = groups.find(g => g.name === name);
+    return { name, group, last: group ? lastOf(group) : undefined, attempts: group?.attempts.length ?? 0 };
+  });
+  const longestTask = Math.max(1, ...rows.map(r => r.last?.duration_seconds ?? 0));
+  // The task worth reading first: the one that failed, else the one in
+  // flight or waiting on a person, else the last one that ran.
+  const withStatus = (status: string) => rows.find(r => r.last?.status === status);
+  const focus = withStatus('failed') ?? withStatus('running') ?? withStatus('awaiting_approval')
+    ?? [...rows].reverse().find(r => r.attempts > 0) ?? rows[0];
+  const shown = rows.find(r => r.name === (pickedTask ?? openTaskAnchor)) ?? focus;
+  const shownName = shown?.name ?? null;
   return (
     <>
       <header className={`hero-head is-${run.status}`}>
@@ -1674,7 +1744,8 @@ function RunDetail() {
         </h1>
         {/* The run's own verdict, in a sentence: what happened, how long it
             took, how long ago. */}
-        <p className="hero-status"><i aria-hidden="true" />{runSentence(run, now)}</p>
+        <p className="hero-status"><i aria-hidden="true" />{runSentence(run, now, focus?.last ? focus.name : undefined)}</p>
+        <RunNeighbours run={run} />
         <div className="detail-actions">
           <CancelRunButton run={run} onDone={refresh} size="md" />
           {/* Renders nothing unless the run is failed or cancelled. Resume is
@@ -1705,53 +1776,93 @@ function RunDetail() {
           Renders nothing when no gate is open, so it needs no status guard. */}
       <ApprovalGate run={run} tasks={flowTasks} onDecided={refresh} />
 
-      <div className="detail-cols">
-      <div className="detail-main">
-      {(hasGraph || hasTimeline) && (
-        <div className="panel" style={{ marginBottom: 20 }}>
-          <div className="panel-head">
-            <div>
-              <h2>Run shape</h2>
-              <p>{view === 'graph'
-                ? 'Live task statuses across the dependency graph'
-                : 'Overlapping bars ran in parallel; multiple bars on a lane are retry attempts'}</p>
-            </div>
-            {hasGraph && hasTimeline && (
-              <div className="segmented slim run-shape-pick" role="group" aria-label="Run shape view">
-                {(['timeline', 'graph'] as const).map(mode => (
-                  <button key={mode} type="button" className={view === mode ? 'active' : ''}
-                          aria-pressed={view === mode} onClick={() => setShape(mode)}>
-                    {mode}
-                  </button>
-                ))}
-              </div>
-            )}
+      {/* The run itself: its pipeline (or its timeline) on top, and under it
+          one console. The drawing and the task list both choose what the
+          console shows, and it opens on the task that matters — the one that
+          failed, else the one running — so "what happened?" is answered
+          without scrolling through every task's output to find it. */}
+      <section className="panel run-panel">
+        <div className="panel-head">
+          <div>
+            <h2>{view === 'graph' ? 'Pipeline' : 'Timeline'}</h2>
+            <p>{view === 'graph'
+              ? 'Lit by this run. Select a task to read its output.'
+              : 'Overlapping bars ran in parallel; several bars on a line are retries.'}</p>
           </div>
-          {view === 'graph' ? (
-            <Pipeline
-              tasks={flowTasks.map(t => ({
-                name: t.name, task_type: t.task_type, depends_on: t.depends_on_json || [],
-                detail: t.command || t.script_path || t.notebook_path || t.sql_path,
-                gate: Boolean(t.requires_approval),
-              }))}
-              statuses={Object.fromEntries(
-                [...(run.task_runs ?? [])]
-                  .sort((a, b) => a.attempt - b.attempt)
-                  .map(t => [t.task_name ?? '', t.status])
-              )}
-              durations={Object.fromEntries(
-                [...(run.task_runs ?? [])]
-                  .sort((a, b) => a.attempt - b.attempt)
-                  .map(t => [t.task_name ?? '', t.duration_seconds])
-              )}
-              onSelect={name => document.getElementById(`task-${name}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-            />
-          ) : (
-            <TaskTimeline taskRuns={run.task_runs ?? []} runStart={run.started_at || run.created_at} now={now} />
+          {hasGraph && hasTimeline && (
+            <div className="segmented slim run-shape-pick" role="group" aria-label="Run shape view">
+              {(['graph', 'timeline'] as const).map(mode => (
+                <button key={mode} type="button" className={view === mode ? 'active' : ''}
+                        aria-pressed={view === mode} onClick={() => setShape(mode)}>
+                  {mode === 'graph' ? 'pipeline' : mode}
+                </button>
+              ))}
+            </div>
           )}
         </div>
-      )}
+        {view === 'graph' && flowTasks.length > 0 ? (
+          <Pipeline
+            tasks={topologicallyOrdered(flowTasks).map(t => ({
+              name: t.name, task_type: t.task_type, depends_on: t.depends_on_json || [],
+              detail: t.command || t.script_path || t.notebook_path || t.sql_path,
+              gate: Boolean(t.requires_approval),
+            }))}
+            statuses={Object.fromEntries(rows.filter(r => r.last).map(r => [r.name, r.last!.status]))}
+            durations={Object.fromEntries(rows.filter(r => r.last).map(r => [r.name, r.last!.duration_seconds]))}
+            selected={shownName}
+            onSelect={setPickedTask}
+          />
+        ) : hasTimeline ? (
+          <TaskTimeline taskRuns={run.task_runs ?? []} runStart={run.started_at || run.created_at} now={now} />
+        ) : null}
 
+        <div className="console">
+          {rows.length > 0 && (
+            <nav className="console-tasks" aria-label="Tasks in this run">
+              {rows.map(row => {
+                const seconds = row.last?.duration_seconds
+                  ?? (row.last?.status === 'running' && row.last.started_at ? (now - new Date(row.last.started_at).getTime()) / 1000 : null);
+                return (
+                  <button key={row.name} type="button" aria-pressed={row.name === shownName}
+                          ref={row.name === shownName ? centreInRow : undefined}
+                          className={clsx('console-task', `is-${row.last?.status ?? 'idle'}`, row.name === shownName && 'is-selected')}
+                          onClick={() => setPickedTask(row.name)}>
+                    <i className="pipe-lamp" aria-hidden="true" />
+                    <span className="console-task-name" title={row.name}>{row.name}</span>
+                    {row.attempts > 1 && <small title={`${row.attempts} attempts`}>{row.attempts}×</small>}
+                    <span className="console-task-dur">
+                      {seconds != null ? formatDuration(seconds) : row.last ? row.last.status.replace(/_/g, ' ') : 'not reached'}
+                    </span>
+                    {/* Each task's share of the longest one: where the time went. */}
+                    <span className="console-task-bar" aria-hidden="true">
+                      <b style={{ width: `${seconds != null ? Math.max(3, (seconds / longestTask) * 100) : 0}%` }} />
+                    </span>
+                  </button>
+                );
+              })}
+            </nav>
+          )}
+          <div className="console-out run-tasks">
+            {shown?.group ? (
+              <TaskRunCard key={shown.group.key} group={shown.group} index={rows.indexOf(shown) + 1} console
+                           trend={trends.byTaskId.get((shown.group.attempts[0] ?? shown.group.gates[0]).task_id)} />
+            ) : run.status === 'queued' ? (
+              // Nothing has started, so the useful thing to say is why not.
+              <QueueWhy run={run} flow={flow} />
+            ) : shown ? (
+              <p className="console-empty">
+                <b>{shown.name}</b> has not started in this run
+                {run.status === 'failed' || run.status === 'cancelled' ? ' — the run ended before reaching it.' : ' yet.'}
+              </p>
+            ) : (
+              <EmptyState icon={<Clock size={22} />} title="No task output" text="This run produced no task executions." />
+            )}
+          </div>
+        </div>
+      </section>
+
+      <div className="detail-cols">
+      <div className="detail-main">
       {/* "What is different from last time?" — the first question about a
           failed run, so it opens there; any finished run can ask it. */}
       {!LIVE(run.status) && (
@@ -1764,23 +1875,6 @@ function RunDetail() {
           the panel deliberately does not re-probe on the 2s live tick. */}
       <ReportPanel key={run.status} runId={run.id} runStatus={run.status}
                    liveTaskRuns={(run.task_runs ?? []).filter(t => t.task_type === 'notebook')} />
-
-      <div className="panel" style={{ marginBottom: 20 }}>
-        <div className="panel-head">
-          <div><h2>Task runs</h2><p>Commands, attempts, and captured output</p></div>
-        </div>
-        <div className="run-tasks">
-          {run.task_runs && run.task_runs.length > 0
-            ? groupAttempts(run.task_runs).map((group, i) => (
-                <TaskRunCard key={group.key} group={group} index={i + 1}
-                             trend={trends.byTaskId.get((group.attempts[0] ?? group.gates[0]).task_id)}
-                             openByDefault={openTaskAnchor != null && openTaskAnchor === group.name} />
-              ))
-            : run.status === 'queued'
-            ? <QueueWhy run={run} flow={flow} />
-            : <EmptyState icon={<Clock size={22} />} title="No task output" text="This run produced no task executions." />}
-        </div>
-      </div>
 
       <RunNotes runId={run.id} initialNotes={run.notes} onChanged={refresh} />
       </div>
@@ -1996,8 +2090,10 @@ const NO_LOGS = new Set([
   'skipped', 'cancelled', 'awaiting_approval', 'approved', 'rejected',
 ]);
 
-function TaskRunCard({ group, index, trend, openByDefault }: {
+function TaskRunCard({ group, index, trend, openByDefault, console: fixed = false }: {
   group: AttemptGroup<TaskRun>; index: number; trend?: TaskDurationSeries; openByDefault?: boolean;
+  /** The run page's console shows one task at a time, always open. */
+  console?: boolean;
 }) {
   /* One card per task. A retried task used to get a card per attempt, each
      headed with the same name, which read as the task running twice; the
@@ -2026,7 +2122,7 @@ function TaskRunCard({ group, index, trend, openByDefault }: {
 
   return (
     <article className="run-task" id={`task-${group.name}`}>
-      <button className="run-task-head" onClick={() => collapsible && setOpen(!open)}>
+      <button className={clsx('run-task-head', fixed && 'is-fixed')} onClick={() => !fixed && collapsible && setOpen(!open)}>
         <span className="task-order">{index}</span>
         <div>
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -2040,12 +2136,12 @@ function TaskRunCard({ group, index, trend, openByDefault }: {
         </div>
         {/* What the task ended as, whichever attempt is being looked at. */}
         <StatusBadge value={final.status} />
-        {collapsible && <b>{open ? '⌃' : '⌄'}</b>}
+        {collapsible && !fixed && <b>{open ? '⌃' : '⌄'}</b>}
       </button>
       {gateNote && group.attempts.length > 0 && (
         <div className="run-task-gate">Approval · {gateNote}</div>
       )}
-      {open && collapsible && (
+      {(open || fixed) && collapsible && (
         <div className="log-area">
           {many && (
             <div className="attempt-switch" role="group" aria-label={`${group.name} attempts`}>
@@ -2070,6 +2166,9 @@ function TaskRunCard({ group, index, trend, openByDefault }: {
       )}
       {!collapsible && final.error_message && (
         <div style={{ padding: '0 20px 14px', fontSize: 12.5, color: 'var(--text-3)' }}>{final.error_message}</div>
+      )}
+      {fixed && !collapsible && !final.error_message && (
+        <div className="attempt-empty">Nothing to read here — this task was {final.status.replace(/_/g, ' ')}.</div>
       )}
     </article>
   );
