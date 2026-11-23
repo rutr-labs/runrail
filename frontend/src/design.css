@@ -391,9 +391,8 @@ a.text-link, .text-link { display: inline-flex; align-items: center; gap: 6px; f
   font-size: 19px; font-weight: 600; letter-spacing: -0.025em; line-height: 1.2;
 }
 .panel-head p, .board-title p { margin-top: 3px; font-size: 12.5px; color: var(--text-3); }
-.panel-link, .panel-more { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--text-2); }
-.panel-link:hover, .panel-more:hover { color: var(--text-1); }
-.panel-more { padding: 12px 24px 16px; }
+.panel-link { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--text-2); }
+.panel-link:hover { color: var(--text-1); }
 .empty-title, .modal-title {
   font-family: var(--font-display); font-weight: 600; letter-spacing: -0.025em;
 }
@@ -747,6 +746,20 @@ a.text-link, .text-link { display: inline-flex; align-items: center; gap: 6px; f
 @media (max-width: 1080px) { .board { --name-w: 180px; --next-w: 70px; } .board-legend { display: none; } }
 @media (max-width: 640px) { .board { --name-w: 116px; --next-w: 0px; --pad: 8px; } .lane-next, .lane-run { display: none; } }
 
+/* ─── The timeline (Runs page) ────────────────────────────
+   The timetable over any stretch of time, with its span and position above. */
+.view-pick { display: inline-flex; padding: 4px; gap: 2px; }
+.view-pick button { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px; font-size: 13px; font-weight: 550; }
+.range-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 16px; margin: 0 0 6px; }
+.range-nav { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.range-nav .dock-btn { border: 1px solid var(--border); background: var(--bg-input); }
+.range-nav .dock-btn:disabled { opacity: 0.35; cursor: default; }
+.range-label { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.range-label i { margin: 0 6px; font-style: normal; color: var(--text-3); }
+.board-mark.is-day { color: var(--text-1); font-weight: 600; }
+.lane-next em { font-style: normal; color: var(--danger-ink); }
+@media (max-width: 720px) { .range-label { font-size: 11px; } .range-bar .tabs { width: 100%; } }
+
 /* ─── Instruments ─────────────────────────────────────────
    The headline numbers, set straight on the page between two rules. */
 .instruments {
@@ -786,20 +799,81 @@ a.instrument:hover { background: var(--bg-hover); }
 @media (max-width: 640px) { .instruments { grid-template-columns: repeat(2, minmax(0, 1fr)); } .instrument { padding: 20px 16px; } .instrument-value { font-size: 34px; } }
 
 /* ─── Now: lower grid ─────────────────────────────────── */
-.now-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 388px); gap: 20px; align-items: start; }
-.now-main, .now-side { min-width: 0; }
 .now-history { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px; align-items: stretch; }
 .now-history > .panel { margin-bottom: 20px; }
 @media (max-width: 1280px) { .now-history { grid-template-columns: minmax(0, 1fr); } }
 .year-panel-body { padding: 4px 24px 22px; overflow-x: auto; }
-.failing-row { display: flex; align-items: center; gap: 13px; padding: 12px 24px; border-top: 1px solid var(--hairline); }
-.failing-row > div { flex: 1; min-width: 0; display: grid; gap: 2px; }
-.failing-row > div > a { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.failing-row span { font-size: 12px; color: var(--text-3); }
-.failing-row span a { color: var(--text-2); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
-.failing-panel .lane-signal { --sig: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 22%, transparent); }
 @media (max-width: 1180px) { .now-hero { grid-template-columns: minmax(0, 1fr); row-gap: 40px; padding: 32px 0 36px; } }
-@media (max-width: 1080px) { .now-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* ─── Now: the bands under the timetable ──────────────────
+   Each answers one question, in the order a person asks them: what needs me,
+   what is moving, how has it been going. */
+.band { margin-top: 44px; }
+.band-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 16px; }
+.band-head h2 { font-family: var(--font-display); font-size: 26px; font-weight: 600; letter-spacing: -0.03em; }
+.band-head p { font-size: 13px; color: var(--text-3); }
+.band .instruments { margin-bottom: 20px; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); }
+
+/* Needs you: one card per thing, coloured by what kind of thing it is. */
+.attn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 14px; }
+.attn-card {
+  --tone: var(--warning);
+  position: relative; overflow: hidden;
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  padding: 18px 20px 16px;
+  border: 1px solid color-mix(in srgb, var(--tone) 32%, var(--border));
+  border-radius: var(--r-lg);
+  background:
+    radial-gradient(130% 120% at 0% 0%, color-mix(in srgb, var(--tone) 12%, transparent), transparent 60%),
+    var(--bg-card);
+  box-shadow: var(--surface-shadow);
+}
+.attn-card.is-down, .attn-card.is-failing { --tone: var(--danger); }
+.attn-card.is-waiting { --tone: var(--warning); }
+.attn-kind { display: flex; align-items: center; gap: 9px; font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.09em; text-transform: uppercase; color: color-mix(in srgb, var(--tone) 80%, var(--text-1)); }
+.attn-kind i { width: 7px; height: 7px; border-radius: 50%; background: var(--tone); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone) 22%, transparent), 0 0 12px var(--tone); }
+.attn-card.is-down .attn-kind i, .attn-card.is-waiting .attn-kind i { animation: signal-beat 1.8s ease-in-out infinite; --sig: var(--tone); }
+.attn-card h3 { min-width: 0; font-family: var(--font-display); font-size: 21px; font-weight: 600; letter-spacing: -0.028em; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attn-card h3 a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.attn-line { font-size: 13px; line-height: 1.5; color: var(--text-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.attn-line b { color: var(--text-1); font-weight: 600; }
+.attn-line q { color: var(--text-1); }
+.attn-actions { display: flex; align-items: center; gap: 14px; margin-top: auto; padding-top: 6px; }
+.attn-actions .text-link { font-size: 12.5px; background: none; border: 0; padding: 0; cursor: pointer; }
+.attn-more { margin-top: 12px; background: none; border: 0; padding: 0; cursor: pointer; }
+
+/* In motion: runs in flight beside the services. */
+.motion-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.motion-grid > .panel { margin-bottom: 0; }
+@media (max-width: 1080px) { .motion-grid { grid-template-columns: minmax(0, 1fr); } }
+.flight-row, .done-row {
+  display: grid; align-items: center; gap: 16px;
+  width: 100%; padding: 12px 24px;
+  border: 0; border-top: 1px solid var(--hairline); background: none;
+  text-align: left; color: var(--text-1); cursor: pointer;
+  transition: background 0.15s;
+}
+.flight-row:hover, .done-row:hover { background: var(--bg-hover); }
+.flight-row { grid-template-columns: minmax(0, 1fr) minmax(90px, 0.8fr); }
+.flight-main { display: grid; gap: 2px; min-width: 0; }
+.flight-main b { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flight-main small { font-family: var(--font-mono); font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flight-main em { font-style: normal; color: var(--warning-ink); }
+.flight-bar { position: relative; height: 10px; border-radius: 5px; background: rgba(var(--ink), 0.07); overflow: hidden; }
+.flight-fill { position: absolute; inset: 0 auto 0 0; display: block; min-width: 24px; transition: width 1s linear; }
+.flight-fill .dot-loader { margin: 0; max-width: none; height: 100%; border-radius: 5px; }
+.flight-wait { justify-self: end; font-size: 12px; color: var(--text-3); }
+.flight-more, .flight-empty { padding: 12px 24px; border-top: 1px solid var(--hairline); font-size: 12.5px; color: var(--text-3); }
+.flight-empty { display: flex; align-items: center; gap: 8px; }
+.flight-sub { padding: 18px 24px 8px; border-top: 1px solid var(--hairline); font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-3); }
+.flight-sub + .done-row { border-top: 0; }
+.done-row { --tone: rgba(var(--ink), 0.3); grid-template-columns: 7px minmax(0, 1fr) auto 70px; gap: 12px; padding-block: 9px; }
+.done-row.is-success { --tone: var(--success); }
+.done-row.is-failed { --tone: var(--danger); }
+.done-row b { font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.done-row span { font-family: var(--font-mono); font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.done-row.is-failed span { color: var(--danger-ink); }
+.done-row small { text-align: right; font-size: 12px; color: var(--text-3); }
 
 /* ─── Run list ────────────────────────────────────────── */
 .run-row {
@@ -1182,7 +1256,7 @@ a.run-step:hover { background: var(--bg-hover); color: var(--text-1); border-col
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
 @keyframes beam-draw { from { opacity: 0; transform: scaleY(0); } }
 @media (prefers-reduced-motion: no-preference) {
-  .now-lead > *, .hero-head > *, .departures, .board-head, .instruments, .now-grid, .lane, .run-row, .flow-row:not(.flow-row--head), .detail-cols,
+  .now-lead > *, .hero-head > *, .departures, .board-head, .band, .attn-card, .lane, .run-row, .flow-row:not(.flow-row--head), .detail-cols,
   .service-card.sw-row, .list-row {
     /* backwards, not both: once landed, nothing is left holding a transform. */
     animation: rise 0.7s var(--ease-out) backwards;
@@ -1194,8 +1268,9 @@ a.run-step:hover { background: var(--bg-hover); color: var(--text-1); border-col
   .departures { animation-delay: 140ms; }
   .board-head { animation-delay: 180ms; }
   .lane { animation-duration: 0.5s; animation-delay: calc(200ms + var(--i, 0) * 22ms); }
-  .instruments { animation-delay: 360ms; }
-  .now-grid, .detail-cols { animation-delay: 180ms; }
+  .band { animation-delay: 300ms; }
+  .attn-card { animation-duration: 0.5s; animation-delay: calc(320ms + var(--i, 0) * 45ms); }
+  .detail-cols { animation-delay: 180ms; }
   .run-row, .flow-row:not(.flow-row--head), .service-card.sw-row, .list-row { animation-duration: 0.45s; animation-delay: calc(var(--i, 0) * 24ms); }
   .has-beam .now-beam { transform-origin: top; animation: beam-draw 0.9s 0.15s var(--ease-out) backwards; }
 }

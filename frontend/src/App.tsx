@@ -6,7 +6,8 @@ import {
   GitBranch, History, FolderOpen, Cpu, Package, Play, Plus, Search, ChevronRight, Server, Bell,
   Clock, Calendar, Zap, GitMerge, Activity, AlertTriangle, RefreshCw, Trash2, Pencil, ArrowLeft,
   Terminal, Download, Settings, ChevronsRight, Ban, X, SlidersHorizontal, ShieldAlert, Share2,
-  BookOpen, Lock, Sun, Moon, ArrowRight, MonitorPlay, Radio, Ellipsis, ChevronDown,
+  BookOpen, Lock, Sun, Moon, ArrowRight, MonitorPlay, Radio, Ellipsis, ChevronDown, ChevronLeft,
+  ChartGantt, List,
 } from 'lucide-react';
 import { api, del, post, put } from './api';
 import { rrws } from './ws';
@@ -21,10 +22,11 @@ import { untilLabel } from './pulseRail';
 import { countdown, laneState, upcomingFires } from './board';
 import { signalLabel, verdictLine, type Failing } from './pulseModel';
 import { PulseProvider, usePulse } from './Pulse';
+import { AttentionBand, InFlight } from './NowParts';
 import { PeekProvider, usePeek } from './components/RunPeek';
 import { LogViewer } from './components/LogViewer';
 import { useToast } from './components/toast';
-import { ApprovalGate, ApprovalInbox, useOpenApprovals } from './components/ApprovalGate';
+import { ApprovalGate, useOpenApprovals } from './components/ApprovalGate';
 import { ResumeButton } from './components/ResumeDialog';
 import { SnoozeBadge, SnoozeControl } from './components/SnoozeControl';
 import { WatchdogFields, watchdogValues } from './components/WatchdogFields';
@@ -33,6 +35,7 @@ import { ScheduleGapsPanel, useScheduleGaps, heatmapGapFeed } from './components
 import { ApprovalField, approvalValues } from './components/ApprovalField';
 import { RunRailMark } from './components/Brand';
 import { useNow, useVisibleInterval } from './hooks';
+import { useDataPoll, useLive, useLiveEvents, useSocketState } from './live';
 import { SettingsPage } from './SettingsPage';
 import {
   ServiceDetail, ServicesPage, ServicesPanel, WallboardServices, serviceCounts, useServices,
@@ -176,10 +179,11 @@ function useFlip(ref: React.RefObject<HTMLElement | null>, deps: unknown[]) {
 }
 
 
-/** Runs with live statuses keep pages fresh even when the WebSocket is unavailable
- *  (for example when the API and worker run as separate processes). */
+/** A page with runs in flight re-reads them at `intervalMs` while the socket
+ *  is down; while it is live the socket's events do that job and this steps
+ *  back to a once-a-minute safety net. See live.ts. */
 function useLiveRefresh(hasLive: boolean, refresh: () => void, intervalMs = 3000) {
-  useVisibleInterval(hasLive, refresh, intervalMs);
+  useDataPoll(hasLive, refresh, intervalMs);
 }
 
 /* ─── Shell ───────────────────────────────────────────── */
@@ -210,9 +214,11 @@ function useApiHealth(): 'online' | 'offline' | 'unknown' {
   const check = () => void api<{ status: string }>('/health')
     .then(() => setHealth('online'))
     .catch(() => setHealth('offline'));
+  // An open socket is proof the API is up; ask only when it is not.
+  const socket = useSocketState();
   useEffect(() => { check(); }, []);
-  useVisibleInterval(true, check, 30_000);
-  return health;
+  useVisibleInterval(socket !== 'live', check, 30_000);
+  return socket === 'live' ? 'online' : health;
 }
 
 function Shell() {
@@ -243,7 +249,9 @@ function ShellFrame() {
         return;
       }
       // Bare keys are shortcuts only when nobody is typing and nothing is open.
-      const el = e.target as HTMLElement | null;
+      // The target is not always an element: an event sent to the document
+      // itself has the document as its target.
+      const el = e.target instanceof Element ? e.target : null;
       if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
       if (el?.closest('input, textarea, select, [contenteditable="true"], .modal-shade, .cmdk-shade')) return;
       if (document.querySelector('.modal-shade, .cmdk-shade')) return;
@@ -869,49 +877,11 @@ function NowClock() {
   );
 }
 
-/** Workflows whose latest verdict is a failure, each with the two things a
- *  person does about it: read the run, or run it again. */
-function FailingPanel({ failing, onRetried }: { failing: Failing<Workflow, Run>[]; onRetried: () => void }) {
-  const navTo = useNavigate();
-  const { toast } = useToast();
-  const [busy, setBusy] = useState<number | null>(null);
-  const retry = async (run: Run) => {
-    setBusy(run.id);
-    try {
-      const next = await post<Run>(`/runs/${run.id}/retry`, {});
-      onRetried();
-      navTo(`/runs/${next.id}`);
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Could not retry the run', 'error');
-    } finally { setBusy(null); }
-  };
-  return (
-    <section className="panel failing-panel">
-      <div className="panel-head">
-        <div><h2>Failing</h2><p>Workflows whose latest run failed</p></div>
-      </div>
-      {failing.slice(0, 6).map(({ flow, run }) => (
-        <div key={flow.id} className="failing-row">
-          <i className="lane-signal" aria-hidden="true" />
-          <div>
-            <Link to={`/workflows/${flow.id}`} title={flow.name}>{flow.name}</Link>
-            <span>Failed {timeAgo(run.finished_at || run.started_at || run.created_at)} · <Link to={`/runs/${run.id}`}>run #{run.id}</Link></span>
-          </div>
-          <Button variant="ghost" size="sm" disabled={busy === run.id} onClick={() => retry(run)}>
-            <RefreshCw size={12} /> Retry
-          </Button>
-        </div>
-      ))}
-      {failing.length > 6 && <Link className="panel-more" to="/runs?status=failed">{failing.length - 6} more <ArrowRight size={13} /></Link>}
-    </section>
-  );
-}
-
 /* ─── Now ─────────────────────────────────────────────────
    The home screen. It answers, in this order: is everything all right, what
    should I do about it, what is moving, and what happens next. */
 function Dashboard() {
-  const { runs, flows, summary, services, serviceCount, waitingRuns, failing, mood, complete, refresh } = usePulse();
+  const { runs, flows, summary, services, serviceCount, waitingRuns, failing, mood, complete, refresh, approvals } = usePulse();
   const navTo = useNavigate();
   const { toast } = useToast();
   const failingIds = useMemo(() => new Set(failing.map(f => f.flow.id)), [failing]);
@@ -970,13 +940,13 @@ function Dashboard() {
   const state = { down: serviceCount.down, waiting: waitingRuns.length, failing: failing.length };
   const reviewApprovals = () => {
     if (waitingRuns.length === 1) { navTo(`/runs/${waitingRuns[0]}`); return; }
-    document.querySelector('.approval-inbox')?.scrollIntoView({ behavior: REDUCED_MOTION() ? 'auto' : 'smooth', block: 'center' });
+    document.querySelector('.attention')?.scrollIntoView({ behavior: REDUCED_MOTION() ? 'auto' : 'smooth', block: 'start' });
   };
   const next = mood === 'down' ? { label: 'Open services', icon: <Server size={15} />, go: () => navTo('/services') }
     : mood === 'waiting' ? { label: waitingRuns.length === 1 ? 'Review the approval' : `Review ${waitingRuns.length} approvals`, icon: <ShieldAlert size={15} />, go: reviewApprovals }
     : mood === 'failing' ? (failing.length === 1
         ? { label: 'Open the failed run', icon: <AlertTriangle size={15} />, go: () => navTo(`/runs/${failing[0].run.id}`) }
-        : { label: 'Review failures', icon: <AlertTriangle size={15} />, go: () => navTo('/runs?status=failed') })
+        : { label: `Review ${failing.length} failures`, icon: <AlertTriangle size={15} />, go: () => document.querySelector('.attention')?.scrollIntoView({ behavior: REDUCED_MOTION() ? 'auto' : 'smooth', block: 'start' }) })
     : { label: 'Run a workflow', icon: <Play size={15} />, go: openPalette };
 
   return (
@@ -1022,7 +992,7 @@ function Dashboard() {
             <div className="now-actions">
               <Button onClick={next.go}>{next.icon} {next.label}</Button>
               {mood !== 'calm' && <Button variant="ghost" onClick={openPalette}><Play size={14} /> Run a workflow</Button>}
-              <Link className="text-link" to="/runs">Run history <ArrowRight size={13} /></Link>
+              <Link className="text-link" to="/runs?view=timeline"><ChartGantt size={13} /> Timeline</Link>
               <Link className="text-link" to="/wallboard"><MonitorPlay size={13} /> Wallboard</Link>
             </div>
           )}
@@ -1042,61 +1012,55 @@ function Dashboard() {
         </>
       ) : (
         <>
+          {/* What needs a person, each with the one thing to do about it.
+              Renders nothing when nothing does. */}
+          <AttentionBand approvals={approvals} failing={failing} services={services.items} onChanged={refresh} />
 
-          <div className="instruments">
-            <Instrument label="In flight" value={liveCount}
-                        tone={parked ? 'warning' : liveCount ? 'running' : 'default'}
-                        note={liveNote}>
-              {runningCount > 0 && <LoadingBar size="sm" className="instrument-live" />}
-            </Instrument>
-            <Instrument label="Runs · 24h" value={runs24h} note={`${succeeded24h.toLocaleString()} succeeded`} />
-            <Instrument label="Success · 7d"
-                        value={successRate != null ? <>{successRate}<small>%</small></> : '—'}
-                        tone={successRate == null ? 'default' : successRate < 80 ? 'warning' : 'success'}
-                        note={`${done7d.toLocaleString()} completed runs`}>
-              {successRate != null && <DotMeter ratio={successRate / 100} />}
-            </Instrument>
-            <Instrument label="Failures · 24h" value={failed24h}
-                        tone={failed24h ? 'danger' : 'default'}
-                        to={failed24h ? '/runs?status=failed' : undefined}
-                        note={failed24h ? 'Open the failed runs' : 'None'} />
-            <Instrument label="Typical run"
-                        value={avgDuration != null ? <UnitValue text={formatDuration(avgDuration)} /> : '—'}
-                        note="Average over 24 hours" />
-          </div>
-
-          <div className="now-grid">
-            <div className="now-main">
-              <section className="panel">
-                <div className="panel-head">
-                  <div><h2>Latest runs</h2><p>Across every workflow, newest first</p></div>
-                  <Link className="panel-link" to="/runs">All runs <ArrowRight size={13} /></Link>
-                </div>
-                {runs.length > 0
-                  ? <RunTable runs={runs.slice(0, 9)} flows={flows} onChanged={refresh} />
-                  : <EmptyState icon={<History size={22} />} title="No runs yet" text="Trigger a workflow to see it here." />}
-              </section>
-              {/* The fortnight and the season, side by side. */}
-              <div className="now-history">
-                <ActivityChart />
-                <section className="panel year-panel">
-                  <div className="panel-head">
-                    <div><h2>The long view</h2><p>Every day's runs, by outcome</p></div>
-                  </div>
-                  <div className="year-panel-body"><RunHeatmap selectable /></div>
-                </section>
-              </div>
-            </div>
-            <div className="now-side">
-              {/* Self-fetching and self-hiding — first in the column so a
-                  paused run is the first thing the column says. */}
-              <ApprovalInbox />
-              {failing.length > 0 && <FailingPanel failing={failing} onRetried={refresh} />}
-              {/* Services are what should always be up, and the panel leads
-                  with any that are not. */}
+          {/* What is moving: runs in flight against their usual pace, and the
+              services that should always be up. */}
+          <section className="band" aria-label="In motion">
+            <header className="band-head">
+              <h2>In motion</h2>
+              <p>Runs in flight, what just finished, and the services that stay up</p>
+            </header>
+            <div className="motion-grid">
+              <InFlight runs={runs} flows={flows} />
               <ServicesPanel items={services.items} onChanged={services.load} />
             </div>
-          </div>
+          </section>
+
+          {/* How it has been going: the numbers, the fortnight, the season. */}
+          <section className="band" aria-label="Over time">
+            <header className="band-head">
+              <h2>Over time</h2>
+              <p>The last day, the last two weeks, and the season</p>
+            </header>
+            <div className="instruments">
+              <Instrument label="Runs · 24h" value={runs24h} note={`${succeeded24h.toLocaleString()} succeeded`} />
+              <Instrument label="Success · 7d"
+                          value={successRate != null ? <>{successRate}<small>%</small></> : '—'}
+                          tone={successRate == null ? 'default' : successRate < 80 ? 'warning' : 'success'}
+                          note={`${done7d.toLocaleString()} completed runs`}>
+                {successRate != null && <DotMeter ratio={successRate / 100} />}
+              </Instrument>
+              <Instrument label="Failures · 24h" value={failed24h}
+                          tone={failed24h ? 'danger' : 'default'}
+                          to={failed24h ? '/runs?status=failed' : undefined}
+                          note={failed24h ? 'Open the failed runs' : 'None'} />
+              <Instrument label="Typical run"
+                          value={avgDuration != null ? <UnitValue text={formatDuration(avgDuration)} /> : '—'}
+                          note="Average over 24 hours" />
+            </div>
+            <div className="now-history">
+              <ActivityChart />
+              <section className="panel year-panel">
+                <div className="panel-head">
+                  <div><h2>The long view</h2><p>Every day's runs, by outcome</p></div>
+                </div>
+                <div className="year-panel-body"><RunHeatmap selectable /></div>
+              </section>
+            </div>
+          </section>
         </>
       )}
     </div>
@@ -1190,6 +1154,17 @@ function QuickStart() {
 }
 
 /* ─── Runs page ───────────────────────────────────────── */
+const TIMELINE_SPANS = [
+  { key: '6h', label: '6 hours', ms: 6 * 3_600_000, half: '3 hours' },
+  { key: '24h', label: 'Day', ms: 24 * 3_600_000, half: '12 hours' },
+  { key: '3d', label: '3 days', ms: 3 * DAY, half: '36 hours' },
+  { key: '7d', label: 'Week', ms: 7 * DAY, half: '3½ days' },
+];
+/** Most runs one range draws. A week of a busy install fits. */
+const TIMELINE_CAP = 5000;
+const rangeStamp = (t: number) =>
+  new Date(t).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
 const RUN_TABS: { key: string; label: string; match: (status: string) => boolean }[] = [
   { key: '',          label: 'All',       match: () => true },
   { key: 'live',      label: 'Live',      match: LIVE },
@@ -1211,6 +1186,46 @@ function Runs() {
   // older than those would filter down to nothing on a busy install.
   const [params, setParams] = useSearchParams();
   const day = params.get('day') ?? '';
+  const peek = usePeek();
+  const { failing: failingNow } = usePulse();
+  const failingIds = useMemo(() => new Set(failingNow.map(f => f.flow.id)), [failingNow]);
+
+  // The timeline: any stretch of time, not only the last few hours the home
+  // screen can draw. Its span and end live in the URL, so a view of last
+  // Tuesday night can be linked to.
+  const view = params.get('view') === 'timeline' ? 'timeline' : 'list';
+  const span = TIMELINE_SPANS.find(s => s.key === params.get('span')) ?? TIMELINE_SPANS[1];
+  const endParam = params.get('end');
+  const following = view === 'timeline' && !endParam;       // pinned to now
+  const minute = Math.floor(useNow(following, 30_000) / 60_000) * 60_000;
+  // Pinned to now, the range ends a little ahead of it, so what is due next
+  // is on the sheet too.
+  const rangeEnd = endParam ? Date.parse(endParam) : minute + span.ms / 12;
+  const rangeStart = rangeEnd - span.ms;
+  const [windowRuns, setWindowRuns] = useState<Run[] | null>(null);
+  const loadWindow = () => {
+    if (view !== 'timeline') return;
+    const q = new URLSearchParams({
+      since: new Date(rangeStart).toISOString(), until: new Date(rangeEnd).toISOString(), limit: String(TIMELINE_CAP),
+    });
+    if (workflowId) q.set('workflow_id', workflowId);
+    api<Run[]>(`/runs?${q}`).then(setWindowRuns).catch(() => setWindowRuns([]));
+  };
+  useEffect(loadWindow, [view, rangeStart, rangeEnd, workflowId]);
+  useLive(['run_created', 'run_updated'], loadWindow, { active: following, fallbackMs: 10_000 });
+  const moveRange = (end: number | null, nextSpan = span.key) => setParams(previous => {
+    const next = new URLSearchParams(previous);
+    next.set('view', 'timeline');
+    next.set('span', nextSpan);
+    next.delete('day');
+    if (end == null || end >= Date.now()) next.delete('end'); else next.set('end', new Date(end).toISOString());
+    return next;
+  }, { replace: true });
+  const setView = (next: 'list' | 'timeline') => setParams(previous => {
+    const p = new URLSearchParams(previous);
+    if (next === 'timeline') p.set('view', 'timeline'); else { p.delete('view'); p.delete('span'); p.delete('end'); }
+    return p;
+  }, { replace: true });
 
   const runsPath = useMemo(() => {
     const query = new URLSearchParams({ limit: '500' });
@@ -1240,7 +1255,8 @@ function Runs() {
     const u1 = rrws.on('run_created', loadStats);
     const u2 = rrws.on('run_updated', loadStats);
     const u3 = rrws.on('task_run_updated', loadStats);
-    return () => { u1(); u2(); u3(); };
+    const u4 = rrws.on('resync', loadStats);
+    return () => { u1(); u2(); u3(); u4(); };
   }, []);
   useLiveRefresh(Boolean(runs?.some(r => LIVE(r.status))), loadStats);
 
@@ -1249,15 +1265,16 @@ function Runs() {
   const tab = RUN_TABS.find(t => t.key === status);
   const matches = tab ? tab.match : (s: string) => s === status;
   // Everything but the status, so each tab can say how many it would show.
+  const source = view === 'timeline' ? windowRuns : runs;
   const scoped = useMemo(() => {
-    if (!runs) return [];
+    if (!source) return [];
     const q = query.trim().toLowerCase();
-    return runs.filter(r =>
+    return source.filter(r =>
       (!workflowId || String(r.workflow_id) === workflowId)
       && (!trigger || r.trigger_type === trigger)
       && (!q || `#${r.id}`.includes(q) || String(r.id) === q || flowName(r.workflow_id).toLowerCase().includes(q))
     );
-  }, [runs, workflowId, trigger, query, flows]);
+  }, [source, workflowId, trigger, query, flows]);
   const shown = useMemo(() => scoped.filter(r => matches(r.status)), [scoped, status]);
 
   if (runs === null) {
@@ -1275,7 +1292,15 @@ function Runs() {
 
   return (
     <>
-      <PageHeader title="Runs" subtitle={facts || 'Every execution, newest first.'} />
+      <PageHeader title="Runs" subtitle={facts || 'Every execution, newest first.'}
+        action={
+          <div className="segmented view-pick" role="group" aria-label="View">
+            <button type="button" className={view === 'list' ? 'active' : ''} aria-pressed={view === 'list'}
+                    onClick={() => setView('list')}><List size={14} /> List</button>
+            <button type="button" className={view === 'timeline' ? 'active' : ''} aria-pressed={view === 'timeline'}
+                    onClick={() => setView('timeline')}><ChartGantt size={14} /> Timeline</button>
+          </div>
+        } />
 
       <div className="toolbar">
         <div className="tabs" role="tablist" aria-label="Status">
@@ -1308,7 +1333,7 @@ function Runs() {
 
       {(day || filtersActive) && (
         <div className="toolbar-note">
-          {day && (
+          {day && view === 'list' && (
             <span className="pill">
               {new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, {
                 weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' })}
@@ -1323,7 +1348,7 @@ function Runs() {
               </button>
             </span>
           )}
-          <span className="filterbar-count">{shown.length} of {runs.length} loaded</span>
+          <span className="filterbar-count">{shown.length.toLocaleString()} of {(source ?? []).length.toLocaleString()} {view === 'timeline' ? 'in this range' : 'loaded'}</span>
           <button className="edit-link" onClick={() => {
             setStatus(''); setWorkflowId(''); setTrigger(''); setQuery('');
             setParams({}, { replace: true });
@@ -1333,6 +1358,39 @@ function Runs() {
         </div>
       )}
 
+      {view === 'timeline' ? (
+        <>
+          <div className="range-bar">
+            <div className="tabs" role="tablist" aria-label="Span">
+              {TIMELINE_SPANS.map(s => (
+                <button key={s.key} type="button" role="tab" aria-selected={s.key === span.key}
+                        className={clsx('tab-pill', s.key === span.key && 'active')}
+                        onClick={() => moveRange(endParam ? rangeEnd : null, s.key)}>{s.label}</button>
+              ))}
+            </div>
+            <div className="range-nav">
+              <button type="button" className="dock-btn" onClick={() => moveRange(rangeEnd - span.ms / 2)}
+                      title={`Back ${span.half}`} aria-label={`Back ${span.half}`}><ChevronLeft size={16} /></button>
+              <span className="range-label">
+                {rangeStamp(rangeStart)} <i>–</i> {following ? 'now' : rangeStamp(rangeEnd)}
+              </span>
+              <button type="button" className="dock-btn" onClick={() => moveRange(rangeEnd + span.ms / 2)} disabled={following}
+                      title={`Forward ${span.half}`} aria-label={`Forward ${span.half}`}><ChevronRight size={16} /></button>
+              {!following && <Button variant="ghost" size="sm" onClick={() => moveRange(null)}>Now</Button>}
+            </div>
+          </div>
+          {windowRuns === null ? (
+            <div className="skeleton-line" style={{ height: 360, borderRadius: 24 }} />
+          ) : (
+            <Board runs={shown} complete failing={failingIds} onOpenRun={peek.open} max={400}
+                   flows={filtersActive ? flows.filter(f => shown.some(r => r.workflow_id === f.id)) : flows}
+                   range={{ start: rangeStart, end: rangeEnd }} heading="Timeline" />
+          )}
+          {(windowRuns?.length ?? 0) >= TIMELINE_CAP && (
+            <p className="toolbar-note">This range holds more than {TIMELINE_CAP.toLocaleString()} runs; the oldest are not drawn. A shorter span shows them all.</p>
+          )}
+        </>
+      ) : (
       <section className="panel ledger">
         {shown.length > 0
           ? <RunTable runs={shown.slice(0, 100)} flows={flows} onChanged={load} byDay />
@@ -1341,8 +1399,9 @@ function Runs() {
           <p className="ledger-foot">Showing the first 100 matches. Narrow the filters to see older runs.</p>
         )}
       </section>
+      )}
 
-      {runs.length > 0 && <ActivityChart />}
+      {view === 'list' && runs.length > 0 && <ActivityChart />}
     </>
   );
 }
@@ -1500,9 +1559,9 @@ function useQueueVerdict(run: Run | undefined, flow: Workflow | undefined): Queu
     if (!queued) { setSnapshot(null); return; }
     read();
   }, [queued, run?.id]);
-  // Slower than the run's own 2s poll: this answer changes when some OTHER
-  // run finishes, not when this one does.
-  useVisibleInterval(queued, read, 5000);
+  // This answer changes when some OTHER run starts or finishes.
+  useLiveEvents(['run_created', 'run_updated'], () => { if (queued) read(); });
+  useDataPoll(queued, read, 5000);
 
   return useMemo<QueueVerdict | null>(() => {
     if (!run || !flow || !snapshot || !flows) return null;
@@ -1673,7 +1732,8 @@ function RunDetail() {
   useEffect(() => {
     const u1 = rrws.on('run_updated', e => { if (String(e.id) === id) refresh(); });
     const u2 = rrws.on('task_run_updated', e => { if (String(e.run_id) === id) refresh(); });
-    return () => { u1(); u2(); };
+    const u3 = rrws.on('resync', refresh);
+    return () => { u1(); u2(); u3(); };
   }, [id]);
   useLiveRefresh(Boolean(run && LIVE(run.status)), refresh, 2000);
   const now = useNow(Boolean(run && run.status === 'running'));
@@ -2382,12 +2442,8 @@ function Environments() {
   useEffect(() => { void load(); }, []);
   // Instant updates via WebSocket when an environment build finishes.
   useEffect(() => rrws.on('environment_updated', () => void load()), []);
-  // Fallback polling while environments are building (covers the WS-not-yet-connected window).
-  useVisibleInterval(
-    items.some(x => x.status === 'creating' || x.status === 'building'),
-    () => void load(),
-    1500,
-  );
+  // Fallback while one is building and the socket is down.
+  useDataPoll(items.some(x => x.status === 'creating' || x.status === 'building'), () => void load(), 1500);
 
   const removeEnv = async (env: Env) => {
     if (!confirm(`Remove environment "${env.name}"?${env.managed ? ' Its virtual environment will be deleted from disk.' : ''}`)) return;
@@ -2600,7 +2656,9 @@ function Workflows() {
   useEffect(() => {
     const u1 = rrws.on('run_created', load);
     const u2 = rrws.on('run_updated', load);
-    return () => { u1(); u2(); };
+    const u3 = rrws.on('workflow_updated', load);
+    const u4 = rrws.on('resync', load);
+    return () => { u1(); u2(); u3(); u4(); };
   }, []);
   useLiveRefresh(runs.some(r => LIVE(r.status)), load, 5000);
 
@@ -3030,18 +3088,23 @@ function WorkflowDetail() {
   useEffect(() => { load(); }, [id]);
   useEffect(() => {
     const refreshRuns = () => void api<Run[]>(`/runs?workflow_id=${id}`).then(setRuns).catch(() => {});
-    const u1 = rrws.on('run_created', e => { if (String(e.workflow_id) === id) { refreshRuns(); loadChain(); } });
-    // Any run finishing may be an upstream's, which moves the chain strip.
+    const u1 = rrws.on('run_created', e => { if (String(e.workflow_id) === id) { refreshRuns(); loadChain(); gaps.reload(); } });
+    // Any run finishing may be an upstream's, which moves the chain.
     const u2 = rrws.on('run_updated', () => { refreshRuns(); loadChain(); });
     return () => { u1(); u2(); };
   }, [id]);
+  // Its definition changed (an edit here, in another tab, or by the API).
+  useLiveEvents(['workflow_updated'], load, { filter: e => String(e.id) === id });
   useLiveRefresh(runs.some(r => LIVE(r.status)), () => void api<Run[]>(`/runs?workflow_id=${id}`).then(setRuns).catch(() => {}));
   // The newest run with its tasks, re-read whenever it changes and every two
   // seconds while it is in flight, so the pipeline moves as the run does.
   const newest = runs[0];
   const loadLatest = () => { if (newest) void api<Run>(`/runs/${newest.id}`).then(setLatest).catch(() => {}); };
   useEffect(loadLatest, [newest?.id, newest?.status]);
-  useVisibleInterval(Boolean(newest && LIVE(newest.status)), loadLatest, 2000);
+  useLiveEvents(['task_run_updated'], loadLatest, { filter: e => Number(e.run_id) === newest?.id });
+  useDataPoll(Boolean(newest && LIVE(newest.status)), loadLatest, 2000);
+  // A finished run moves the task duration trends.
+  useLiveEvents(['run_updated'], trends.reload, { filter: e => runs.some(r => r.id === Number(e.id)), settleMs: 3000 });
   // Durations only change when a run finishes — a much slower beat than the
   // 3s run poll above, and one whole query per tick.
   useLiveRefresh(runs.some(r => LIVE(r.status)), trends.reload, 15_000);
@@ -3817,11 +3880,9 @@ function Wallboard() {
   useEffect(() => {
     load();
     const tick = window.setInterval(() => setClock(new Date()), 1000);
-    const u1 = rrws.on('run_updated', load);
-    const u2 = rrws.on('run_created', load);
-    return () => { window.clearInterval(tick); u1(); u2(); };
+    return () => window.clearInterval(tick);
   }, []);
-  useVisibleInterval(true, load, 5000);
+  useLive(['run_created', 'run_updated', 'workflow_updated'], load, { fallbackMs: 5000 });
   const now = useNow(runs.some(r => r.status === 'running'));
   const services = useServices({ supervisor: false, pollIdle: false });
   const servicesDown = serviceCounts(services.items).down;

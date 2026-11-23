@@ -6,6 +6,8 @@ import {
   CornerDownRight, MessageSquare, CircleSlash, Hourglass, FolderOpen,
 } from 'lucide-react';
 import { api, post } from '../api';
+import { SAFETY_POLL_MS } from '../live';
+import { rrws } from '../ws';
 import { formatDuration } from '../format';
 import { Button, TaskTypeBadge } from './ui';
 import { useToast } from './toast';
@@ -481,13 +483,14 @@ function GateDecision({ gate, run, tasks, prompt, now, onSettled, onDecided }: {
 
 /* ─── Where people actually look ───────────────────────────
    A gate nobody sees is a run nobody finishes, so the open gates surface on
-   the dashboard too. */
+   the home screen too: as the headline, the dock's signal, and a card each in
+   its "Needs you" band (NowParts.tsx), all read from this one list. */
 
 /* ─── Shared poll of GET /api/approvals ────────────────────
-   The dashboard asks twice — once for the headline count in the hero, once
-   inside <ApprovalInbox> in the column beside it — so a per-caller interval
-   put the same request on the wire twice every tick. One timer, owned by the
-   module and alive only while something is subscribed, feeds every reader.
+   Several readers ask at once — the verdict, the dock and the home screen's
+   cards — and a per-caller interval put the same request on the wire once
+   per reader every tick. One timer, owned by the module and alive only while
+   something is subscribed, feeds every reader.
 
    Paused while the tab is hidden and re-read on the way back, so a window left
    open overnight neither spends a request a minute behind someone's back nor
@@ -503,6 +506,7 @@ const publishApprovals = (rows: OpenApproval[]) => {
 };
 
 function readApprovals() {
+  approvalReadAt = Date.now();
   api<OpenApproval[]>('/approvals')
     .then(publishApprovals)
     // The last good answer stays on screen; only a first failure has to resolve
@@ -510,14 +514,38 @@ function readApprovals() {
     .catch(() => publishApprovals(approvalRows ?? []));
 }
 
+let approvalReadAt = 0;
+/* A gate opens and closes as a task_run_updated (the gate is a task row) or a
+   run_updated (a cancelled run withdraws its gate), so those reload the list;
+   the timer is the safety net, and while the socket is live it only re-reads
+   once a minute. */
+let approvalEventTimer = 0;
+let approvalOffs: (() => void)[] = [];
+const onApprovalEvent = () => {
+  window.clearTimeout(approvalEventTimer);
+  approvalEventTimer = window.setTimeout(readApprovals, 300);
+};
+
 function startApprovalPoll() {
+  if (!approvalOffs.length) {
+    approvalOffs = ['task_run_updated', 'run_updated', 'run_created', 'resync'].map(type => rrws.on(type, onApprovalEvent));
+  }
   if (approvalTimer || document.hidden) return;
-  approvalTimer = window.setInterval(readApprovals, APPROVAL_POLL_MS);
+  approvalTimer = window.setInterval(() => {
+    if (rrws.state === 'live' && Date.now() - approvalReadAt < SAFETY_POLL_MS) return;
+    readApprovals();
+  }, APPROVAL_POLL_MS);
 }
 
 function stopApprovalPoll() {
   window.clearInterval(approvalTimer);
   approvalTimer = 0;
+}
+
+function stopApprovalEvents() {
+  approvalOffs.forEach(off => off());
+  approvalOffs = [];
+  window.clearTimeout(approvalEventTimer);
 }
 
 function onApprovalVisibility() {
@@ -545,83 +573,10 @@ export function useOpenApprovals(): OpenApproval[] | null {
       approvalReaders.delete(setRows);
       if (approvalReaders.size === 0) {
         stopApprovalPoll();
+        stopApprovalEvents();
         document.removeEventListener('visibilitychange', onApprovalVisibility);
       }
     };
   }, []);
   return rows;
-}
-
-export interface ApprovalInboxProps {
-  /** Maximum runs listed; the rest collapse into a "see all" line. */
-  limit?: number;
-  /** Render an empty panel instead of nothing when no gate is open. */
-  showEmpty?: boolean;
-  className?: string;
-}
-
-/** Compact "waiting for you" panel. Renders nothing when no gate is open, so
- *  it can be dropped into a dashboard column unconditionally. */
-export function ApprovalInbox({ limit = 6, showEmpty = false, className }: ApprovalInboxProps) {
-  const rows = useOpenApprovals();
-  const now = useTicker(Boolean(rows?.length));
-
-  const byRun = useMemo(() => {
-    const groups = new Map<number, OpenApproval[]>();
-    for (const row of rows ?? []) groups.set(row.run_id, [...(groups.get(row.run_id) ?? []), row]);
-    return [...groups.values()];
-  }, [rows]);
-
-  if (rows === null) return null;
-  if (!byRun.length) {
-    return showEmpty ? (
-      <div className={clsx('panel', className)}>
-        <div className="panel-head"><div><h2>Waiting for you</h2><p>Runs paused on an approval gate</p></div></div>
-        <div className="approval-inbox-empty">
-          <ShieldCheck size={18} /> No approvals pending — nothing is waiting on a person.
-        </div>
-      </div>
-    ) : null;
-  }
-
-  return (
-    <div className={clsx('panel', 'approval-inbox', className)}>
-      <div className="panel-head">
-        <div>
-          <h2>Waiting for you</h2>
-          <p>
-            {byRun.length} run{byRun.length === 1 ? '' : 's'} paused on an approval gate
-          </p>
-        </div>
-        <span className="approval-inbox-count">{byRun.length}</span>
-      </div>
-      <div className="approval-inbox-list">
-        {byRun.slice(0, limit).map(group => {
-          const head = group[0];
-          const waited = elapsedSince(
-            group.reduce((oldest, row) => (row.created_at < oldest.created_at ? row : oldest), head).created_at,
-            now
-          );
-          const names = group.map(row => row.task_name ?? `#${row.task_id}`).join(', ');
-          return (
-            <Link key={head.run_id} to={`/runs/${head.run_id}`} className="approval-inbox-row">
-              <span className="approval-inbox-pip" aria-hidden="true" />
-              <div className="approval-inbox-body">
-                <div className="approval-inbox-name" title={head.workflow_name}>{head.workflow_name}</div>
-                <div className="approval-inbox-meta" title={names}>
-                  #{head.run_id} · {group.length > 1 ? `${group.length} gates · ` : ''}{names}
-                  {waited != null && ` · waiting ${formatDuration(waited)}`}
-                </div>
-              </div>
-              <span className="approval-inbox-cta">Review</span>
-              <ChevronRight size={14} />
-            </Link>
-          );
-        })}
-        {byRun.length > limit && (
-          <div className="approval-inbox-more">+{byRun.length - limit} more waiting</div>
-        )}
-      </div>
-    </div>
-  );
 }

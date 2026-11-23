@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, MouseEvent } from 'react';
+import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import { ArrowRight, Play } from 'lucide-react';
@@ -18,7 +18,11 @@ import { CometCanvas } from './ui';
    time passes, so a window left open keeps telling the truth.
 
    It is the home screen's answer to three questions a run table makes you
-   read for: what is moving, what broke and when, and what happens next. */
+   read for: what is moving, what broke and when, and what happens next.
+
+   Given a `range`, the same sheet draws a fixed stretch of time instead — the
+   Runs page's timeline, where any day or week can be looked at. Nothing drifts
+   then, and "now" is marked only if it falls inside. */
 
 const TICK_MS = 5000;     // how often the sheet re-anchors to the clock
 const MINUTE = 60_000;
@@ -34,10 +38,20 @@ const STATUS_WORD: Record<string, string> = {
 
 const clock = (t: number) =>
   new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+/** Label spacings for a fixed range, finest first; the first that leaves room
+ *  for a label wins. */
+const RANGE_STEPS = [15 * MINUTE, 30 * MINUTE, HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY];
+const dayLabel = (t: number) =>
+  new Date(t).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' });
+const isMidnight = (t: number) => { const d = new Date(t); return d.getHours() === 0 && d.getMinutes() === 0; };
+const stamp = (t: number) =>
+  new Date(t).toLocaleString(undefined, { weekday: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 type Tip = { x: number; y: number; tone: string; title: string; lines: string[] };
 
-export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, complete, failing, onRun, onNowX, onOpenRun, max = 12 }: {
+export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, complete, failing, onRun, onNowX, onOpenRun, max = 12, range, heading = 'Timetable', summary, moreLink = true }: {
   runs: R[];
   flows: F[];
   /** True when `runs` is the whole history rather than the newest page of it. */
@@ -52,6 +66,13 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
   /** Open a run beside the board instead of leaving for its page. */
   onOpenRun?: (id: number) => void;
   max?: number;
+  /** A fixed stretch of time to draw instead of the window around now. */
+  range?: { start: number; end: number };
+  heading?: ReactNode;
+  /** Replaces the line under the heading. */
+  summary?: ReactNode;
+  /** Offer the full timeline under the sheet. */
+  moreLink?: boolean;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -88,40 +109,54 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runs, complete, minute]);
   const horizon = past / 2;
+  const fixed = range != null;
+  const start = fixed ? range.start : now - past;
+  const end = fixed ? range.end : now + horizon;
+  // The latest instant a run can have started by: now, or the range's end.
+  const upTo = Math.min(now, end);
 
   const owed = useMemo(
-    () => upcomingFires(flows, minute * MINUTE, horizon + MINUTE),
-    [flows, minute, horizon]);
+    () => (end > now ? upcomingFires(flows, minute * MINUTE, end - minute * MINUTE + MINUTE) : new Map<number, number[]>()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [flows, minute, fixed ? end : horizon]);
 
-  // Past takes two thirds, the future one third, at the same px-per-ms: one
-  // axis, so a scheduled fire glides straight into the run it becomes.
-  const nowX = Math.round((width * 2) / 3);
-  const scale = nowX / past;                     // px per ms
-  const start = now - past;
-  const end = now + horizon;
-  const beam = width ? box.left + nowX : 0;
+  // Around now, the past takes two thirds and the future one third, at the
+  // same px-per-ms: one axis, so a scheduled fire glides straight into the run
+  // it becomes. A fixed range simply fills the width.
+  const scale = fixed ? width / Math.max(1, end - start) : Math.round((width * 2) / 3) / past;   // px per ms
+  const nowX = fixed ? (now > start && now < end ? Math.round((now - start) * scale) : null) : Math.round((width * 2) / 3);
+  const beam = width && !fixed && nowX != null ? box.left + nowX : 0;
   useEffect(() => { if (beam) onNowX?.(beam); }, [beam]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Everything on the sheet is placed against a fixed origin and the sheet
-  // itself is moved, so a tick is one transform rather than a hundred.
-  const key = `${width}:${past}`;
+  // itself is moved, so a tick is one transform rather than a hundred. A fixed
+  // range does not move.
+  const key = fixed ? `${width}:${start}:${end}` : `${width}:${past}`;
   const origin = useRef({ key: '', t: 0 });
-  if (origin.current.key !== key) origin.current = { key, t: now };
+  if (origin.current.key !== key) origin.current = { key, t: fixed ? start : now };
   const t0 = origin.current.t;
   const at = (t: number) => (t - t0) * scale;
-  const drift: CSSProperties = { transform: `translateX(${(nowX - at(now)).toFixed(2)}px)` };
+  const drift: CSSProperties | undefined = fixed ? undefined : { transform: `translateX(${((nowX ?? 0) - at(now)).toFixed(2)}px)` };
 
   const { lanes, quiet } = useMemo(
-    () => buildLanes(flows, runs, owed, { start, now, failing, max }),
+    () => buildLanes(flows, runs, owed, { start, now: upTo, failing, max }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [flows, runs, owed, failing, max, Math.floor(now / TICK_MS)]);
+    [flows, runs, owed, failing, max, start, end, Math.floor(now / TICK_MS)]);
 
-  const step = axisStep(past) * Math.max(1, Math.ceil(72 / (axisStep(past) * scale || 72)));
+  const step = fixed
+    ? RANGE_STEPS.find(s => s * scale >= 88) ?? RANGE_STEPS[RANGE_STEPS.length - 1]
+    : axisStep(past) * Math.max(1, Math.ceil(72 / (axisStep(past) * scale || 72)));
   const marks = width ? railAxis(start - step, end + step, step, new Date(now).getTimezoneOffset()) : [];
+  const markLabel = (t: number) => (fixed && (step >= DAY || isMidnight(t)) ? dayLabel(t) : clock(t));
 
-  const inWindow = runs.filter(r => runAt(r) >= start && runAt(r) <= now);
+  const inWindow = runs.filter(r => runAt(r) >= start && runAt(r) <= upTo);
   const failedCount = inWindow.filter(r => r.status === 'failed').length;
   const dueCount = [...owed.values()].reduce((sum, times) => sum + times.filter(t => t <= end).length, 0);
+  // Per line, for a fixed range: how many ran and how many of those failed.
+  const tally = (lane: (typeof lanes)[number]) => {
+    const mine = lane.runs.filter(r => runAt(r) >= start);
+    return { n: mine.length, failed: mine.filter(r => r.status === 'failed').length };
+  };
 
   const showTip = (event: MouseEvent, tone: string, title: string, lines: string[]) => {
     const body = bodyRef.current;
@@ -139,18 +174,24 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
     <section className="board" aria-label="Timetable">
       <header className="board-head">
         <div className="board-title">
-          <h2>Timetable</h2>
+          <h2>{heading}</h2>
           <p>
-            {railWindowLabel(past)} · {inWindow.length} run{inWindow.length === 1 ? '' : 's'}
-            {failedCount > 0 && <em> · {failedCount} failed</em>}
-            <span> · {railHorizonLabel(horizon).toLowerCase()} · {dueCount || 'nothing'} scheduled</span>
+            {summary ?? (
+              <>
+                {fixed ? '' : `${railWindowLabel(past)} · `}{inWindow.length.toLocaleString()} run{inWindow.length === 1 ? '' : 's'}
+                {failedCount > 0 && <em> · {failedCount} failed</em>}
+                {end > now && (fixed
+                  ? <span> · {dueCount || 'nothing'} scheduled ahead</span>
+                  : <span> · {railHorizonLabel(horizon).toLowerCase()} · {dueCount || 'nothing'} scheduled</span>)}
+              </>
+            )}
           </p>
         </div>
         <ul className="board-legend" aria-hidden="true">
           <li><i className="bar is-success" />Succeeded</li>
           <li><i className="bar is-failed" />Failed</li>
           <li><i className="bar is-running" />Running</li>
-          <li><i className="fire" />Scheduled</li>
+          {end > now && <li><i className="fire" />Scheduled</li>}
         </ul>
       </header>
 
@@ -162,13 +203,14 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
             {width > 0 && (
               <div className="lane-stage" key={key} style={drift}>
                 {marks.map(t => (
-                  <span key={t} className={clsx('board-mark', Math.abs(at(t) - at(now)) < 40 && 'is-hidden')}
-                        style={{ left: at(t) }}>{clock(t)}</span>
+                  <span key={t} className={clsx('board-mark', nowX != null && Math.abs(at(t) - at(now)) < 40 && 'is-hidden',
+                                                fixed && isMidnight(t) && 'is-day')}
+                        style={{ left: at(t) }}>{markLabel(t)}</span>
                 ))}
               </div>
             )}
           </div>
-          <span className="lane-next">Next</span>
+          <span className="lane-next">{fixed ? 'Runs' : 'Next'}</span>
         </div>
 
         {lanes.map((lane, index) => {
@@ -209,7 +251,7 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
                                 `#${run.id} · ${STATUS_WORD[run.status] ?? run.status}`,
                                 [
                                   run.duration_seconds != null ? formatDuration(run.duration_seconds) : null,
-                                  `started ${timeAgo(run.started_at || run.created_at, now)}`,
+                                  fixed ? `started ${stamp(runAt(run))}` : `started ${timeAgo(run.started_at || run.created_at, now)}`,
                                 ].filter(Boolean).join(' · '),
                               ])}>
                           {run.status === 'running' && <CometCanvas kind="fill" />}
@@ -224,9 +266,18 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
                   </div>
                 )}
               </div>
-              <span className="lane-next" title={next ? `Next run at ${clock(next)}` : undefined}>
-                {next ? countdown(next - now) : '—'}
-              </span>
+              {fixed ? (() => {
+                const { n, failed } = tally(lane);
+                return (
+                  <span className="lane-next" title={`${n} run${n === 1 ? '' : 's'} in this range${failed ? `, ${failed} failed` : ''}`}>
+                    {n.toLocaleString()}{failed > 0 && <em> · {failed}</em>}
+                  </span>
+                );
+              })() : (
+                <span className="lane-next" title={next ? `Next run at ${clock(next)}` : undefined}>
+                  {next ? countdown(next - now) : '—'}
+                </span>
+              )}
             </div>
           );
         })}
@@ -238,8 +289,12 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
             <div className="lane-stage" key={key} style={drift}>
               {marks.map(t => <i key={t} className="board-rule" style={{ left: at(t) }} />)}
             </div>
-            <span className="board-future" style={{ left: nowX }} />
-            <span className="board-now" style={{ left: nowX }}><b>{clock(now)}</b></span>
+            {nowX != null && (
+              <>
+                <span className="board-future" style={{ left: nowX }} />
+                <span className="board-now" style={{ left: nowX }}><b>{clock(now)}</b></span>
+              </>
+            )}
           </div>
         )}
 
@@ -251,14 +306,20 @@ export function Board<F extends BoardFlow, R extends BoardRun>({ runs, flows, co
         )}
 
         {lanes.length === 0 && (
-          <p className="board-empty">Nothing ran in this window and nothing is scheduled. Runs appear here the moment they start.</p>
+          <p className="board-empty">{fixed
+            ? 'Nothing ran in this stretch of time.'
+            : 'Nothing ran in this window and nothing is scheduled. Runs appear here the moment they start.'}</p>
         )}
       </div>
 
-      {quiet > 0 && (
+      {(quiet > 0 || (moreLink && !fixed)) && (
         <footer className="board-foot">
-          <span>{quiet} quiet workflow{quiet === 1 ? '' : 's'} not shown</span>
-          <Link to="/workflows">All workflows <ArrowRight size={13} /></Link>
+          <span>{quiet > 0 && (fixed
+            ? `${quiet} workflow${quiet === 1 ? '' : 's'} had nothing in this range`
+            : `${quiet} quiet workflow${quiet === 1 ? '' : 's'} not shown`)}</span>
+          {fixed
+            ? <Link to="/workflows">All workflows <ArrowRight size={13} /></Link>
+            : <Link to="/runs?view=timeline">Earlier runs on the timeline <ArrowRight size={13} /></Link>}
         </footer>
       )}
     </section>

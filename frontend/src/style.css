@@ -1789,8 +1789,6 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
                              50%     { box-shadow: 0 0 20px -8px var(--warning); } }
 @keyframes settle-flash    { from { background: var(--settle-tint); } to { background: var(--bg-hover); } }
 @keyframes confirm-slide   { from { opacity: 0; transform: translateY(-4px); } }
-@keyframes inbox-pip       { 0%,100% { box-shadow: 0 0 0 3px var(--warning-soft); }
-                             50%     { box-shadow: 0 0 0 6px var(--warning-soft); } }
 @keyframes forced-in       { from { opacity: 0; transform: translateX(-4px); } }
 @keyframes pop-in          { from { opacity: 0; transform: translateY(4px); } }
 /* currentColor, so the same breathe reads amber on a mute and red on a
@@ -2075,54 +2073,6 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   .approval-gate-task-sep { display: none; }
   .approval-gate-actions-hint { display: none; }
 }
-
-/* ─── Approval inbox (dashboard) ──────────────────────── */
-.approval-inbox {
-  border-color: var(--warning-border);
-  box-shadow: var(--shadow-sm), 0 0 0 1px var(--warning-border);
-}
-.approval-inbox-count {
-  min-width: 22px; height: 22px; padding: 0 7px;
-  border-radius: 999px; display: grid; place-items: center;
-  font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
-  color: var(--warning); background: var(--warning-soft);
-  border: 1px solid var(--warning-border); flex-shrink: 0;
-}
-.approval-inbox-list { padding: 6px 0; }
-.approval-inbox-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 20px; text-decoration: none; color: inherit;
-  transition: background .12s var(--ease-swift);
-}
-.approval-inbox-row:hover { background: var(--bg-hover); }
-.approval-inbox-row + .approval-inbox-row { border-top: 1px solid var(--border); }
-.approval-inbox-pip {
-  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
-  background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft);
-  animation: inbox-pip 2s var(--ease-swift) infinite;
-}
-.approval-inbox-body { flex: 1; min-width: 0; }
-.approval-inbox-name {
-  font-size: 13px; font-weight: 600; color: var(--text-1);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.approval-inbox-meta {
-  font-size: 11.5px; color: var(--text-3); margin-top: 2px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.approval-inbox-cta {
-  flex-shrink: 0; font-size: 11px; font-weight: 600;
-  padding: 3px 8px; border-radius: var(--r-xs);
-  color: var(--warning); background: var(--warning-soft);
-  border: 1px solid var(--warning-border);
-}
-.approval-inbox-row > svg { color: var(--text-3); flex-shrink: 0; }
-.approval-inbox-more { padding: 8px 20px; font-size: 11.5px; color: var(--text-3); }
-.approval-inbox-empty {
-  display: flex; align-items: center; gap: 8px;
-  padding: 16px 20px; font-size: 12.5px; color: var(--text-3);
-}
-.approval-inbox-empty > svg { color: var(--success); flex-shrink: 0; }
 
 /* ═══ Resume dialog ═════════════════════════════════════
    "Resume ≠ Retry" is the whole teaching job of this
@@ -2770,8 +2720,6 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
 }
 
 /* ═══ Host surfaces this pass touches ═══════════════════ */
-/* Same rhythm as the other dashboard-column panels. */
-.approval-inbox { margin-bottom: 16px; }
 /* Sparklines are fixed-width figures — they never absorb the name's overflow. */
 .run-task-head h3 .trend-spark { flex-shrink: 0; }
 .run-task-head h3 > span:not(.task-type-badge) { min-width: 0; }
@@ -2844,8 +2792,7 @@ tbody tr:nth-child(n+9) { animation-delay: .2s; }
   .resume-row.is-forced, .snooze-pop, .watchdog-body, .logsearch-advanced,
   .run-note, .report-frame--in { animation: none !important; }
   .approval-gate-aura { animation: none; opacity: .7; }
-  .approval-gate-glyph, .approval-inbox-pip, .snooze-chip,
-  .trend-spark--slow .trend-spark-last { animation: none; }
+  .approval-gate-glyph, .snooze-chip, .trend-spark--slow .trend-spark-last { animation: none; }
   /* Keep the state, drop the tween. */
   .resume-columns.is-reloading, .run-note--leaving { transition: none; }
   .resume-row-action, .approval-gate-note-toggle, .snooze-chip-undo,
